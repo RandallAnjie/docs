@@ -28,9 +28,14 @@ export function getPage(pageId: string): Promise<{ page: PageSummary }> {
   return request(`/api/pages/${encodeURIComponent(pageId)}`);
 }
 
-export function updatePageTitle(pageId: string, title: string): Promise<{ page: PageSummary }> {
+export function updatePageTitle(
+  pageId: string,
+  title: string,
+  options: { keepalive?: boolean } = {},
+): Promise<{ page: PageSummary }> {
   return request(`/api/pages/${encodeURIComponent(pageId)}`, {
     method: 'PATCH',
+    keepalive: options.keepalive,
     body: JSON.stringify({ title }),
   });
 }

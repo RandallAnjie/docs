@@ -1,10 +1,10 @@
-# RandallFlare blocker：Durable Object 多 WebSocket 广播
+# RandallFlare blockers：Rdocs 实时协作与发布链路
 
 记录时间：2026-08-14 UTC
 
 影响：阻塞 Rdocs Phase 0 和 `docs.bigrandall.io` 正式切换
 
-## 结论
+## 结论一：Durable Object 多 WebSocket 广播
 
 RandallFlare 当前可以建立 Durable Object WebSocket、维护两条连接并把 Yjs update 写入 DO SQLite，但不能可靠地把 update 发送给同一 DO 中的另一条已建立连接。
 
@@ -54,3 +54,37 @@ npm run smoke:collab
 4. binary handler 的实际输入类型与兼容文档一致，或明确记录 `Blob` 差异。
 
 Rdocs 不会通过先广播后持久化、轮询 D1 或修改 RandallFlare 平台代码来掩盖此问题。
+
+## 结论二：真实浏览器 WebSocket 握手被边缘取消
+
+在 `rdocs-randall.edge.bigrandall.io` 上，Chromium 会反复触发：
+
+```text
+Network.webSocketFrameError: WebSocket opening handshake was canceled
+close code: 1006
+```
+
+失败发生在 Worker/DO 日志之前。相同 URL、票据与 Origin 通过 Node `ws` 和
+`y-websocket` Provider 可以达到 `status=connected`、`sync=true`，说明 Worker 业务校验和
+Yjs 协议路径本身可工作；浏览器传输路径仍需 RandallFlare 排查。
+
+该问题会让 UI 持续显示“重新连接中”，也会阻塞协作者光标、presence 和正文云端自动保存的
+真实浏览器端到端验收。
+
+## 结论三：Git build 成功后未自动切换边缘版本
+
+Git push 会产生 `SUCCESS` build，worker version 中也包含新文件，但边缘仍可能提供旧 HTML，
+且 `publishedAt` 不更新。通过更新 Rdocs 自己的环境变量后，新版本才会在边缘生效。
+
+RandallFlare 需要保证 Git 模式下成功构建会自动 publish，或提供明确的“构建后发布”开关与状态。
+
+## 结论四：rrangler 无法直接设置包含 URL 的环境变量
+
+`rrangler` 的命令标准化会对每个参数执行 `split(":")`，导致以下合法命令无法解析：
+
+```text
+rrangler worker env set rdocs APP_ORIGIN=https://docs.bigrandall.io
+```
+
+当前只能绕过 CLI 参数解析层，直接调用已有的环境变量 API。RandallFlare 需要把冒号兼容处理限制在
+命令名 token，而不是拆分环境变量值、JSON 或 URL。
