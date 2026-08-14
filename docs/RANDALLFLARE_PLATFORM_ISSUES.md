@@ -70,13 +70,14 @@ params: [file, timestamp]
 
 ### 现象
 
-在新版本部署完成、D1 外键检查通过后，`npm run smoke:product` 以单客户端顺序调用产品 API。三次运行中：
+在新版本部署完成、D1 外键检查通过后，`npm run smoke:product` 以单客户端顺序调用产品 API。已观测的运行中：
 
 1. 第一次在 `POST /api/pages/{id}/share-links` 返回 502。
 2. 第二次完整通过租户、页面、搜索、权限、评论、附件、分享、Markdown、用户组、邀请、审计和回收站。
 3. 第三次在 `POST /api/pages/{id}/export/markdown` 返回 502。
+4. 最终发布复验在 `POST /api/pages/{id}/comments` 返回 502，错误体为 `upstream peer unreachable`，`x-request-id` 为 `d7f393ea7591d4346a01cf23acceba06`。
 
-单独重试相同类型的创建分享请求可以返回 201。失败端点不固定，请求不是并发洪泛；smoke 每一步都等待上一响应。Rdocs 返回的业务错误均为 JSON，而观测到的 502 没有业务错误字段，因此更像边缘、D1 executor、DO 转发或 R2 调用链上的间歇故障。
+单独重试相同类型的创建分享请求可以返回 201。失败端点不固定，请求不是并发洪泛；smoke 每一步都等待上一响应。最终一次平台错误明确返回 `upstream peer unreachable`，与此前没有 Rdocs 业务错误字段的 502 一致，因此应沿 front door 到 compute peer 的路由、健康状态和连接复用链路排查。
 
 Rdocs 没有自动重放创建分享、评论、邀请等非幂等写请求，因为响应丢失后盲目重试可能制造重复数据。产品 smoke 已增加 20 秒单请求超时，并在失败信息中输出 `x-request-id` 和最多 500 字节的原始错误体，供后续关联平台日志。
 
