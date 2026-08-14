@@ -4,6 +4,7 @@ import { EDITOR_SCHEMA_VERSION, isPageId, type PageSummary } from '@rdocs/shared
 
 import { DocumentRoom } from './document-room';
 import type { Env } from './env';
+import { isCollaborationOriginAllowed } from './origins';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
 
 export { DocumentRoom };
@@ -197,8 +198,9 @@ async function openCollaborationSocket(
     return error('需要 WebSocket upgrade', 426);
   }
 
-  const expectedOrigin = env.APP_ORIGIN || new URL(request.url).origin;
-  if (request.headers.get('origin') !== expectedOrigin) return error('Origin 不允许', 403);
+  if (!isCollaborationOriginAllowed(request.url, request.headers.get('origin'), env.APP_ORIGIN)) {
+    return error('Origin 不允许', 403);
+  }
 
   const ticketValue = new URL(request.url).searchParams.get('ticket');
   if (!ticketValue || !env.COLLAB_TICKET_SECRET) return error('缺少协作凭证', 401);
