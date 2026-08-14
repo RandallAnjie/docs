@@ -87,6 +87,25 @@ validate → deduplicate → persist SQLite → apply Y.Doc → broadcast
 
 对象初始化时加载最新快照，再按 seq 应用其后的增量。每 100 条更新或累计 512 KiB 生成快照；最后一个连接离开时也生成快照。
 
+## 用户版本与 generation 恢复
+
+手动版本不是 D1 元数据的空壳。创建版本时，Worker 要求当前浏览器先完成一次 HTTP/Yjs flush，然后让当前 DocumentRoom 生成完整 Yjs state update，校验 SHA-256 后写入 R2 不可变对象，最后登记 D1 `revisions`。R2 key 包含组织、页面和 revision ID；D1 保存 generation、collab seq、对象引用和内容哈希。
+
+恢复版本采用新 generation，不能把旧 update 直接覆盖到当前 Y.Doc：
+
+```text
+flush 当前客户端
+→ 保存恢复前 Revision
+→ 读取并校验目标 R2 快照
+→ 初始化尚未使用的新 generation DocumentRoom
+→ 条件更新 pages.current_generation
+→ 关闭旧 generation WebSocket
+→ 旧 HTTP ticket 收到 document_rebased
+→ 所有客户端重新取票并连接新 generation
+```
+
+新 generation 在 D1 切换前完成初始化；页面更新使用旧 generation 作为 compare-and-swap 条件，防止两个恢复操作同时生效。旧 generation 后续即使收到迟到 update，也不再是页面权威，且不能污染新 generation。
+
 RandallFlare 的 `state.storage.sql` 是异步接口，因此所有查询和写入都必须显式 `await`。代码仍保持 Cloudflare 可接受的调用形状，但部署目标以 RandallFlare 行为为准。
 
 ## 当前 RandallFlare 适配

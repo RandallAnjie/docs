@@ -13,6 +13,7 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 - 短期 HMAC 协作票据、同源校验和 256 KiB frame 上限。
 - 每篇页面、每个 generation 一个 Durable Object。
 - DO SQLite 增量持久化、重启恢复和阈值快照。
+- 手动版本、恢复前自动版本、R2 不可变快照和新 generation 安全恢复。
 - D1 第一版领域模型和版本化迁移。
 - R2 附件 binding 预留。
 - 权限版本检查和已打开连接的撤权关闭路径。
@@ -25,6 +26,8 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 ![Rdocs Phase 0 首页](docs/preview.png)
 
 `docs.bigrandall.io` 暂未切换。Rdocs 已通过 HTTP/Yjs 兼容通道提供无感自动保存、多人正文同步、在线状态和协作者光标；RandallFlare 原生 WebSocket 链路仍待平台修复，详见 [RandallFlare 平台问题清单](docs/RANDALLFLARE_PLATFORM_ISSUES.md)。当前仍是匿名技术预览，不应保存敏感或正式资料。
+
+完整需求对照、完成度和后续固定顺序见 [Rdocs 实施进度](docs/ROADMAP_STATUS.md)。
 
 ## 架构
 

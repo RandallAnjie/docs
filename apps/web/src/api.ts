@@ -1,8 +1,11 @@
 import type {
   CollabTicketResponse,
   CreatePageResponse,
+  CreateRevisionResponse,
   ListPagesResponse,
+  ListRevisionsResponse,
   PageSummary,
+  RestoreRevisionResponse,
 } from '@rdocs/shared';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -49,6 +52,27 @@ export function updatePageTitle(
     method: 'PATCH',
     keepalive: options.keepalive,
     body: JSON.stringify({ title }),
+  });
+}
+
+export function listRevisions(pageId: string): Promise<ListRevisionsResponse> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/revisions`);
+}
+
+export function createRevision(
+  pageId: string,
+  label: string,
+  description = '',
+): Promise<CreateRevisionResponse> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/revisions`, {
+    method: 'POST',
+    body: JSON.stringify({ label, description }),
+  });
+}
+
+export function restoreRevision(revisionId: string): Promise<RestoreRevisionResponse> {
+  return request(`/api/revisions/${encodeURIComponent(revisionId)}/restore`, {
+    method: 'POST',
   });
 }
 

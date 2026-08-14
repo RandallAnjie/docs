@@ -13,6 +13,7 @@ import {
   encodeHttpSyncResponse,
   MAX_COLLAB_FRAME_BYTES,
   MAX_HTTP_SYNC_BODY_BYTES,
+  MAX_REVISION_SNAPSHOT_BYTES,
 } from '@rdocs/shared';
 
 import type { Env } from './env';
@@ -37,8 +38,17 @@ interface SocketAttachment {
 }
 
 interface SnapshotRow {
+  id?: string;
   seq: number;
   state_blob: string;
+}
+
+interface SnapshotArtifact {
+  id: string;
+  seq: number;
+  state: Uint8Array;
+  stateVector: Uint8Array;
+  contentHash: string;
 }
 
 interface UpdateRow {
@@ -96,6 +106,11 @@ function awarenessClientIds(payload: Uint8Array): number[] {
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', toArrayBuffer(bytes)));
+  return [...digest].map((value) => value.toString(16).padStart(2, '0')).join('');
 }
 
 function containsYjsChanges(update: Uint8Array): boolean {
@@ -228,6 +243,38 @@ export class DocumentRoom {
     if (url.pathname === '/internal/snapshot' && request.method === 'POST') {
       await this.createSnapshot('manual');
       return Response.json({ ok: true, seq: this.currentSeq });
+    }
+
+    if (url.pathname === '/internal/export-snapshot' && request.method === 'POST') {
+      const snapshot = await this.createSnapshot('manual', request.headers.get('x-rdocs-actor-id'));
+      if (snapshot.state.byteLength > MAX_REVISION_SNAPSHOT_BYTES) {
+        return new Response('Revision snapshot too large', { status: 413 });
+      }
+      return new Response(toArrayBuffer(snapshot.state), {
+        headers: {
+          'content-type': 'application/octet-stream',
+          'cache-control': 'no-store',
+          'x-rdocs-snapshot-id': snapshot.id,
+          'x-rdocs-snapshot-seq': String(snapshot.seq),
+          'x-rdocs-content-hash': snapshot.contentHash,
+        },
+      });
+    }
+
+    if (url.pathname === '/internal/initialize-generation' && request.method === 'POST') {
+      return this.initializeGeneration(request);
+    }
+
+    if (url.pathname === '/internal/rebase' && request.method === 'POST') {
+      this.editingEnabled = false;
+      for (const socket of this.sockets) {
+        try {
+          socket.close(4410, 'document_rebased');
+        } catch {
+          // Socket already closed.
+        }
+      }
+      return Response.json({ ok: true });
     }
 
     if (url.pathname === '/internal/http-sync' && request.method === 'POST') {
@@ -461,22 +508,98 @@ export class DocumentRoom {
     await this.createSnapshot('automatic');
   }
 
-  private async createSnapshot(kind: 'automatic' | 'manual'): Promise<void> {
+  private async createSnapshot(
+    kind: 'automatic' | 'manual' | 'restore',
+    createdBy: string | null = null,
+  ): Promise<SnapshotArtifact> {
     const state = Y.encodeStateAsUpdate(this.document);
     const vector = Y.encodeStateVector(this.document);
+    const id = crypto.randomUUID();
+    const contentHash = await sha256Hex(state);
     await this.state.storage.sql.exec(
       `INSERT INTO snapshots(id, seq, state_blob, state_vector, kind, created_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      crypto.randomUUID(),
+      id,
       this.currentSeq,
       bytesToBase64(state),
       bytesToBase64(vector),
       kind,
-      null,
+      createdBy,
       Date.now(),
     );
     this.updatesSinceSnapshot = 0;
     this.bytesSinceSnapshot = 0;
+    return { id, seq: this.currentSeq, state, stateVector: vector, contentHash };
+  }
+
+  private async initializeGeneration(request: Request): Promise<Response> {
+    const declaredLength = Number(request.headers.get('content-length') ?? 0);
+    if (declaredLength > MAX_REVISION_SNAPSHOT_BYTES) {
+      return new Response('Revision snapshot too large', { status: 413 });
+    }
+
+    const state = new Uint8Array(await request.arrayBuffer());
+    if (state.byteLength === 0 || state.byteLength > MAX_REVISION_SNAPSHOT_BYTES) {
+      return new Response('Invalid revision snapshot size', { status: 400 });
+    }
+    const requestedHash = request.headers.get('x-rdocs-content-hash') ?? '';
+    const contentHash = await sha256Hex(state);
+    if (!requestedHash || requestedHash !== contentHash) {
+      return new Response('Revision snapshot hash mismatch', { status: 400 });
+    }
+
+    const existingSnapshots = (await this.state.storage.sql
+      .exec('SELECT id, seq, state_blob FROM snapshots ORDER BY seq DESC LIMIT 1')
+      .toArray()) as unknown as SnapshotRow[];
+    const existing = existingSnapshots[0];
+    if (existing) {
+      const existingState = base64ToBytes(existing.state_blob);
+      if ((await sha256Hex(existingState)) !== contentHash) {
+        return new Response('Generation already initialized', { status: 409 });
+      }
+      Y.applyUpdate(this.document, existingState, 'restore-initialize');
+      return Response.json({ ok: true, idempotent: true, contentHash });
+    }
+
+    const validationDocument = new Y.Doc();
+    try {
+      Y.applyUpdate(validationDocument, state, 'restore-validation');
+    } catch {
+      return new Response('Invalid Yjs revision snapshot', { status: 400 });
+    } finally {
+      validationDocument.destroy();
+    }
+
+    const snapshotId = crypto.randomUUID();
+    const vectorDocument = new Y.Doc();
+    Y.applyUpdate(vectorDocument, state, 'restore-vector');
+    const stateVector = Y.encodeStateVector(vectorDocument);
+    vectorDocument.destroy();
+    await this.state.storage.sql.exec(
+      `INSERT INTO snapshots(id, seq, state_blob, state_vector, kind, created_by, created_at)
+       VALUES (?, 0, ?, ?, 'restore', ?, ?)`,
+      snapshotId,
+      bytesToBase64(state),
+      bytesToBase64(stateVector),
+      request.headers.get('x-rdocs-actor-id'),
+      Date.now(),
+    );
+    await this.state.storage.sql.exec(
+      `INSERT OR REPLACE INTO room_meta(key, value) VALUES
+       ('page_id', ?),
+       ('generation', ?),
+       ('restored_from_revision', ?),
+       ('content_hash', ?)`,
+      request.headers.get('x-rdocs-page-id') ?? '',
+      request.headers.get('x-rdocs-generation') ?? '',
+      request.headers.get('x-rdocs-revision-id') ?? '',
+      contentHash,
+    );
+    Y.applyUpdate(this.document, state, 'restore-initialize');
+    this.currentSeq = 0;
+    this.updatesSinceSnapshot = 0;
+    this.bytesSinceSnapshot = 0;
+    return Response.json({ ok: true, idempotent: false, contentHash });
   }
 
   private rememberAwarenessClients(socket: WebSocket, ids: number[]): void {

@@ -6,7 +6,7 @@ import {
 import { applyAwarenessUpdate, type Awareness, encodeAwarenessUpdate } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
-export type HttpCollaborationState = 'synced' | 'disconnected' | 'forbidden';
+export type HttpCollaborationState = 'synced' | 'disconnected' | 'forbidden' | 'rebased';
 
 interface HttpCollaborationOptions {
   pageId: string;
@@ -68,6 +68,13 @@ export class HttpCollaborationTransport {
     this.abortController?.abort();
   }
 
+  async flushNow(): Promise<void> {
+    while (this.running && !this.stopped) {
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 10));
+    }
+    if (!this.stopped) await this.syncNow();
+  }
+
   async syncNow(): Promise<void> {
     if (this.stopped) return;
     globalThis.clearTimeout(this.timer);
@@ -90,6 +97,11 @@ export class HttpCollaborationTransport {
       }
       if (response.status === 403) {
         this.onState('forbidden');
+        this.stop();
+        return;
+      }
+      if (response.status === 409 && response.headers.has('x-rdocs-document-generation')) {
+        this.onState('rebased');
         this.stop();
         return;
       }

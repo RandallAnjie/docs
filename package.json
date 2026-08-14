@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke:collab": "node tests/collab-smoke.mjs",
+    "smoke:revision": "node tests/revision-smoke.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "deploy:randallflare": "npm run build && node /develop/bigrandall.io/rrangler/bin/rrangler.mjs deploy",
     "migrate:randallflare": "node /develop/bigrandall.io/rrangler/bin/rrangler.mjs d1 migrations apply rdocs-db --dir migrations"
