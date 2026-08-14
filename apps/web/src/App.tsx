@@ -74,10 +74,7 @@ function Welcome({ identity }: { identity: LocalIdentity }) {
     <main className="welcome-shell">
       <nav className="welcome-nav">
         <Brand />
-        <div className="identity-chip">
-          <span className="identity-dot" style={{ background: identity.color }} />
-          {identity.name}
-        </div>
+        <IdentityBubble identity={identity} />
       </nav>
       <section className="welcome-content">
         <div className="eyebrow">
@@ -114,15 +111,15 @@ function Welcome({ identity }: { identity: LocalIdentity }) {
 }
 
 function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdentity }) {
-  const [page, setPage] = useState<PageSummary | null>(null);
+  const [bootstrap, setBootstrap] = useState<{ page: PageSummary; ticket: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
-    getPage(pageId)
-      .then(({ page: loaded }) => {
-        if (active) setPage(loaded);
+    Promise.all([getPage(pageId), getCollabTicket(pageId, identity)])
+      .then(([{ page }, { ticket }]) => {
+        if (active) setBootstrap({ page, ticket });
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '页面加载失败');
@@ -133,19 +130,27 @@ function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdenti
     return () => {
       active = false;
     };
-  }, [pageId]);
+  }, [identity, pageId]);
 
   if (loading) return <LoadingScreen />;
-  if (!page || error) return <NotFound message={error ?? '页面不存在'} />;
+  if (!bootstrap || error) return <NotFound message={error ?? '页面不存在'} />;
 
-  return <DocumentWorkspace initialPage={page} identity={identity} />;
+  return (
+    <DocumentWorkspace
+      initialPage={bootstrap.page}
+      initialTicket={bootstrap.ticket}
+      identity={identity}
+    />
+  );
 }
 
 function DocumentWorkspace({
   initialPage,
+  initialTicket,
   identity,
 }: {
   initialPage: PageSummary;
+  initialTicket: string;
   identity: LocalIdentity;
 }) {
   const [page, setPage] = useState(initialPage);
@@ -153,57 +158,44 @@ function DocumentWorkspace({
   const [savingTitle, setSavingTitle] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [collab, setCollab] = useState<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null);
-  const [collabError, setCollabError] = useState<string | null>(null);
   const [onlineCount, setOnlineCount] = useState(1);
   const [copied, setCopied] = useState(false);
   const titleTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    let disposed = false;
-    let provider: WebsocketProvider | undefined;
     const ydoc = new Y.Doc();
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const provider = new WebsocketProvider(
+      `${protocol}//${window.location.host}/collab`,
+      page.id,
+      ydoc,
+      {
+        params: { ticket: initialTicket },
+        maxBackoffTime: 2_000,
+      },
+    );
 
-    getCollabTicket(page.id, identity)
-      .then(({ ticket }) => {
-        if (disposed) return;
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        provider = new WebsocketProvider(
-          `${protocol}//${window.location.host}/collab`,
-          page.id,
-          ydoc,
-          {
-            params: { ticket },
-            maxBackoffTime: 10_000,
-          },
-        );
-
-        provider.awareness.setLocalStateField('user', {
-          name: identity.name,
-          color: identity.color,
-        });
-        provider.on('status', ({ status }: { status: string }) => {
-          setConnection(status === 'connected' ? 'connected' : 'disconnected');
-        });
-        provider.on('sync', (synced: boolean) => {
-          if (synced) setConnection('synced');
-        });
-        provider.awareness.on('change', () => {
-          setOnlineCount(provider?.awareness.getStates().size ?? 1);
-        });
-        provider.ws?.addEventListener('error', () => setConnection('error'));
-        setCollab({ ydoc, provider });
-      })
-      .catch((reason) => {
-        setConnection('error');
-        setCollabError(reason instanceof Error ? reason.message : '无法连接协作服务');
-      });
+    provider.awareness.setLocalStateField('user', {
+      name: identity.name,
+      color: identity.color,
+    });
+    provider.on('status', ({ status }: { status: string }) => {
+      setConnection(status === 'connected' ? 'connected' : 'disconnected');
+    });
+    provider.on('sync', (synced: boolean) => {
+      if (synced) setConnection('synced');
+    });
+    provider.awareness.on('change', () => {
+      setOnlineCount(provider.awareness.getStates().size || 1);
+    });
+    provider.ws?.addEventListener('error', () => setConnection('error'));
+    setCollab({ ydoc, provider });
 
     return () => {
-      disposed = true;
-      provider?.destroy();
+      provider.destroy();
       ydoc.destroy();
     };
-  }, [identity, page.id]);
+  }, [identity, initialTicket, page.id]);
 
   const saveTitle = useCallback(async () => {
     const normalized = title.trim() || '未命名页面';
@@ -272,7 +264,7 @@ function DocumentWorkspace({
           </a>
         </nav>
         <div className="sidebar-footer">
-          <span className="identity-dot" style={{ background: identity.color }} />
+          <IdentityBubble identity={identity} compact />
           <span>
             <strong>{identity.name}</strong>
             <small>匿名技术预览</small>
@@ -291,7 +283,7 @@ function DocumentWorkspace({
           <div className="header-actions">
             <ConnectionPill state={connection} />
             <div className="avatars" title={`${onlineCount} 人在线`}>
-              <span style={{ background: identity.color }}>{identity.name.slice(-2)}</span>
+              <span style={{ background: identity.color }}>{identityMonogram(identity)}</span>
               {onlineCount > 1 && <b>+{onlineCount - 1}</b>}
             </div>
             <button className="header-button" onClick={share}>
@@ -327,7 +319,7 @@ function DocumentWorkspace({
             ) : (
               <div className="editor-loading">
                 <div className="loading-mark" />
-                <span>{collabError ?? '正在建立加密协作连接…'}</span>
+                <span>正在建立加密协作连接…</span>
               </div>
             )}
           </article>
@@ -486,6 +478,29 @@ function Brand({ compact = false }: { compact?: boolean }) {
       </span>
       <strong>Rdocs</strong>
     </a>
+  );
+}
+
+function identityMonogram(identity: LocalIdentity): string {
+  return identity.name.trim().slice(-2) || '访客';
+}
+
+function IdentityBubble({
+  identity,
+  compact = false,
+}: {
+  identity: LocalIdentity;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      className={`identity-bubble ${compact ? 'compact' : ''}`}
+      style={{ background: identity.color }}
+      title={identity.name}
+      aria-label={`当前用户：${identity.name}`}
+    >
+      {identityMonogram(identity)}
+    </span>
   );
 }
 
