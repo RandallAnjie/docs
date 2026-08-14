@@ -12,6 +12,7 @@ import {
 import type { AuthMode, AuthSessionResponse, AuthUserSummary } from '@rdocs/shared';
 
 import type { Env } from './env';
+import { findRegistrationInvitation, registrationInvitationStillValid } from './tenancy';
 
 const SESSION_COOKIE = '__Host-rdocs_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -48,6 +49,7 @@ interface ChallengeRow {
   pending_user_id: string | null;
   pending_email: string | null;
   pending_display_name: string | null;
+  invitation_id: string | null;
   expires_at: number;
   consumed_at: number | null;
 }
@@ -234,7 +236,7 @@ async function findChallenge(
 ): Promise<ChallengeRow | null> {
   return env.DB.prepare(
     `SELECT id, purpose, challenge, user_id, pending_user_id, pending_email,
-            pending_display_name, expires_at, consumed_at
+            pending_display_name, invitation_id, expires_at, consumed_at
        FROM auth_challenges
       WHERE id = ? AND purpose = ?`,
   )
@@ -336,27 +338,35 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
     email?: unknown;
     displayName?: unknown;
     enrollmentSecret?: unknown;
+    invitationToken?: unknown;
   }>(request);
   if (!body) return error('请求内容无效或过大', 400);
 
   let userId: string;
   let email: string;
   let displayName: string;
+  let invitationId: string | null = null;
   if (auth.user) {
     userId = auth.user.id;
     email = auth.user.email;
     displayName = auth.user.displayName;
   } else {
-    if (!configuration.enrollmentSecret) return error('管理员尚未开放新设备登记', 503);
     email = normalizedEmail(body.email) ?? '';
     displayName = normalizedDisplayName(body.displayName) ?? '';
     if (!email) return error('请输入有效邮箱', 400);
     if (!displayName) return error('请输入 1–80 个字符的名称', 400);
-    if (
-      typeof body.enrollmentSecret !== 'string' ||
-      !(await secretsEqual(body.enrollmentSecret, configuration.enrollmentSecret))
-    ) {
-      return error('设备登记码无效', 403);
+    if (typeof body.invitationToken === 'string' && body.invitationToken) {
+      const invitation = await findRegistrationInvitation(env, body.invitationToken, email);
+      if (!invitation) return error('邀请不存在、已撤销或邮箱不匹配', 403);
+      invitationId = invitation.id;
+    } else {
+      if (!configuration.enrollmentSecret) return error('管理员尚未开放新设备登记', 503);
+      if (
+        typeof body.enrollmentSecret !== 'string' ||
+        !(await secretsEqual(body.enrollmentSecret, configuration.enrollmentSecret))
+      ) {
+        return error('设备登记码无效', 403);
+      }
     }
     const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?')
       .bind(email)
@@ -397,8 +407,8 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
   await env.DB.prepare(
     `INSERT INTO auth_challenges(
       id, purpose, challenge, user_id, pending_user_id, pending_email, pending_display_name,
-      expires_at, created_at, consumed_at
-    ) VALUES (?, 'registration', ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      invitation_id, expires_at, created_at, consumed_at
+    ) VALUES (?, 'registration', ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   )
     .bind(
       challengeId,
@@ -407,6 +417,7 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
       auth.user ? null : userId,
       auth.user ? null : email,
       auth.user ? null : displayName,
+      invitationId,
       now + CHALLENGE_TTL_MS,
       now,
     )
@@ -440,8 +451,6 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
   if (!verification?.verified || !verification.registrationInfo) {
     return error('无法验证设备密钥', 401);
   }
-  if (!(await consumeChallenge(env, challenge))) return error('设备登记请求已被使用', 409);
-
   const registration = verification.registrationInfo;
   const credential = registration.credential;
   const authenticated = await authenticateRequest(request, env);
@@ -456,7 +465,18 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
       return error('设备登记用户信息缺失', 409);
     }
     userId = challenge.pending_user_id;
+    if (
+      challenge.invitation_id &&
+      !(await registrationInvitationStillValid(
+        env,
+        challenge.invitation_id,
+        challenge.pending_email,
+      ))
+    ) {
+      return error('邀请已失效，请重新获取邀请', 409);
+    }
   }
+  if (!(await consumeChallenge(env, challenge))) return error('设备登记请求已被使用', 409);
 
   const now = Date.now();
   const credentialInsert = env.DB.prepare(
@@ -513,8 +533,8 @@ async function authenticationOptions(request: Request, env: Env): Promise<Respon
   await env.DB.prepare(
     `INSERT INTO auth_challenges(
       id, purpose, challenge, user_id, pending_user_id, pending_email, pending_display_name,
-      expires_at, created_at, consumed_at
-    ) VALUES (?, 'authentication', ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+      invitation_id, expires_at, created_at, consumed_at
+    ) VALUES (?, 'authentication', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
   )
     .bind(challengeId, options.challenge, now + CHALLENGE_TTL_MS, now)
     .run();

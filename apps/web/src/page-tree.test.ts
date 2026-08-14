@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { PageSummary } from '@rdocs/shared';
 
-import { ancestorPageIds, buildPageTree } from './page-tree';
+import { ancestorPageIds, buildPageTree, descendantPageIds } from './page-tree';
 
 function page(id: string, parentId: string | null): PageSummary {
   return {
@@ -33,6 +33,7 @@ describe('page tree', () => {
     expect(tree[0]?.children[0]?.id).toBe('child-a');
     expect(tree[0]?.children[0]?.children[0]?.id).toBe('grandchild-a');
     expect([...ancestorPageIds('grandchild-a', pages)]).toEqual(['child-a', 'root-a']);
+    expect([...descendantPageIds('root-a', pages)]).toEqual(['child-a', 'grandchild-a']);
   });
 
   it('keeps orphaned and cyclic nodes reachable at the root', () => {
