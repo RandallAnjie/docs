@@ -46,6 +46,10 @@ function navigateToPage(pageId: string): void {
   window.location.assign(`/p/${encodeURIComponent(pageId)}`);
 }
 
+function normalizedPageTitle(value: string): string {
+  return value.trim() || '未命名页面';
+}
+
 export function App() {
   const pageId = currentPageId();
   const identity = useMemo(getLocalIdentity, []);
@@ -155,12 +159,14 @@ function DocumentWorkspace({
 }) {
   const [page, setPage] = useState(initialPage);
   const [title, setTitle] = useState(page.title);
-  const [savingTitle, setSavingTitle] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [collab, setCollab] = useState<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null);
   const [onlineCount, setOnlineCount] = useState(1);
   const [copied, setCopied] = useState(false);
   const titleTimer = useRef<number | undefined>(undefined);
+  const latestTitle = useRef(page.title);
+  const savedTitle = useRef(page.title);
+  const titleSaveRunning = useRef(false);
 
   useEffect(() => {
     const ydoc = new Y.Doc();
@@ -197,23 +203,48 @@ function DocumentWorkspace({
     };
   }, [identity, initialTicket, page.id]);
 
-  const saveTitle = useCallback(async () => {
-    const normalized = title.trim() || '未命名页面';
-    if (normalized === page.title) return;
-    setSavingTitle(true);
+  const flushTitle = useCallback(async () => {
+    if (titleSaveRunning.current) return;
+    titleSaveRunning.current = true;
     try {
-      const { page: updated } = await updatePageTitle(page.id, normalized);
-      setPage(updated);
-      setTitle(updated.title);
+      while (normalizedPageTitle(latestTitle.current) !== savedTitle.current) {
+        const candidate = normalizedPageTitle(latestTitle.current);
+        try {
+          const { page: updated } = await updatePageTitle(page.id, candidate);
+          savedTitle.current = updated.title;
+          setPage(updated);
+        } catch {
+          window.clearTimeout(titleTimer.current);
+          titleTimer.current = window.setTimeout(() => void flushTitle(), 1_500);
+          return;
+        }
+      }
     } finally {
-      setSavingTitle(false);
+      titleSaveRunning.current = false;
     }
-  }, [page, title]);
+  }, [page.id]);
 
-  const scheduleTitleSave = () => {
+  const queueTitleSave = (nextTitle: string) => {
+    latestTitle.current = nextTitle;
     window.clearTimeout(titleTimer.current);
-    titleTimer.current = window.setTimeout(() => void saveTitle(), 500);
+    titleTimer.current = window.setTimeout(() => void flushTitle(), 500);
   };
+
+  useEffect(() => {
+    const persistBeforeExit = () => {
+      const candidate = normalizedPageTitle(latestTitle.current);
+      if (candidate !== savedTitle.current) {
+        void updatePageTitle(page.id, candidate, { keepalive: true });
+      }
+    };
+
+    window.addEventListener('pagehide', persistBeforeExit);
+    return () => {
+      window.removeEventListener('pagehide', persistBeforeExit);
+      window.clearTimeout(titleTimer.current);
+      persistBeforeExit();
+    };
+  }, [page.id]);
 
   const share = async () => {
     await navigator.clipboard.writeText(window.location.href);
@@ -303,17 +334,13 @@ function DocumentWorkspace({
               className="title-input"
               value={title}
               onChange={(event) => {
-                setTitle(event.target.value);
-                scheduleTitleSave();
+                const nextTitle = event.target.value;
+                setTitle(nextTitle);
+                queueTitleSave(nextTitle);
               }}
-              onBlur={() => void saveTitle()}
+              onBlur={() => void flushTitle()}
               aria-label="页面标题"
             />
-            <div className="document-meta">
-              <span>{savingTitle ? '正在保存标题…' : '所有更改会自动保存'}</span>
-              <i />
-              <span>Generation {page.currentGeneration}</span>
-            </div>
             {collab ? (
               <CollaborativeEditor collab={collab} identity={identity} />
             ) : (
@@ -370,7 +397,12 @@ function CollaborativeEditor({
       Collaboration.configure({ document: collab.ydoc }),
       CollaborationCaret.configure({
         provider: collab.provider,
-        user: { name: identity.name, color: identity.color },
+        user: {
+          name: identity.name,
+          monogram: identityMonogram(identity),
+          color: identity.color,
+        },
+        render: renderCollaborationCaret,
       }),
     ],
     editorProps: {
@@ -483,6 +515,24 @@ function Brand({ compact = false }: { compact?: boolean }) {
 
 function identityMonogram(identity: LocalIdentity): string {
   return identity.name.trim().slice(-2) || '访客';
+}
+
+function renderCollaborationCaret(user: Record<string, unknown>): HTMLElement {
+  const name = typeof user.name === 'string' ? user.name : '协作者';
+  const monogram = typeof user.monogram === 'string' ? user.monogram.slice(-2) : name.slice(-2);
+  const color = typeof user.color === 'string' ? user.color : '#5f7f91';
+  const caret = document.createElement('span');
+  const bubble = document.createElement('span');
+
+  caret.classList.add('collaboration-carets__caret');
+  caret.style.borderColor = color;
+  bubble.classList.add('collaboration-carets__label');
+  bubble.style.backgroundColor = color;
+  bubble.title = name;
+  bubble.setAttribute('aria-label', `协作者：${name}`);
+  bubble.textContent = monogram || '协';
+  caret.append(bubble);
+  return caret;
 }
 
 function IdentityBubble({

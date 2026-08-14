@@ -547,20 +547,6 @@ button {
   line-height: 1.1;
   padding: 0;
 }
-.document-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #aaa69d;
-  font-size: 10px;
-  margin-top: 13px;
-}
-.document-meta i {
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: #aaa69d;
-}
 .editor-frame {
   margin-top: 37px;
 }
@@ -637,6 +623,51 @@ button {
   line-height: 1.3;
   letter-spacing: -0.4px;
   margin: 1.6em 0 0.55em;
+}
+.collaboration-carets__caret {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 1.35em;
+  margin: 0 -1px;
+  border-left: 2px solid;
+  vertical-align: text-bottom;
+  pointer-events: none;
+}
+.collaboration-carets__label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 5px);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--paper);
+  border-radius: 50%;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.2px;
+  box-shadow: 0 4px 12px #29282428;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.collaboration-carets__label::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: calc(100% - 1px);
+  width: 5px;
+  height: 5px;
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+.collaboration-carets__selection {
+  border-radius: 2px;
+  opacity: 0.22;
 }
 .rdocs-editor h1 {
   font-size: 28px;
