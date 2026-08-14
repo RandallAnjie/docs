@@ -1,0 +1,1 @@
+export const MAX_COLLAB_FRAME_BYTES = 256 * 1024;

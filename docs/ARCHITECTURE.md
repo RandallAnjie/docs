@@ -37,7 +37,7 @@ document:{pageId}:generation:{generation}
 POST /api/pages/{pageId}/collab-ticket
 ```
 
-Worker 对页面状态和 ACL version 做当前读取，返回 5 分钟有效的 HMAC ticket。客户端随后连接：
+Worker 对页面状态和 ACL version 做当前读取，返回 5 分钟有效的 HMAC ticket。客户端优先连接：
 
 ```text
 GET /collab/{pageId}?ticket=...
@@ -46,13 +46,23 @@ Upgrade: websocket
 
 二进制消息兼容 y-websocket：外层类型 `0` 为 sync、`1` 为 awareness；sync 内层支持 step 1、step 2 和 update。应用限制单 frame 最大 256 KiB。
 
+为兼容 RandallFlare 当前的浏览器 WebSocket 和 DO peer broadcast 问题，客户端同时启动应用层 HTTP 同步：
+
+```text
+POST /api/pages/{pageId}/collaboration-sync
+Authorization: Bearer <collab-ticket>
+Content-Type: application/octet-stream
+```
+
+请求携带客户端 state vector、尚未被服务端确认的 Yjs update 和 awareness update；响应返回缺失的服务端 update、服务端 state vector 和当前 awareness。正文输入约 25 ms 后上传，页面可见时约每 350 ms 拉取远端变化，隐藏时降为约 1500 ms。一次瞬时失败不会把界面切回“重新连接中”，票据过期会在后台静默续签；超过 10 秒未续心跳的 HTTP awareness 会被清理，避免幽灵协作者和残留光标。
+
 更新的目标顺序是：
 
 ```text
 validate → deduplicate → persist SQLite → apply Y.Doc → broadcast
 ```
 
-只有完成 SQLite 写入的更新才允许广播。当前 RandallFlare peer broadcast 阻塞使这一流程尚未通过验收。
+只有完成 SQLite 写入的更新才允许进入 Y.Doc、WebSocket broadcast 和 HTTP 响应。HTTP 与 WebSocket 复用同一个 DocumentRoom、Y.Doc 和 SQLite 更新序列；D1 只负责 ACL 元数据，不承载高频正文轮询。Worker 对协作授权最多缓存 2 秒以降低轮询读取压力，权限变更会主动清除当前 isolate 缓存并通知 DocumentRoom。
 
 ## 持久化与恢复
 
@@ -72,5 +82,6 @@ RandallFlare 的 `state.storage.sql` 是异步接口，因此所有查询和写�
 - DO binding name 与 class name 都使用 `DocumentRoom`，规避远端 dispatch 对两种名称解析不一致的问题。
 - RandallFlare 当前没有真正的 WebSocket hibernation eviction，因此应用不依赖休眠期间仅内存保存正文。
 - hibernation-style 与普通 `server.accept()` 两条路径都已实测 peer broadcast 不送达；这是当前平台阻塞。
+- Rdocs 已提供 Worker→DocumentRoom HTTP 二进制同步作为兼容路径；WebSocket 仍保留并在平台修复后自然成为更低延迟的主路径。
 
 这些适配都位于 Rdocs 仓库内，没有修改 RandallFlare 平台实现。

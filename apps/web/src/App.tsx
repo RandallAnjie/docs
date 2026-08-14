@@ -33,6 +33,7 @@ import * as Y from 'yjs';
 import type { PageSummary } from '@rdocs/shared';
 
 import { createPage, getCollabTicket, getPage, updatePageTitle } from './api';
+import { HttpCollaborationTransport } from './http-collaboration';
 import { getLocalIdentity, type LocalIdentity } from './identity';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
@@ -169,6 +170,9 @@ function DocumentWorkspace({
   const titleSaveRunning = useRef(false);
 
   useEffect(() => {
+    let disposed = false;
+    let httpSynced = false;
+    let terminalError = false;
     const ydoc = new Y.Doc();
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const provider = new WebsocketProvider(
@@ -186,18 +190,46 @@ function DocumentWorkspace({
       color: identity.color,
     });
     provider.on('status', ({ status }: { status: string }) => {
+      if (disposed || terminalError || httpSynced) return;
       setConnection(status === 'connected' ? 'connected' : 'disconnected');
     });
     provider.on('sync', (synced: boolean) => {
-      if (synced) setConnection('synced');
+      if (!disposed && !terminalError && synced) setConnection('synced');
     });
     provider.awareness.on('change', () => {
       setOnlineCount(provider.awareness.getStates().size || 1);
     });
-    provider.ws?.addEventListener('error', () => setConnection('error'));
+    provider.ws?.addEventListener('error', () => {
+      if (!disposed && !httpSynced && !terminalError) setConnection('disconnected');
+    });
+
+    const httpTransport = new HttpCollaborationTransport({
+      pageId: page.id,
+      document: ydoc,
+      awareness: provider.awareness,
+      ticket: initialTicket,
+      renewTicket: async () => (await getCollabTicket(page.id, identity)).ticket,
+      onState: (state) => {
+        if (disposed) return;
+        if (state === 'synced') {
+          httpSynced = true;
+          setConnection('synced');
+        } else if (state === 'forbidden') {
+          httpSynced = false;
+          terminalError = true;
+          setConnection('error');
+        } else {
+          httpSynced = false;
+          if (!provider.synced) setConnection('disconnected');
+        }
+      },
+    });
+    void httpTransport.start();
     setCollab({ ydoc, provider });
 
     return () => {
+      disposed = true;
+      httpTransport.stop();
       provider.destroy();
       ydoc.destroy();
     };

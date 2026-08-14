@@ -2,7 +2,7 @@
 
 记录时间：2026-08-14 UTC
 
-影响：阻塞 Rdocs Phase 0 和 `docs.bigrandall.io` 正式切换
+影响：阻塞 RandallFlare 原生 WebSocket 实时链路；Rdocs 已通过应用层 HTTP 同步缓解正文、自动保存和 presence 的用户影响，正式域名切换前仍应修复平台问题
 
 ## 结论一：Durable Object 多 WebSocket 广播
 
@@ -53,7 +53,7 @@ npm run smoke:collab
 3. owner-local 与 cross-node path 使用一致的 DO binding/class 解析。
 4. binary handler 的实际输入类型与兼容文档一致，或明确记录 `Blob` 差异。
 
-Rdocs 不会通过先广播后持久化、轮询 D1 或修改 RandallFlare 平台代码来掩盖此问题。
+Rdocs 不会通过先广播后持久化、轮询 D1 或修改 RandallFlare 平台代码来掩盖此问题。当前兼容方案由 Worker 将带 ticket 的二进制同步请求转发给同一个 DocumentRoom，仍然先写 DO SQLite 再应用和响应。
 
 ## 结论二：真实浏览器 WebSocket 握手被边缘取消
 
@@ -68,8 +68,10 @@ close code: 1006
 `y-websocket` Provider 可以达到 `status=connected`、`sync=true`，说明 Worker 业务校验和
 Yjs 协议路径本身可工作；浏览器传输路径仍需 RandallFlare 排查。
 
-该问题会让 UI 持续显示“重新连接中”，也会阻塞协作者光标、presence 和正文云端自动保存的
-真实浏览器端到端验收。
+该问题原本会让 UI 持续显示“重新连接中”，并阻塞协作者光标、presence 和正文云端自动保存的
+真实浏览器端到端验收。Rdocs 现在同时运行应用层 HTTP/Yjs 同步：输入约 25 ms 后上传、前台约
+350 ms 拉取远端 update 和 awareness，成功后由该通道维持“已同步”状态。此方案缓解用户影响，
+但不代表 RandallFlare 的 WebSocket 缺陷已经修复。
 
 ## 结论三：Git build 成功后未自动切换边缘版本
 
