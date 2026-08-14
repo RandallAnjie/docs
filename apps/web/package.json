@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@rdocs/shared": "*",
+    "@simplewebauthn/browser": "^13.3.0",
     "@tiptap/extension-collaboration": "latest",
     "@tiptap/extension-collaboration-caret": "latest",
     "@tiptap/react": "latest",

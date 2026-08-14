@@ -1,4 +1,5 @@
 import type {
+  AuthSessionResponse,
   CollabTicketResponse,
   CreatePageResponse,
   CreateRevisionResponse,
@@ -7,6 +8,12 @@ import type {
   PageSummary,
   RestoreRevisionResponse,
 } from '@rdocs/shared';
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+} from '@simplewebauthn/browser';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -18,6 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/api/auth/')) {
+      window.dispatchEvent(new Event('rdocs:auth-required'));
+    }
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `请求失败（${response.status}）`);
   }
@@ -88,4 +98,50 @@ export function getCollabTicket(
     method: 'POST',
     body: JSON.stringify({ actorId: actor.id, displayName: actor.name }),
   });
+}
+
+export function getAuthSession(): Promise<AuthSessionResponse> {
+  return request('/api/auth/session');
+}
+
+export function beginPasskeyRegistration(input: {
+  email: string;
+  displayName: string;
+  enrollmentSecret: string;
+}): Promise<{ challengeId: string; options: PublicKeyCredentialCreationOptionsJSON }> {
+  return request('/api/auth/passkey/registration/options', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function finishPasskeyRegistration(
+  challengeId: string,
+  response: RegistrationResponseJSON,
+): Promise<{ verified: true }> {
+  return request('/api/auth/passkey/registration/verify', {
+    method: 'POST',
+    body: JSON.stringify({ challengeId, response }),
+  });
+}
+
+export function beginPasskeyAuthentication(): Promise<{
+  challengeId: string;
+  options: PublicKeyCredentialRequestOptionsJSON;
+}> {
+  return request('/api/auth/passkey/authentication/options', { method: 'POST' });
+}
+
+export function finishPasskeyAuthentication(
+  challengeId: string,
+  response: AuthenticationResponseJSON,
+): Promise<{ verified: true }> {
+  return request('/api/auth/passkey/authentication/verify', {
+    method: 'POST',
+    body: JSON.stringify({ challengeId, response }),
+  });
+}
+
+export function logout(): Promise<{ ok: true }> {
+  return request('/api/auth/logout', { method: 'POST' });
 }

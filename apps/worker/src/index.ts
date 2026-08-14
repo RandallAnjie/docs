@@ -5,6 +5,7 @@ import {
   isPageId,
   MAX_HTTP_SYNC_BODY_BYTES,
   MAX_REVISION_SNAPSHOT_BYTES,
+  type AuthUserSummary,
   type PageSummary,
   type RevisionKind,
   type RevisionSummary,
@@ -12,6 +13,7 @@ import {
 
 import { DocumentRoom } from './document-room';
 import type { Env } from './env';
+import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
 import { isCollaborationOriginAllowed } from './origins';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
 
@@ -64,6 +66,7 @@ interface RestoreOperationRow {
   organization_id: string;
   page_id: string;
   revision_id: string;
+  actor_id: string | null;
   source_generation: number;
   target_generation: number | null;
   previous_revision_id: string;
@@ -171,6 +174,7 @@ async function captureRevision(
     label: string | null;
     description: string | null;
     revisionId?: string;
+    createdBy?: string;
   },
 ): Promise<RevisionSummary> {
   if (options.revisionId) {
@@ -202,6 +206,7 @@ async function captureRevision(
   if (exportedHash !== contentHash) throw new Error('revision_snapshot_hash');
 
   const revisionId = options.revisionId ?? crypto.randomUUID();
+  const createdBy = options.createdBy ?? SYSTEM_USER_ID;
   const snapshotRef = `organizations/${page.organizationId}/pages/${page.id}/revisions/${revisionId}.yjs`;
   const createdAt = Date.now();
   await env.ATTACHMENTS.put(snapshotRef, toArrayBuffer(snapshot), {
@@ -233,7 +238,7 @@ async function captureRevision(
         options.description,
         snapshotRef,
         contentHash,
-        SYSTEM_USER_ID,
+        createdBy,
         createdAt,
       )
       .run();
@@ -251,7 +256,7 @@ async function captureRevision(
     label: options.label,
     description: options.description,
     contentHash,
-    createdBy: SYSTEM_USER_ID,
+    createdBy,
     createdAt,
   };
 }
@@ -274,7 +279,12 @@ async function listRevisions(env: Env, pageId: string): Promise<Response> {
   return json({ revisions: rows.map(revisionFromRow) });
 }
 
-async function createRevision(request: Request, env: Env, pageId: string): Promise<Response> {
+async function createRevision(
+  request: Request,
+  env: Env,
+  pageId: string,
+  actorId: string,
+): Promise<Response> {
   const page = await findPage(env, pageId);
   if (!page) return error('页面不存在', 404);
   const body = (await request.json().catch(() => ({}))) as {
@@ -296,6 +306,7 @@ async function createRevision(request: Request, env: Env, pageId: string): Promi
     kind: 'manual',
     label: label || null,
     description: description || null,
+    createdBy: actorId,
   });
   return json({ revision }, { status: 201 });
 }
@@ -316,7 +327,7 @@ async function findRestoreOperation(
   idempotencyKey: string,
 ): Promise<RestoreOperationRow | null> {
   return env.DB.prepare(
-    `SELECT idempotency_key, organization_id, page_id, revision_id,
+    `SELECT idempotency_key, organization_id, page_id, revision_id, actor_id,
             source_generation, target_generation, previous_revision_id,
             status, lease_token, lease_expires_at, created_at, updated_at, completed_at
        FROM revision_restore_operations
@@ -404,7 +415,7 @@ async function finalizeRestoreOperation(
     )
       .bind(
         operation.target_generation,
-        SYSTEM_USER_ID,
+        operation.actor_id ?? SYSTEM_USER_ID,
         Date.now(),
         operation.page_id,
         operation.organization_id,
@@ -446,6 +457,7 @@ async function restoreRevision(
   request: Request,
   env: Env,
   revisionId: string,
+  actorId: string,
   context: ExecutionContext,
 ): Promise<Response> {
   const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? '';
@@ -466,16 +478,17 @@ async function restoreRevision(
   const previousRevisionId = crypto.randomUUID();
   const inserted = await env.DB.prepare(
     `INSERT OR IGNORE INTO revision_restore_operations(
-      idempotency_key, organization_id, page_id, revision_id, source_generation,
+      idempotency_key, organization_id, page_id, revision_id, actor_id, source_generation,
       target_generation, previous_revision_id, status, lease_token, lease_expires_at,
       created_at, updated_at, completed_at
-    ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'pending', ?, ?, ?, ?, NULL)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'pending', ?, ?, ?, ?, NULL)`,
   )
     .bind(
       idempotencyKey,
       page.organizationId,
       page.id,
       targetRevision.id,
+      actorId,
       page.currentGeneration,
       previousRevisionId,
       leaseToken,
@@ -490,7 +503,8 @@ async function restoreRevision(
   if (
     operation.organization_id !== page.organizationId ||
     operation.page_id !== page.id ||
-    operation.revision_id !== targetRevision.id
+    operation.revision_id !== targetRevision.id ||
+    (operation.actor_id !== null && operation.actor_id !== actorId)
   ) {
     return error('Idempotency-Key 已用于另一项恢复操作', 409);
   }
@@ -558,6 +572,7 @@ async function restoreRevision(
       label: '恢复前自动版本',
       description: `恢复版本 ${targetRevision.id} 前自动保存`,
       revisionId: operation.previous_revision_id,
+      createdBy: operation.actor_id ?? actorId,
     });
 
     let nextGeneration: number | null = null;
@@ -637,7 +652,7 @@ async function findPageForCollaboration(env: Env, pageId: string): Promise<PageS
   return page;
 }
 
-async function createPage(request: Request, env: Env): Promise<Response> {
+async function createPage(request: Request, env: Env, actorId: string): Promise<Response> {
   const body = (await request.json().catch(() => ({}))) as {
     title?: unknown;
     parentId?: unknown;
@@ -676,8 +691,8 @@ async function createPage(request: Request, env: Env): Promise<Response> {
       title,
       now.toString().padStart(20, '0'),
       EDITOR_SCHEMA_VERSION,
-      SYSTEM_USER_ID,
-      SYSTEM_USER_ID,
+      actorId,
+      actorId,
       now,
       now,
     ),
@@ -691,7 +706,12 @@ async function createPage(request: Request, env: Env): Promise<Response> {
   return json({ page }, { status: 201 });
 }
 
-async function updatePage(request: Request, env: Env, pageId: string): Promise<Response> {
+async function updatePage(
+  request: Request,
+  env: Env,
+  pageId: string,
+  actorId: string,
+): Promise<Response> {
   const body = (await request.json().catch(() => ({}))) as { title?: unknown };
   if (typeof body.title !== 'string') return error('title 必须是字符串', 400);
   const title = (body.title.trim() || '未命名页面').slice(0, MAX_TITLE_LENGTH);
@@ -699,13 +719,18 @@ async function updatePage(request: Request, env: Env, pageId: string): Promise<R
     `UPDATE pages SET title = ?, updated_by = ?, updated_at = ?
       WHERE id = ? AND deleted_at IS NULL`,
   )
-    .bind(title, SYSTEM_USER_ID, Date.now(), pageId)
+    .bind(title, actorId, Date.now(), pageId)
     .run();
   if (!result.meta.changes) return error('页面不存在', 404);
   return json({ page: await findPage(env, pageId) });
 }
 
-async function issueTicket(request: Request, env: Env, pageId: string): Promise<Response> {
+async function issueTicket(
+  request: Request,
+  env: Env,
+  pageId: string,
+  authenticatedUser: AuthUserSummary | null,
+): Promise<Response> {
   if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) {
     return error('协作服务尚未配置', 503);
   }
@@ -717,9 +742,11 @@ async function issueTicket(request: Request, env: Env, pageId: string): Promise<
     actorId?: unknown;
     displayName?: unknown;
   };
-  const actorId = typeof body.actorId === 'string' ? body.actorId.slice(0, 100) : '';
+  const actorId =
+    authenticatedUser?.id ?? (typeof body.actorId === 'string' ? body.actorId.slice(0, 100) : '');
   const displayName =
-    typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 60) : '';
+    authenticatedUser?.displayName ??
+    (typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 60) : '');
   if (!actorId || !displayName) return error('协作者身份无效', 400);
 
   const issuedAt = Date.now();
@@ -896,8 +923,20 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     });
   }
 
+  const authResponse = await handleAuthApi(request, env, context);
+  if (authResponse) return authResponse;
+  const auth = await authenticateRequest(request, env, context);
+  if (auth.mode === 'passkey' && !auth.user) return error('请先使用设备密钥登录', 401);
+  if (
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) &&
+    !isTrustedMutationOrigin(request, env)
+  ) {
+    return error('请求来源不允许', 403);
+  }
+  const actorId = auth.user?.id ?? SYSTEM_USER_ID;
+
   if (url.pathname === '/api/pages' && request.method === 'POST') {
-    return createPage(request, env);
+    return createPage(request, env, actorId);
   }
 
   if (url.pathname === '/api/pages' && request.method === 'GET') {
@@ -909,14 +948,14 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     const pageId = decodeURIComponent(pageRevisionsMatch[1]);
     if (!isPageId(pageId)) return error('页面 ID 无效', 400);
     if (request.method === 'GET') return listRevisions(env, pageId);
-    if (request.method === 'POST') return createRevision(request, env, pageId);
+    if (request.method === 'POST') return createRevision(request, env, pageId, actorId);
   }
 
   const restoreRevisionMatch = url.pathname.match(/^\/api\/revisions\/([^/]+)\/restore$/);
   if (restoreRevisionMatch?.[1] && request.method === 'POST') {
     const revisionId = decodeURIComponent(restoreRevisionMatch[1]);
     return isPageId(revisionId)
-      ? restoreRevision(request, env, revisionId, context)
+      ? restoreRevision(request, env, revisionId, actorId, context)
       : error('版本 ID 无效', 400);
   }
 
@@ -928,13 +967,15 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
       const page = await findPage(env, pageId);
       return page ? json({ page }) : error('页面不存在', 404);
     }
-    if (request.method === 'PATCH') return updatePage(request, env, pageId);
+    if (request.method === 'PATCH') return updatePage(request, env, pageId, actorId);
   }
 
   const ticketMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/collab-ticket$/);
   if (ticketMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(ticketMatch[1]);
-    return isPageId(pageId) ? issueTicket(request, env, pageId) : error('页面 ID 无效', 400);
+    return isPageId(pageId)
+      ? issueTicket(request, env, pageId, auth.user)
+      : error('页面 ID 无效', 400);
   }
 
   const httpSyncMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/collaboration-sync$/);
@@ -975,6 +1016,7 @@ function htmlResponse(): Response {
       'referrer-policy': 'strict-origin-when-cross-origin',
       'x-content-type-options': 'nosniff',
       'x-frame-options': 'DENY',
+      'permissions-policy': 'publickey-credentials-create=(self), publickey-credentials-get=(self)',
     },
   });
 }
