@@ -42,6 +42,16 @@ PATCH /api/pages/{pageId}   → 自动保存页面标题
 
 列表按 `sort_key`、`id` 稳定排序，当前技术预览最多返回 500 个页面。创建子页面前，Worker 会验证父页面存在且属于当前组织与空间。前端会防御性处理孤儿节点、自引用和循环父链，保证异常元数据不会让页面从导航中消失。
 
+## 设备密钥与应用会话
+
+Rdocs 不使用 GitHub OAuth，也不实现密码登录。正式登录采用 WebAuthn discoverable credential：浏览器和系统认证器在设备上生成并保管私钥，Rdocs 只在 D1 保存 credential ID、公钥、签名计数器和备份属性，不接触生物识别数据。
+
+首次设备登记使用管理员持有的高熵登记码完成 bootstrap；登记码只作为 RandallFlare secret 保存，不进入仓库或数据库。它只控制未登录用户的新账号登记，不参与已有设备密钥的登录，因此 bootstrap 完成后可以删除。登记挑战和登录挑战有效期均为 5 分钟，并在成功验证后一次性消费。注册要求 resident key 和 user verification，登录采用无用户名的设备密钥发现流程。
+
+验证成功后，Worker 生成随机应用会话令牌。D1 `sessions` 表只保存 SHA-256 哈希，浏览器通过 `__Host-rdocs_session` Cookie 持有原令牌；Cookie 使用 `Secure`、`HttpOnly`、`SameSite=Lax` 和 `Path=/`。写请求必须同时满足请求 URL 与 `Origin` 精确等于 `https://docs.bigrandall.io`，会话过期时前端静默重新读取状态并回到设备密钥登录页。
+
+生产配置只有显式 `AUTH_MODE=phase0` 才允许匿名技术预览；变量缺失或拼写错误会 fail closed 到设备密钥模式。正式激活流程见 [设备密钥启用手册](PASSKEY_SETUP.md)。
+
 ## 协作协议
 
 浏览器先请求：

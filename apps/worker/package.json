@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@rdocs/shared": "*",
+    "@simplewebauthn/server": "^13.3.2",
     "lib0": "latest",
     "y-protocols": "latest",
     "yjs": "latest"

@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 
-const baseUrl = process.env.RDOCS_SMOKE_URL || 'https://rdocs-randall.edge.bigrandall.io';
+const baseUrl = process.env.RDOCS_SMOKE_URL || 'https://docs.bigrandall.io';
 const expectedOrigin = process.env.RDOCS_SMOKE_ORIGIN || 'https://docs.bigrandall.io';
 const HTTP_SYNC_PROTOCOL_VERSION = 1;
 const HTTP_SYNC_FIELD_COUNT = 3;

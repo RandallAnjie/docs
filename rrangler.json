@@ -23,8 +23,11 @@
     ]
   },
   "vars": {
-    "APP_ORIGIN": "https://docs.bigrandall.io,https://rdocs-randall.edge.bigrandall.io",
-    "ENVIRONMENT": "production"
+    "APP_ORIGIN": "https://docs.bigrandall.io",
+    "AUTH_MODE": "phase0",
+    "ENVIRONMENT": "production",
+    "PASSKEY_ORIGIN": "https://docs.bigrandall.io",
+    "PASSKEY_RP_ID": "docs.bigrandall.io"
   },
   "publish": true
 }

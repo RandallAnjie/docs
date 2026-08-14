@@ -3,6 +3,11 @@ import CollaborationCaret from '@tiptap/extension-collaboration-caret';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import {
+  browserSupportsWebAuthn,
+  startAuthentication,
+  startRegistration,
+} from '@simplewebauthn/browser';
+import {
   Bold,
   Check,
   ChevronDown,
@@ -14,9 +19,11 @@ import {
   Heading1,
   Heading2,
   Italic,
+  KeyRound,
   Link2,
   List,
   ListOrdered,
+  LogOut,
   MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
@@ -36,13 +43,27 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FormEvent,
+  type ReactNode,
 } from 'react';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
-import type { PageSummary } from '@rdocs/shared';
+import type { AuthSessionResponse, AuthUserSummary, PageSummary } from '@rdocs/shared';
 
-import { createPage, getCollabTicket, getPage, listPages, updatePageTitle } from './api';
+import {
+  beginPasskeyAuthentication,
+  beginPasskeyRegistration,
+  createPage,
+  finishPasskeyAuthentication,
+  finishPasskeyRegistration,
+  getAuthSession,
+  getCollabTicket,
+  getPage,
+  listPages,
+  logout,
+  updatePageTitle,
+} from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { getLocalIdentity, type LocalIdentity } from './identity';
 import { ancestorPageIds, buildPageTree, type PageTreeNode } from './page-tree';
@@ -65,13 +86,258 @@ function normalizedPageTitle(value: string): string {
 
 export function App() {
   const pageId = currentPageId();
-  const identity = useMemo(getLocalIdentity, []);
+  const localIdentity = useMemo(getLocalIdentity, []);
+  const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
-  if (!pageId) return <Welcome identity={identity} />;
-  return <Workspace pageId={pageId} identity={identity} />;
+  const refreshSession = useCallback(async () => {
+    setSessionError(null);
+    try {
+      setSession(await getAuthSession());
+    } catch (reason) {
+      setSession(null);
+      setSessionError(reason instanceof Error ? reason.message : '无法检查登录状态');
+      throw reason;
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSession().catch(() => undefined);
+  }, [refreshSession]);
+
+  useEffect(() => {
+    const handleAuthRequired = () => void refreshSession().catch(() => undefined);
+    window.addEventListener('rdocs:auth-required', handleAuthRequired);
+    return () => window.removeEventListener('rdocs:auth-required', handleAuthRequired);
+  }, [refreshSession]);
+
+  const signOut = useCallback(async () => {
+    try {
+      await logout();
+      await refreshSession();
+      window.location.assign('/');
+    } catch (reason) {
+      setSession(null);
+      setSessionError(reason instanceof Error ? reason.message : '无法退出当前会话');
+    }
+  }, [refreshSession]);
+
+  if (!session) {
+    return sessionError ? (
+      <AuthLoadFailure message={sessionError} onRetry={refreshSession} />
+    ) : (
+      <LoadingScreen message="正在检查设备密钥…" />
+    );
+  }
+  if (session.mode === 'passkey' && !session.authenticated) {
+    return <PasskeyGate session={session} onAuthenticated={refreshSession} />;
+  }
+
+  const identity = session.user ? identityFromUser(session.user) : localIdentity;
+
+  if (!pageId) {
+    return (
+      <Welcome
+        identity={identity}
+        authenticated={session.authenticated}
+        onLogout={session.authenticated ? signOut : undefined}
+      />
+    );
+  }
+  return (
+    <Workspace
+      pageId={pageId}
+      identity={identity}
+      onLogout={session.authenticated ? signOut : undefined}
+    />
+  );
 }
 
-function Welcome({ identity }: { identity: LocalIdentity }) {
+function passkeyErrorMessage(reason: unknown): string {
+  if (reason instanceof Error) {
+    if (reason.name === 'NotAllowedError' || reason.name === 'AbortError') {
+      return '设备验证已取消或超时，请再试一次。';
+    }
+    if (reason.name === 'InvalidStateError') return '这把设备密钥已经登记过了。';
+    return reason.message;
+  }
+  return '设备密钥操作失败，请重试。';
+}
+
+function PasskeyGate({
+  session,
+  onAuthenticated,
+}: {
+  session: AuthSessionResponse;
+  onAuthenticated: () => Promise<void>;
+}) {
+  const [registering, setRegistering] = useState(false);
+  const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [enrollmentSecret, setEnrollmentSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const supported = browserSupportsWebAuthn();
+  const originMatches =
+    !session.expectedOrigin || window.location.origin === session.expectedOrigin;
+
+  const authenticate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { challengeId, options } = await beginPasskeyAuthentication();
+      const response = await startAuthentication({ optionsJSON: options });
+      await finishPasskeyAuthentication(challengeId, response);
+      await onAuthenticated();
+    } catch (reason) {
+      setError(passkeyErrorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const register = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { challengeId, options } = await beginPasskeyRegistration({
+        email,
+        displayName,
+        enrollmentSecret,
+      });
+      const response = await startRegistration({ optionsJSON: options });
+      await finishPasskeyRegistration(challengeId, response);
+      await onAuthenticated();
+    } catch (reason) {
+      setError(passkeyErrorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let unavailable: ReactNode = null;
+  if (!session.passkeyConfigured) {
+    unavailable = <p className="auth-warning">管理员尚未配置 Rdocs 的设备密钥域名和登记密钥。</p>;
+  } else if (!originMatches) {
+    unavailable = (
+      <p className="auth-warning">
+        设备密钥只在正式域名生效。请前往{' '}
+        <a href={session.expectedOrigin ?? '/'}>{session.expectedOrigin}</a>。
+      </p>
+    );
+  } else if (!supported) {
+    unavailable = <p className="auth-warning">当前浏览器不支持 WebAuthn 设备密钥。</p>;
+  }
+
+  return (
+    <main className="auth-shell">
+      <nav className="auth-nav">
+        <Brand />
+        <span>Passkey</span>
+      </nav>
+      <section className="auth-card">
+        <div className="auth-key-mark">
+          <KeyRound size={24} />
+        </div>
+        <span className="auth-eyebrow">Rdocs 设备密钥</span>
+        <h1>{registering ? '登记这台设备' : '欢迎回来'}</h1>
+        <p>
+          {registering
+            ? '设备会在本地生成私钥；Rdocs 只保存公钥，无法读取你的生物识别数据。'
+            : '使用系统生物识别、PIN、手机或安全密钥登录，无需密码。'}
+        </p>
+
+        {unavailable ? (
+          unavailable
+        ) : registering ? (
+          <form className="auth-form" onSubmit={(event) => void register(event)}>
+            <label>
+              显示名称
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                autoComplete="name"
+                maxLength={80}
+                required
+              />
+            </label>
+            <label>
+              邮箱（仅用于账号标识）
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                autoComplete="email"
+                maxLength={254}
+                required
+              />
+            </label>
+            <label>
+              管理员设备登记码
+              <input
+                type="password"
+                value={enrollmentSecret}
+                onChange={(event) => setEnrollmentSecret(event.target.value)}
+                autoComplete="one-time-code"
+                required
+              />
+            </label>
+            <button className="primary-button" type="submit" disabled={busy}>
+              <KeyRound size={17} />
+              {busy ? '正在验证设备…' : '创建设备密钥'}
+            </button>
+          </form>
+        ) : (
+          <button
+            className="primary-button auth-primary"
+            type="button"
+            onClick={() => void authenticate()}
+            disabled={busy}
+          >
+            <KeyRound size={17} />
+            {busy ? '正在等待设备…' : '使用设备密钥登录'}
+          </button>
+        )}
+
+        {error ? (
+          <p className="auth-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {!unavailable && session.enrollmentConfigured ? (
+          <button
+            className="auth-switch"
+            type="button"
+            onClick={() => {
+              setRegistering((value) => !value);
+              setError(null);
+            }}
+            disabled={busy}
+          >
+            {registering ? '已有设备密钥？返回登录' : '首次使用？登记这台设备'}
+          </button>
+        ) : null}
+        {!unavailable && !session.enrollmentConfigured ? (
+          <p className="auth-enrollment-note">新设备登记未开放，已有设备密钥仍可正常登录。</p>
+        ) : null}
+        <small className="auth-footnote">私钥不会离开设备 · 用户验证必需 · 会话可随时撤销</small>
+      </section>
+    </main>
+  );
+}
+
+function Welcome({
+  identity,
+  authenticated,
+  onLogout,
+}: {
+  identity: LocalIdentity;
+  authenticated: boolean;
+  onLogout?: () => Promise<void>;
+}) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,7 +357,14 @@ function Welcome({ identity }: { identity: LocalIdentity }) {
     <main className="welcome-shell">
       <nav className="welcome-nav">
         <Brand />
-        <IdentityBubble identity={identity} />
+        <div className="welcome-identity">
+          <IdentityBubble identity={identity} />
+          {onLogout ? (
+            <button type="button" onClick={() => void onLogout()} aria-label="退出登录">
+              <LogOut size={15} />
+            </button>
+          ) : null}
+        </div>
       </nav>
       <section className="welcome-content">
         <div className="eyebrow">
@@ -117,8 +390,12 @@ function Welcome({ identity }: { identity: LocalIdentity }) {
         </div>
         {error && <p className="error-message">{error}</p>}
         <div className="preview-note">
-          <strong>预览环境说明</strong>
-          <span>当前页面采用匿名访客身份，仅用于技术验证，请勿写入敏感内容。</span>
+          <strong>{authenticated ? '设备密钥已验证' : '预览环境说明'}</strong>
+          <span>
+            {authenticated
+              ? `当前以 ${identity.name} 登录，会话凭证不会暴露给页面脚本。`
+              : '当前页面采用匿名访客身份，仅用于技术验证，请勿写入敏感内容。'}
+          </span>
         </div>
       </section>
       <div className="welcome-orbit orbit-one" />
@@ -127,7 +404,15 @@ function Welcome({ identity }: { identity: LocalIdentity }) {
   );
 }
 
-function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdentity }) {
+function Workspace({
+  pageId,
+  identity,
+  onLogout,
+}: {
+  pageId: string;
+  identity: LocalIdentity;
+  onLogout?: () => Promise<void>;
+}) {
   const [bootstrap, setBootstrap] = useState<{
     page: PageSummary;
     pages: PageSummary[];
@@ -168,6 +453,7 @@ function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdenti
       initialPages={bootstrap.pages}
       initialTicket={bootstrap.ticket}
       identity={identity}
+      onLogout={onLogout}
     />
   );
 }
@@ -177,11 +463,13 @@ function DocumentWorkspace({
   initialPages,
   initialTicket,
   identity,
+  onLogout,
 }: {
   initialPage: PageSummary;
   initialPages: PageSummary[];
   initialTicket: string;
   identity: LocalIdentity;
+  onLogout?: () => Promise<void>;
 }) {
   const [page, setPage] = useState(initialPage);
   const [pages, setPages] = useState(initialPages);
@@ -436,9 +724,21 @@ function DocumentWorkspace({
           <IdentityBubble identity={identity} compact />
           <span>
             <strong>{identity.name}</strong>
-            <small>匿名技术预览</small>
+            <small>{onLogout ? '设备密钥会话' : '匿名技术预览'}</small>
           </span>
-          <MoreHorizontal size={17} />
+          {onLogout ? (
+            <button
+              type="button"
+              className="sidebar-logout"
+              onClick={() => void onLogout()}
+              aria-label="退出登录"
+              title="退出登录"
+            >
+              <LogOut size={16} />
+            </button>
+          ) : (
+            <MoreHorizontal size={17} />
+          )}
         </div>
       </aside>
 
@@ -741,6 +1041,17 @@ function Brand({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function identityFromUser(user: AuthUserSummary): LocalIdentity {
+  const colors = ['#3156a3', '#b6492e', '#37805a', '#8a4da3', '#b07a17', '#317f8d'];
+  let hash = 0;
+  for (const character of user.id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return {
+    id: user.id,
+    name: user.displayName,
+    color: colors[hash % colors.length] ?? colors[0]!,
+  };
+}
+
 function identityMonogram(identity: LocalIdentity): string {
   return identity.name.trim().slice(-2) || '访客';
 }
@@ -798,12 +1109,29 @@ function ConnectionPill({ state }: { state: ConnectionState }) {
   );
 }
 
-function LoadingScreen() {
+function LoadingScreen({ message = '正在打开文档空间…' }: { message?: string }) {
   return (
     <div className="full-state">
       <Brand />
       <div className="loading-mark" />
-      <p>正在打开文档空间…</p>
+      <p>{message}</p>
+    </div>
+  );
+}
+
+function AuthLoadFailure({ message, onRetry }: { message: string; onRetry: () => Promise<void> }) {
+  return (
+    <div className="full-state">
+      <Brand />
+      <h1>无法确认登录状态</h1>
+      <p>{message}</p>
+      <button
+        className="primary-button"
+        type="button"
+        onClick={() => void onRetry().catch(() => undefined)}
+      >
+        重试
+      </button>
     </div>
   );
 }

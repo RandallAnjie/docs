@@ -3,7 +3,7 @@ import * as encoding from 'lib0/encoding';
 import WebSocket from 'ws';
 import * as Y from 'yjs';
 
-const baseUrl = process.env.RDOCS_SMOKE_URL || 'https://rdocs-randall.edge.bigrandall.io';
+const baseUrl = process.env.RDOCS_SMOKE_URL || 'https://docs.bigrandall.io';
 const expectedOrigin = process.env.RDOCS_SMOKE_ORIGIN || 'https://docs.bigrandall.io';
 const adminSecret = process.env.RDOCS_SMOKE_ADMIN_SECRET || '';
 const wsBaseUrl = baseUrl.replace(/^http/, 'ws');
