@@ -260,9 +260,11 @@ button {
 .sidebar {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   background: #efede8;
   border-right: 1px solid #ddd9d1;
   min-width: 0;
+  overflow: hidden;
 }
 .sidebar-top {
   height: 60px;
