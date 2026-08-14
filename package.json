@@ -1,0 +1,34 @@
+{
+  "name": "rdocs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @rdocs/web && npm run build -w @rdocs/worker",
+    "dev": "concurrently -n web,worker -c cyan,magenta \"npm run dev -w @rdocs/web\" \"npm run dev -w @rdocs/worker\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke:collab": "node tests/collab-smoke.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "deploy:randallflare": "npm run build && node /develop/bigrandall.io/rrangler/bin/rrangler.mjs deploy",
+    "migrate:randallflare": "node /develop/bigrandall.io/rrangler/bin/rrangler.mjs d1 migrations apply rdocs-db --dir migrations"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/ws": "latest",
+    "concurrently": "latest",
+    "prettier": "latest",
+    "typescript": "latest",
+    "vitest": "latest",
+    "ws": "latest"
+  }
+}

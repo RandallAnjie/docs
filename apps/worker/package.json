@@ -1,0 +1,21 @@
+{
+  "name": "@rdocs/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "npm run build && node /develop/bigrandall.io/rrangler/bin/rrangler.mjs dev --port 8787",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rdocs/shared": "*",
+    "lib0": "latest",
+    "y-protocols": "latest",
+    "yjs": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "esbuild": "latest"
+  }
+}

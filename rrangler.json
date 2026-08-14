@@ -1,0 +1,30 @@
+{
+  "name": "rdocs",
+  "main": "dist/worker.js",
+  "compatibilityDate": "2026-08-14",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rdocs-db"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ATTACHMENTS",
+      "bucket_name": "rdocs-attachments"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DocumentRoom",
+        "class_name": "DocumentRoom"
+      }
+    ]
+  },
+  "vars": {
+    "APP_ORIGIN": "https://docs.bigrandall.io",
+    "ENVIRONMENT": "production"
+  },
+  "publish": true
+}
