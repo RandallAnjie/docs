@@ -2,25 +2,53 @@
 
 更新时间：2026-08-14 UTC
 
-本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。现网验证使用：
+本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。问题已于
+2026-08-14 修复并完成现网复验。现网验证使用：
 
 - Worker：`rdocs`
-- URL：`https://rdocs-randall.edge.bigrandall.io`
-- Rdocs commit：`44542e24d752f2f9cafb57743728ce212c68a3e2`
-- RandallFlare `main`：已包含 `248d492 Optimize Durable Object routing`
+- 正式 URL：`https://docs.bigrandall.io`
+- 旧自动域名：`https://rdocs-randall.edge.bigrandall.io`（已按产品配置禁用，返回 404 属预期）
+- 初始复现 Rdocs commit：`44542e24d752f2f9cafb57743728ce212c68a3e2`
+- 最终复验 Rdocs commit：`b8d5a4a999d598853640c99020b724e543d7d2fa`
+- RandallFlare `main`：`4997d919e4ead4d32d4d5a2e9f75c7d5ab791130`
+- 边缘 agent：`2026.08.14.4997d91`（15/15 READY）
 
 ## 结论与优先级
 
-| ID   | 优先级    | 状态                           | 问题                                                  |
-| ---- | --------- | ------------------------------ | ----------------------------------------------------- |
-| RF-1 | P0        | 现网稳定复现、根因明确         | 集群已转发的请求被禁止执行远端 DO WebSocket handoff   |
-| RF-2 | P0        | 源码确认、Rdocs 已被迫规避     | Durable Object 的 `bindingName` 与 `className` 被混用 |
-| RF-3 | P0 验收项 | 历史复现，当前被 RF-1 挡住     | 两个已连接 WebSocket 的 peer send/broadcast 曾不送达  |
-| RF-4 | P1        | 多次现网复现、根因待补充观测   | Git build 成功不等于边缘版本已激活                    |
-| RF-5 | P1        | 现网复现、控制面与运行时不一致 | `envJson` 已更新，但 Worker 运行时仍读取旧值          |
-| RF-6 | P2        | 源码确认、稳定复现             | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6 |
+| ID   | 优先级    | 状态          | 问题                                                  |
+| ---- | --------- | ------------- | ----------------------------------------------------- |
+| RF-1 | P0        | 已修复、已复验 | 集群已转发的请求被禁止执行远端 DO WebSocket handoff   |
+| RF-2 | P0        | 已修复、已复验 | Durable Object 的 `bindingName` 与 `className` 被混用 |
+| RF-3 | P0 验收项 | 已修复、已复验 | 两个已连接 WebSocket 的 peer send/broadcast 曾不送达  |
+| RF-4 | P1        | 已修复、已复验 | Git build 成功不等于边缘版本已激活                    |
+| RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值          |
+| RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6 |
 
-建议按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序处理。
+修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
+
+## 2026-08-14 修复与现网复验
+
+平台修复集中在以下 RandallFlare 变更：
+
+- PR #145：修复 handoff、DO identity、Git/env 原子激活和 `rrangler` 参数解析，并补齐 desired/observed 状态。
+- PR #146：D1 executor 饱和时改为在操作 deadline 内有界等待，避免不同数据库并发把第 9 个请求直接打成 502。
+- PR #147：保留 workerd 所有权下的 101 Response，避免包装 Server-Timing 时重建 101 导致 `RangeError`。
+- PR #148：分配 workerd 端口时同时检查真实 listener，避免端口位图滞后触发 `EADDRINUSE`。
+- PR #149：原生 DO actor 同时支持模块显式导出和旧式 `register(className, Class)`；bindingName 与 className 可不同。
+
+自动滚动发布严格保持每地区至少一台可用节点。最终结果为 15/15 READY 节点运行
+`2026.08.14.4997d91`；最近运行日志未再出现 101 Response、DO class resolution 或
+`EADDRINUSE` 错误。
+
+现网验收结果：
+
+1. Rdocs 原始 `smoke:collab` 在正式域名通过 two-client convergence、DO persistence、reconnect restore 和 live revocation（4403）。
+2. 固定 owner + 9 个 cross-node 客户端全部收敛；100 客户端房间全部连接后，广播在约 353 ms 内送达全部客户端。
+3. 连接静默 61 秒后仍可双向发送，cross-node 广播约 301 ms。
+4. 使用真实 `bindingName=GAME_ROOMS`、`className=GameRoom` 且只调用旧式 `register()` 的 `xiangqi` Worker：20/20 次 DO 读取为 200，WebSocket 收到初始状态及后续消息。
+5. Rdocs Git build `b8d5a4a` 生成 v82 后自动激活为 v83；10/10 承载节点 observed v83/OK，`publishedAt` 同步更新，无需额外 env 写入触发。
+6. 控制面 `RELEASE_SHA=659b8a6...` 与公开运行时 `/api/health` 完全一致。该变量是显式 env 值，不会被后续 Git commit 隐式改写。
+7. RandallFlare 单元测试 95/95、edge-agent 全量 Go 测试、真实 workerd 生成配置启动测试、Rdocs typecheck/14 项测试/生产构建全部通过。
 
 ---
 
@@ -415,25 +443,23 @@ kv:namespace list
 
 ---
 
-## 不属于平台 bug，但仍需完成的 Rdocs 配置
+## 不属于平台 bug 的 Rdocs 域名配置
 
-`docs.bigrandall.io` 当前未绑定到 `rdocs` Worker；控制面只显示自动域名：
-
-```text
-rdocs-randall.edge.bigrandall.io
-```
-
-这是尚未执行的应用域名配置，不应与上述平台故障混为一谈。建议在 RF-1～RF-5 修复并通过验收后再切正式域名。
+`docs.bigrandall.io` 已于平台修复后绑定到 `rdocs` Worker，并成为正式验收域名。
+旧自动域名 `rdocs-randall.edge.bigrandall.io` 已禁用；它返回 404 是明确的产品配置，
+不是 Worker 丢失或边缘部署失败。烟测和监控必须使用正式域名。
 
 ## 最终全链路验收
 
-平台修复后，在 `/root/docs` 运行：
+已在 `/root/docs` 运行：
 
 ```bash
 npm run typecheck
 npm test
 npm run build
 RDOCS_SMOKE_DEBUG=1 \
+RDOCS_SMOKE_URL='https://docs.bigrandall.io' \
+RDOCS_SMOKE_ORIGIN='https://docs.bigrandall.io' \
 RDOCS_SMOKE_ADMIN_SECRET='<Rdocs admin secret>' \
 npm run smoke:collab
 ```
