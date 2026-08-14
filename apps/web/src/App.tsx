@@ -28,7 +28,15 @@ import {
   Star,
   Users,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
@@ -188,7 +196,14 @@ function DocumentWorkspace({
   const latestTitle = useRef(page.title);
   const savedTitle = useRef(page.title);
   const titleSaveRunning = useRef(false);
+  const sidebarNavigation = useRef<HTMLElement>(null);
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
+
+  useLayoutEffect(() => {
+    sidebarNavigation.current
+      ?.querySelector<HTMLElement>('a[aria-current="page"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [page.id, pages.length]);
 
   useEffect(() => {
     const ancestors = ancestorPageIds(page.id, pages);
@@ -370,7 +385,7 @@ function DocumentWorkspace({
             {creatingUnder === null ? '正在创建…' : '新建页面'}
           </button>
         </div>
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" ref={sidebarNavigation}>
           <div className="sidebar-section-heading">
             <p>空间</p>
             <span>{pages.length}</span>
