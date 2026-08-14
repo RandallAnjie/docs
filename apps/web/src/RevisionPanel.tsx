@@ -32,6 +32,10 @@ export function RevisionPanel({
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [restoreAttempt, setRestoreAttempt] = useState<{
+    revisionId: string;
+    idempotencyKey: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -74,9 +78,14 @@ export function RevisionPanel({
 
     setRestoringId(revision.id);
     setError(null);
+    const attempt =
+      restoreAttempt?.revisionId === revision.id
+        ? restoreAttempt
+        : { revisionId: revision.id, idempotencyKey: crypto.randomUUID() };
+    setRestoreAttempt(attempt);
     try {
       await flushDocument();
-      await restoreRevision(revision.id);
+      await restoreRevision(revision.id, attempt.idempotencyKey);
       window.location.reload();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法恢复版本');

@@ -26,6 +26,7 @@ const MAX_REVISION_DESCRIPTION_LENGTH = 500;
 const MAX_PAGE_TREE_SIZE = 500;
 const MAX_REVISIONS_PER_PAGE = 100;
 const MAX_GENERATION_INITIALIZATION_ATTEMPTS = 5;
+const RESTORE_OPERATION_LEASE_MS = 60_000;
 const COLLAB_AUTH_CACHE_MS = 2_000;
 
 const collaborationAuthorizationCache = new Map<string, { checkedAt: number; page: PageSummary }>();
@@ -56,6 +57,22 @@ interface RevisionRow {
   content_hash: string;
   created_by: string | null;
   created_at: number;
+}
+
+interface RestoreOperationRow {
+  idempotency_key: string;
+  organization_id: string;
+  page_id: string;
+  revision_id: string;
+  source_generation: number;
+  target_generation: number | null;
+  previous_revision_id: string;
+  status: 'pending' | 'prepared' | 'completed' | 'failed';
+  lease_token: string | null;
+  lease_expires_at: number | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -153,8 +170,14 @@ async function captureRevision(
     kind: RevisionKind;
     label: string | null;
     description: string | null;
+    revisionId?: string;
   },
 ): Promise<RevisionSummary> {
+  if (options.revisionId) {
+    const existing = await findRevision(env, options.revisionId);
+    if (existing) return revisionFromRow(existing);
+  }
+
   const snapshotResponse = await documentRoom(env, page.id, page.currentGeneration).fetch(
     'https://rdocs.internal/internal/export-snapshot',
     {
@@ -178,7 +201,7 @@ async function captureRevision(
   const exportedHash = snapshotResponse.headers.get('x-rdocs-content-hash');
   if (exportedHash !== contentHash) throw new Error('revision_snapshot_hash');
 
-  const revisionId = crypto.randomUUID();
+  const revisionId = options.revisionId ?? crypto.randomUUID();
   const snapshotRef = `organizations/${page.organizationId}/pages/${page.id}/revisions/${revisionId}.yjs`;
   const createdAt = Date.now();
   await env.ATTACHMENTS.put(snapshotRef, toArrayBuffer(snapshot), {
@@ -288,7 +311,148 @@ async function findRevision(env: Env, revisionId: string): Promise<RevisionRow |
     .first<RevisionRow>();
 }
 
-async function restoreRevision(env: Env, revisionId: string): Promise<Response> {
+async function findRestoreOperation(
+  env: Env,
+  idempotencyKey: string,
+): Promise<RestoreOperationRow | null> {
+  return env.DB.prepare(
+    `SELECT idempotency_key, organization_id, page_id, revision_id,
+            source_generation, target_generation, previous_revision_id,
+            status, lease_token, lease_expires_at, created_at, updated_at, completed_at
+       FROM revision_restore_operations
+      WHERE idempotency_key = ?`,
+  )
+    .bind(idempotencyKey)
+    .first<RestoreOperationRow>();
+}
+
+async function failRestoreOperation(
+  env: Env,
+  idempotencyKey: string,
+  leaseToken: string,
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE revision_restore_operations
+        SET status = 'failed', lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE idempotency_key = ? AND status = 'pending' AND lease_token = ?`,
+  )
+    .bind(Date.now(), idempotencyKey, leaseToken)
+    .run();
+}
+
+async function closeSourceGeneration(env: Env, operation: RestoreOperationRow): Promise<void> {
+  if (operation.target_generation === null) return;
+  try {
+    await documentRoom(env, operation.page_id, Number(operation.source_generation)).fetch(
+      'https://rdocs.internal/internal/rebase',
+      {
+        method: 'POST',
+        headers: { 'x-rdocs-next-generation': String(operation.target_generation) },
+      },
+    );
+  } catch (reason) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'revision_old_generation_close_failed',
+        pageId: operation.page_id,
+        generation: operation.source_generation,
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    );
+  }
+}
+
+async function completedRestoreResponse(
+  env: Env,
+  operation: RestoreOperationRow,
+  replay: boolean,
+  context: ExecutionContext,
+): Promise<Response> {
+  const [page, previousRevision] = await Promise.all([
+    findPage(env, operation.page_id),
+    findRevision(env, operation.previous_revision_id),
+  ]);
+  if (!page || !previousRevision) throw new Error('revision_restore_result_missing');
+  context.waitUntil(closeSourceGeneration(env, operation));
+  return json(
+    {
+      page,
+      restoredRevisionId: operation.revision_id,
+      previousRevision: revisionFromRow(previousRevision),
+      idempotencyKey: operation.idempotency_key,
+    },
+    replay ? { headers: { 'x-rdocs-idempotent-replay': '1' } } : undefined,
+  );
+}
+
+async function finalizeRestoreOperation(
+  env: Env,
+  operation: RestoreOperationRow,
+  replay: boolean,
+  context: ExecutionContext,
+): Promise<Response> {
+  if (operation.target_generation === null) throw new Error('revision_restore_target_missing');
+
+  let page = await findPage(env, operation.page_id);
+  if (!page) return error('页面不存在', 404);
+  if (page.currentGeneration === Number(operation.source_generation)) {
+    await env.DB.prepare(
+      `UPDATE pages
+          SET current_generation = ?, updated_by = ?, updated_at = ?
+        WHERE id = ? AND organization_id = ? AND current_generation = ? AND deleted_at IS NULL`,
+    )
+      .bind(
+        operation.target_generation,
+        SYSTEM_USER_ID,
+        Date.now(),
+        operation.page_id,
+        operation.organization_id,
+        operation.source_generation,
+      )
+      .run();
+    page = await findPage(env, operation.page_id);
+  }
+
+  if (!page || page.currentGeneration !== Number(operation.target_generation)) {
+    await env.DB.prepare(
+      `UPDATE revision_restore_operations
+          SET status = 'failed', lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE idempotency_key = ? AND status != 'completed'`,
+    )
+      .bind(Date.now(), operation.idempotency_key)
+      .run();
+    return error('页面已被其他恢复操作更新，请刷新后重试', 409);
+  }
+
+  const completedAt = Date.now();
+  await env.DB.prepare(
+    `UPDATE revision_restore_operations
+        SET status = 'completed', lease_token = NULL, lease_expires_at = NULL,
+            updated_at = ?, completed_at = ?
+      WHERE idempotency_key = ? AND status IN ('prepared', 'completed')`,
+  )
+    .bind(completedAt, completedAt, operation.idempotency_key)
+    .run();
+  collaborationAuthorizationCache.delete(operation.page_id);
+  const completed = await findRestoreOperation(env, operation.idempotency_key);
+  if (!completed || completed.status !== 'completed') {
+    throw new Error('revision_restore_completion_missing');
+  }
+  return completedRestoreResponse(env, completed, replay, context);
+}
+
+async function restoreRevision(
+  request: Request,
+  env: Env,
+  revisionId: string,
+  context: ExecutionContext,
+): Promise<Response> {
+  const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? '';
+  if (!isPageId(idempotencyKey)) {
+    return error('恢复版本需要有效的 Idempotency-Key', 400);
+  }
+
   const targetRevision = await findRevision(env, revisionId);
   if (!targetRevision) return error('版本不存在', 404);
   const page = await findPage(env, targetRevision.page_id);
@@ -297,89 +461,166 @@ async function restoreRevision(env: Env, revisionId: string): Promise<Response> 
     return error('此版本的快照位置暂不支持恢复', 409);
   }
 
-  const snapshotObject = await env.ATTACHMENTS.get(targetRevision.snapshot_ref);
-  if (!snapshotObject) return error('版本快照不存在', 409);
-  if (snapshotObject.size > MAX_REVISION_SNAPSHOT_BYTES) return error('版本快照过大', 413);
-  const snapshot = new Uint8Array(await snapshotObject.arrayBuffer());
-  if ((await sha256Hex(snapshot)) !== targetRevision.content_hash) {
-    return error('版本快照校验失败', 409);
-  }
-
-  const previousRevision = await captureRevision(env, page, {
-    kind: 'restore',
-    label: '恢复前自动版本',
-    description: `恢复版本 ${targetRevision.id} 前自动保存`,
-  });
-
-  let nextGeneration: number | null = null;
-  for (let attempt = 1; attempt <= MAX_GENERATION_INITIALIZATION_ATTEMPTS; attempt += 1) {
-    const candidate = page.currentGeneration + attempt;
-    const initializeResponse = await documentRoom(env, page.id, candidate).fetch(
-      'https://rdocs.internal/internal/initialize-generation',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/octet-stream',
-          'x-rdocs-page-id': page.id,
-          'x-rdocs-generation': String(candidate),
-          'x-rdocs-revision-id': targetRevision.id,
-          'x-rdocs-content-hash': targetRevision.content_hash,
-          'x-rdocs-actor-id': SYSTEM_USER_ID,
-        },
-        body: toArrayBuffer(snapshot),
-      },
-    );
-    if (initializeResponse.status === 409) continue;
-    if (!initializeResponse.ok) {
-      throw new Error(`revision_generation_initialize_${initializeResponse.status}`);
-    }
-    nextGeneration = candidate;
-    break;
-  }
-  if (nextGeneration === null) return error('无法分配新的文档 generation', 409);
-
-  const update = await env.DB.prepare(
-    `UPDATE pages
-        SET current_generation = ?, updated_by = ?, updated_at = ?
-      WHERE id = ? AND organization_id = ? AND current_generation = ? AND deleted_at IS NULL`,
+  const now = Date.now();
+  const leaseToken = crypto.randomUUID();
+  const previousRevisionId = crypto.randomUUID();
+  const inserted = await env.DB.prepare(
+    `INSERT OR IGNORE INTO revision_restore_operations(
+      idempotency_key, organization_id, page_id, revision_id, source_generation,
+      target_generation, previous_revision_id, status, lease_token, lease_expires_at,
+      created_at, updated_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'pending', ?, ?, ?, ?, NULL)`,
   )
     .bind(
-      nextGeneration,
-      SYSTEM_USER_ID,
-      Date.now(),
-      page.id,
+      idempotencyKey,
       page.organizationId,
+      page.id,
+      targetRevision.id,
       page.currentGeneration,
+      previousRevisionId,
+      leaseToken,
+      now + RESTORE_OPERATION_LEASE_MS,
+      now,
+      now,
     )
     .run();
-  if (!update.meta.changes) return error('页面已被其他恢复操作更新，请刷新后重试', 409);
 
-  collaborationAuthorizationCache.delete(page.id);
-  try {
-    await documentRoom(env, page.id, page.currentGeneration).fetch(
-      'https://rdocs.internal/internal/rebase',
-      {
-        method: 'POST',
-        headers: { 'x-rdocs-next-generation': String(nextGeneration) },
-      },
-    );
-  } catch (reason) {
-    console.error(
-      JSON.stringify({
-        level: 'error',
-        event: 'revision_old_generation_close_failed',
-        pageId: page.id,
-        generation: page.currentGeneration,
-        message: reason instanceof Error ? reason.message : String(reason),
-      }),
-    );
+  let operation = await findRestoreOperation(env, idempotencyKey);
+  if (!operation) throw new Error('revision_restore_operation_missing');
+  if (
+    operation.organization_id !== page.organizationId ||
+    operation.page_id !== page.id ||
+    operation.revision_id !== targetRevision.id
+  ) {
+    return error('Idempotency-Key 已用于另一项恢复操作', 409);
+  }
+  if (operation.status === 'completed') {
+    return completedRestoreResponse(env, operation, true, context);
+  }
+  if (operation.status === 'prepared') {
+    return finalizeRestoreOperation(env, operation, true, context);
   }
 
-  return json({
-    page: await findPage(env, page.id),
-    restoredRevisionId: targetRevision.id,
-    previousRevision,
-  });
+  const ownsNewOperation = Boolean(inserted.meta.changes);
+  if (!ownsNewOperation) {
+    if (
+      operation.status === 'pending' &&
+      operation.lease_expires_at !== null &&
+      Number(operation.lease_expires_at) > now
+    ) {
+      return json(
+        { error: '恢复操作仍在进行，请稍后使用同一请求重试' },
+        { status: 409, headers: { 'retry-after': '2' } },
+      );
+    }
+    const claimed = await env.DB.prepare(
+      `UPDATE revision_restore_operations
+          SET status = 'pending', lease_token = ?, lease_expires_at = ?, updated_at = ?
+        WHERE idempotency_key = ?
+          AND (status = 'failed' OR (status = 'pending' AND lease_expires_at <= ?))`,
+    )
+      .bind(leaseToken, now + RESTORE_OPERATION_LEASE_MS, now, idempotencyKey, now)
+      .run();
+    if (!claimed.meta.changes) {
+      return json(
+        { error: '恢复操作状态已变化，请稍后使用同一请求重试' },
+        { status: 409, headers: { 'retry-after': '2' } },
+      );
+    }
+    operation = await findRestoreOperation(env, idempotencyKey);
+    if (!operation) throw new Error('revision_restore_claim_missing');
+  }
+
+  try {
+    const currentPage = await findPage(env, operation.page_id);
+    if (!currentPage || currentPage.currentGeneration !== Number(operation.source_generation)) {
+      await failRestoreOperation(env, idempotencyKey, leaseToken);
+      return error('页面已被其他恢复操作更新，请刷新后重试', 409);
+    }
+
+    const snapshotObject = await env.ATTACHMENTS.get(targetRevision.snapshot_ref);
+    if (!snapshotObject) {
+      await failRestoreOperation(env, idempotencyKey, leaseToken);
+      return error('版本快照不存在', 409);
+    }
+    if (snapshotObject.size > MAX_REVISION_SNAPSHOT_BYTES) {
+      await failRestoreOperation(env, idempotencyKey, leaseToken);
+      return error('版本快照过大', 413);
+    }
+    const snapshot = new Uint8Array(await snapshotObject.arrayBuffer());
+    if ((await sha256Hex(snapshot)) !== targetRevision.content_hash) {
+      await failRestoreOperation(env, idempotencyKey, leaseToken);
+      return error('版本快照校验失败', 409);
+    }
+
+    await captureRevision(env, currentPage, {
+      kind: 'restore',
+      label: '恢复前自动版本',
+      description: `恢复版本 ${targetRevision.id} 前自动保存`,
+      revisionId: operation.previous_revision_id,
+    });
+
+    let nextGeneration: number | null = null;
+    const firstCandidate = operation.target_generation ?? Number(operation.source_generation) + 1;
+    for (let attempt = 0; attempt < MAX_GENERATION_INITIALIZATION_ATTEMPTS; attempt += 1) {
+      const candidate = firstCandidate + attempt;
+      await env.DB.prepare(
+        `UPDATE revision_restore_operations
+            SET target_generation = ?, lease_expires_at = ?, updated_at = ?
+          WHERE idempotency_key = ? AND status = 'pending' AND lease_token = ?`,
+      )
+        .bind(
+          candidate,
+          Date.now() + RESTORE_OPERATION_LEASE_MS,
+          Date.now(),
+          idempotencyKey,
+          leaseToken,
+        )
+        .run();
+      const initializeResponse = await documentRoom(env, currentPage.id, candidate).fetch(
+        'https://rdocs.internal/internal/initialize-generation',
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/octet-stream',
+            'x-rdocs-page-id': currentPage.id,
+            'x-rdocs-generation': String(candidate),
+            'x-rdocs-revision-id': targetRevision.id,
+            'x-rdocs-content-hash': targetRevision.content_hash,
+            'x-rdocs-actor-id': SYSTEM_USER_ID,
+          },
+          body: toArrayBuffer(snapshot),
+        },
+      );
+      if (initializeResponse.status === 409) continue;
+      if (!initializeResponse.ok) {
+        throw new Error(`revision_generation_initialize_${initializeResponse.status}`);
+      }
+      nextGeneration = candidate;
+      break;
+    }
+    if (nextGeneration === null) {
+      await failRestoreOperation(env, idempotencyKey, leaseToken);
+      return error('无法分配新的文档 generation', 409);
+    }
+
+    await env.DB.prepare(
+      `UPDATE revision_restore_operations
+          SET target_generation = ?, status = 'prepared', lease_token = NULL,
+              lease_expires_at = NULL, updated_at = ?
+        WHERE idempotency_key = ? AND status = 'pending' AND lease_token = ?`,
+    )
+      .bind(nextGeneration, Date.now(), idempotencyKey, leaseToken)
+      .run();
+    const prepared = await findRestoreOperation(env, idempotencyKey);
+    if (!prepared || prepared.status !== 'prepared') {
+      throw new Error('revision_restore_prepare_missing');
+    }
+    return finalizeRestoreOperation(env, prepared, false, context);
+  } catch (reason) {
+    await failRestoreOperation(env, idempotencyKey, leaseToken).catch(() => undefined);
+    throw reason;
+  }
 }
 
 async function findPageForCollaboration(env: Env, pageId: string): Promise<PageSummary | null> {
@@ -641,7 +882,7 @@ async function openCollaborationSocket(
   return room.fetch(new Request(request, { headers }));
 }
 
-async function handleApi(request: Request, env: Env): Promise<Response> {
+async function handleApi(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
   if (url.pathname === '/api/health' && request.method === 'GET') {
@@ -674,7 +915,9 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   const restoreRevisionMatch = url.pathname.match(/^\/api\/revisions\/([^/]+)\/restore$/);
   if (restoreRevisionMatch?.[1] && request.method === 'POST') {
     const revisionId = decodeURIComponent(restoreRevisionMatch[1]);
-    return isPageId(revisionId) ? restoreRevision(env, revisionId) : error('版本 ID 无效', 400);
+    return isPageId(revisionId)
+      ? restoreRevision(request, env, revisionId, context)
+      : error('版本 ID 无效', 400);
   }
 
   const pageMatch = url.pathname.match(/^\/api\/pages\/([^/]+)$/);
@@ -737,10 +980,10 @@ function htmlResponse(): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith('/api/')) return handleApi(request, env);
+      if (url.pathname.startsWith('/api/')) return handleApi(request, env, context);
 
       const collabMatch = url.pathname.match(/^\/collab\/([^/]+)$/);
       if (collabMatch?.[1]) {

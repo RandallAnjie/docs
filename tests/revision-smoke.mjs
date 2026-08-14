@@ -63,6 +63,32 @@ async function api(path, init) {
   return body;
 }
 
+async function restoreWithRetry(revisionId, idempotencyKey) {
+  const path = `/api/revisions/${revisionId}/restore`;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const response = await fetchWithCapacityRetry(path, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'idempotency-key': idempotencyKey,
+      },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok) return { body, response };
+    const retryable =
+      response.status === 500 ||
+      response.status === 502 ||
+      response.status === 503 ||
+      response.status === 504 ||
+      (response.status === 409 && response.headers.has('retry-after'));
+    if (!retryable || attempt === 5) {
+      throw new Error(`${path}: ${response.status} ${body.error || ''}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+  }
+  throw new Error('unreachable');
+}
+
 async function ticket(pageId, actorId) {
   const response = await api(`/api/pages/${pageId}/collab-ticket`, {
     method: 'POST',
@@ -128,12 +154,29 @@ firstText.insert(0, 'version-b');
   firstServerStateVector,
 ));
 
-const restored = await api(`/api/revisions/${baseline.revision.id}/restore`, { method: 'POST' });
+const restoreKey = crypto.randomUUID();
+const restoreResult = await restoreWithRetry(baseline.revision.id, restoreKey);
+const restored = restoreResult.body;
 assert(
   restored.page.currentGeneration > originalGeneration,
   'restore did not create a new generation',
 );
 assert(restored.previousRevision.kind === 'restore', 'restore did not preserve current content');
+assert(restored.idempotencyKey === restoreKey, 'restore did not echo its idempotency key');
+
+const replayResult = await restoreWithRetry(baseline.revision.id, restoreKey);
+assert(
+  replayResult.response.headers.get('x-rdocs-idempotent-replay') === '1',
+  'restore replay was not identified',
+);
+assert(
+  replayResult.body.page.currentGeneration === restored.page.currentGeneration,
+  'restore replay advanced the generation again',
+);
+assert(
+  replayResult.body.previousRevision.id === restored.previousRevision.id,
+  'restore replay created another pre-restore revision',
+);
 
 const staleSync = await sync(pageId, firstTicket, firstDocument, firstServerStateVector);
 assert(staleSync.response.status === 409, 'old generation ticket was not rejected');
@@ -201,6 +244,7 @@ console.log(
       'manual revision snapshot',
       'pre-restore revision',
       'new generation initialization',
+      'idempotent restore replay',
       'old ticket rejection',
       'restored content isolation',
       'new generation persistence',

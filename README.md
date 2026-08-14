@@ -13,8 +13,8 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 - 短期 HMAC 协作票据、同源校验和 256 KiB frame 上限。
 - 每篇页面、每个 generation 一个 Durable Object。
 - DO SQLite 增量持久化、重启恢复和阈值快照。
-- 手动版本、恢复前自动版本、R2 不可变快照和新 generation 安全恢复。
-- D1 第一版领域模型和版本化迁移。
+- 手动版本、恢复前自动版本、R2 不可变快照和幂等的新 generation 安全恢复。
+- D1 领域模型、恢复操作状态机和版本化迁移。
 - R2 附件 binding 预留。
 - 权限版本检查和已打开连接的撤权关闭路径。
 - RandallFlare 部署配置、单文件 Worker 构建和 CI。
