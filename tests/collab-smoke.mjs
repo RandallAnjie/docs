@@ -6,6 +6,7 @@ import * as Y from 'yjs';
 const baseUrl = process.env.RDOCS_SMOKE_URL || 'https://docs.bigrandall.io';
 const expectedOrigin = process.env.RDOCS_SMOKE_ORIGIN || 'https://docs.bigrandall.io';
 const adminSecret = process.env.RDOCS_SMOKE_ADMIN_SECRET || '';
+const skipRevocation = process.env.RDOCS_SMOKE_SKIP_REVOCATION === '1';
 const wsBaseUrl = baseUrl.replace(/^http/, 'ws');
 const debug = process.env.RDOCS_SMOKE_DEBUG === '1';
 
@@ -142,27 +143,37 @@ await waitFor(
 );
 
 let revokedCloseCode = 0;
-restored.socket.once('close', (code) => {
-  revokedCloseCode = code;
-});
-await api(`/api/pages/${pageId}/collaboration-access`, {
-  method: 'POST',
-  headers: { authorization: `Bearer ${adminSecret}` },
-  body: JSON.stringify({ enabled: false }),
-});
-await waitFor(() => revokedCloseCode === 4403, 'permission revocation did not close live socket');
+if (skipRevocation) {
+  restored.socket.close(1000, 'revocation skipped');
+} else {
+  assert(adminSecret, 'RDOCS_SMOKE_ADMIN_SECRET is required unless revocation is skipped');
+  restored.socket.once('close', (code) => {
+    revokedCloseCode = code;
+  });
+  await api(`/api/pages/${pageId}/collaboration-access`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${adminSecret}` },
+    body: JSON.stringify({ enabled: false }),
+  });
+  await waitFor(() => revokedCloseCode === 4403, 'permission revocation did not close live socket');
 
-await api(`/api/pages/${pageId}/collaboration-access`, {
-  method: 'POST',
-  headers: { authorization: `Bearer ${adminSecret}` },
-  body: JSON.stringify({ enabled: true }),
-});
+  await api(`/api/pages/${pageId}/collaboration-access`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${adminSecret}` },
+    body: JSON.stringify({ enabled: true }),
+  });
+}
 
 assert(second.doc.getText('default').toString() === marker, 'local convergence state was lost');
 console.log(
   JSON.stringify({
     ok: true,
     pageId,
-    checks: ['two-client convergence', 'DO persistence', 'reconnect restore', 'live revocation'],
+    checks: [
+      'two-client convergence',
+      'DO persistence',
+      'reconnect restore',
+      skipRevocation ? 'live revocation skipped' : 'live revocation',
+    ],
   }),
 );

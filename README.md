@@ -27,7 +27,7 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 
 ![Rdocs Phase 0 首页](docs/preview.png)
 
-`docs.bigrandall.io` 是唯一正式验收域名，旧自动域名已经停用。Rdocs 已通过 HTTP/Yjs 兼容通道提供无感自动保存、多人正文同步、在线状态和协作者光标；原生 WebSocket 仍需在平台修复后的正式域名上复验，详见 [RandallFlare 平台问题清单](docs/RANDALLFLARE_PLATFORM_ISSUES.md)。设备密钥代码已经就绪，但生产环境在首把真实设备密钥登记前仍显式使用匿名 `phase0`，因此暂时不应保存敏感或正式资料。
+`docs.bigrandall.io` 是唯一正式验收域名，旧自动域名已经停用。原生 WebSocket 已在平台修复后的正式域名通过双客户端同步、DO 持久化和重连恢复复验；HTTP/Yjs 兼容通道继续提供无感自动保存、在线状态和协作者光标，详见 [RandallFlare 平台问题清单](docs/RANDALLFLARE_PLATFORM_ISSUES.md)。设备密钥代码已经就绪，但生产环境在首把真实设备密钥登记前仍显式使用匿名 `phase0`，因此暂时不应保存敏感或正式资料。
 
 完整需求对照、完成度和后续固定顺序见 [Rdocs 实施进度](docs/ROADMAP_STATUS.md)。
 
@@ -118,6 +118,8 @@ npm run smoke:collab
 ```
 
 该脚本验证 RandallFlare 原生 WebSocket 链路的双客户端收敛、DO 持久化、重连恢复和在线撤权。浏览器产品界面同时使用 HTTP/Yjs 兼容通道维持自动保存和多人同步。
+
+没有管理员密钥时，可以显式设置 `RDOCS_SMOKE_SKIP_REVOCATION=1`，仅跳过最后的在线撤权步骤；脚本会在结果中标明跳过项，不会把它误报为通过。
 
 ## 安全边界
 
