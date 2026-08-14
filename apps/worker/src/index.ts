@@ -18,6 +18,7 @@ const SYSTEM_USER_ID = 'usr_phase0_system';
 const PHASE0_ORGANIZATION_ID = 'org_phase0';
 const PHASE0_SPACE_ID = 'spc_phase0';
 const MAX_TITLE_LENGTH = 200;
+const MAX_PAGE_TREE_SIZE = 500;
 const COLLAB_AUTH_CACHE_MS = 2_000;
 
 const collaborationAuthorizationCache = new Map<string, { checkedAt: number; page: PageSummary }>();
@@ -75,6 +76,24 @@ async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
   return row ? pageFromRow(row) : null;
 }
 
+async function listPages(env: Env): Promise<Response> {
+  const rows = (
+    await env.DB.prepare(
+      `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+            p.current_generation, p.editor_schema_version, p.updated_at,
+            a.collaboration_enabled, a.acl_version
+       FROM pages p
+       JOIN page_access_state a ON a.page_id = p.id
+      WHERE p.organization_id = ? AND p.space_id = ? AND p.deleted_at IS NULL
+      ORDER BY p.sort_key ASC, p.id ASC
+      LIMIT ?`,
+    )
+      .bind(PHASE0_ORGANIZATION_ID, PHASE0_SPACE_ID, MAX_PAGE_TREE_SIZE)
+      .all<PageRow>()
+  ).results;
+  return json({ pages: rows.map(pageFromRow) });
+}
+
 async function findPageForCollaboration(env: Env, pageId: string): Promise<PageSummary | null> {
   const cached = collaborationAuthorizationCache.get(pageId);
   if (cached && Date.now() - cached.checkedAt < COLLAB_AUTH_CACHE_MS) return cached.page;
@@ -90,9 +109,26 @@ async function findPageForCollaboration(env: Env, pageId: string): Promise<PageS
 }
 
 async function createPage(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { title?: unknown };
+  const body = (await request.json().catch(() => ({}))) as {
+    title?: unknown;
+    parentId?: unknown;
+  };
   const requestedTitle = typeof body.title === 'string' ? body.title.trim() : '';
   const title = (requestedTitle || '未命名页面').slice(0, MAX_TITLE_LENGTH);
+  const parentId = body.parentId === null || body.parentId === undefined ? null : body.parentId;
+  if (parentId !== null && (typeof parentId !== 'string' || !isPageId(parentId))) {
+    return error('父页面 ID 无效', 400);
+  }
+  if (parentId !== null) {
+    const parent = await findPage(env, parentId);
+    if (
+      !parent ||
+      parent.organizationId !== PHASE0_ORGANIZATION_ID ||
+      parent.spaceId !== PHASE0_SPACE_ID
+    ) {
+      return error('父页面不存在', 404);
+    }
+  }
   const id = crypto.randomUUID();
   const now = Date.now();
 
@@ -102,11 +138,12 @@ async function createPage(request: Request, env: Env): Promise<Response> {
         id, organization_id, space_id, parent_id, title, sort_key,
         current_generation, editor_schema_version, created_by, updated_by,
         created_at, updated_at
-      ) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       PHASE0_ORGANIZATION_ID,
       PHASE0_SPACE_ID,
+      parentId,
       title,
       now.toString().padStart(20, '0'),
       EDITOR_SCHEMA_VERSION,
@@ -324,6 +361,10 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === '/api/pages' && request.method === 'POST') {
     return createPage(request, env);
+  }
+
+  if (url.pathname === '/api/pages' && request.method === 'GET') {
+    return listPages(env);
   }
 
   const pageMatch = url.pathname.match(/^\/api\/pages\/([^/]+)$/);

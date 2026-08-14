@@ -1,4 +1,9 @@
-import type { CollabTicketResponse, CreatePageResponse, PageSummary } from '@rdocs/shared';
+import type {
+  CollabTicketResponse,
+  CreatePageResponse,
+  ListPagesResponse,
+  PageSummary,
+} from '@rdocs/shared';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -17,11 +22,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function createPage(title = '未命名页面'): Promise<CreatePageResponse> {
+export function createPage(
+  title = '未命名页面',
+  parentId: string | null = null,
+): Promise<CreatePageResponse> {
   return request('/api/pages', {
     method: 'POST',
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, parentId }),
   });
+}
+
+export function listPages(): Promise<ListPagesResponse> {
+  return request('/api/pages');
 }
 
 export function getPage(pageId: string): Promise<{ page: PageSummary }> {

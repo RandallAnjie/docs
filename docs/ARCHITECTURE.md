@@ -29,6 +29,19 @@ Rdocs 的产品定义是团队多人实时协作知识库，不是单份在线�
 document:{pageId}:generation:{generation}
 ```
 
+## 页面树
+
+页面树是 D1 中 `pages.parent_id` 和 `sort_key` 的投影，不进入 Y.Doc，也不依赖 Durable Object：
+
+```text
+GET  /api/pages             → 当前 Phase 0 空间的页面元数据
+POST /api/pages             → 创建根页面，或通过 parentId 创建子页面
+GET  /api/pages/{pageId}    → 读取单页元数据
+PATCH /api/pages/{pageId}   → 自动保存页面标题
+```
+
+列表按 `sort_key`、`id` 稳定排序，当前技术预览最多返回 500 个页面。创建子页面前，Worker 会验证父页面存在且属于当前组织与空间。前端会防御性处理孤儿节点、自引用和循环父链，保证异常元数据不会让页面从导航中消失。
+
 ## 协作协议
 
 浏览器先请求：

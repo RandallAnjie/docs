@@ -6,6 +6,7 @@ import {
   Bold,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock3,
   Code2,
   FilePlus2,
@@ -19,6 +20,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
+  Plus,
   Quote,
   Search,
   Share2,
@@ -26,15 +28,16 @@ import {
   Star,
   Users,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
 import type { PageSummary } from '@rdocs/shared';
 
-import { createPage, getCollabTicket, getPage, updatePageTitle } from './api';
+import { createPage, getCollabTicket, getPage, listPages, updatePageTitle } from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { getLocalIdentity, type LocalIdentity } from './identity';
+import { ancestorPageIds, buildPageTree, type PageTreeNode } from './page-tree';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -116,15 +119,25 @@ function Welcome({ identity }: { identity: LocalIdentity }) {
 }
 
 function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdentity }) {
-  const [bootstrap, setBootstrap] = useState<{ page: PageSummary; ticket: string } | null>(null);
+  const [bootstrap, setBootstrap] = useState<{
+    page: PageSummary;
+    pages: PageSummary[];
+    ticket: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
-    Promise.all([getPage(pageId), getCollabTicket(pageId, identity)])
-      .then(([{ page }, { ticket }]) => {
-        if (active) setBootstrap({ page, ticket });
+    Promise.all([getPage(pageId), getCollabTicket(pageId, identity), listPages()])
+      .then(([{ page }, { ticket }, { pages }]) => {
+        if (active) {
+          setBootstrap({
+            page,
+            pages: pages.some((candidate) => candidate.id === page.id) ? pages : [...pages, page],
+            ticket,
+          });
+        }
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '页面加载失败');
@@ -143,6 +156,7 @@ function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdenti
   return (
     <DocumentWorkspace
       initialPage={bootstrap.page}
+      initialPages={bootstrap.pages}
       initialTicket={bootstrap.ticket}
       identity={identity}
     />
@@ -151,23 +165,38 @@ function Workspace({ pageId, identity }: { pageId: string; identity: LocalIdenti
 
 function DocumentWorkspace({
   initialPage,
+  initialPages,
   initialTicket,
   identity,
 }: {
   initialPage: PageSummary;
+  initialPages: PageSummary[];
   initialTicket: string;
   identity: LocalIdentity;
 }) {
   const [page, setPage] = useState(initialPage);
+  const [pages, setPages] = useState(initialPages);
   const [title, setTitle] = useState(page.title);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [collab, setCollab] = useState<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null);
   const [onlineCount, setOnlineCount] = useState(1);
   const [copied, setCopied] = useState(false);
+  const [collapsedPageIds, setCollapsedPageIds] = useState<ReadonlySet<string>>(new Set());
+  const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
+  const [treeError, setTreeError] = useState<string | null>(null);
   const titleTimer = useRef<number | undefined>(undefined);
   const latestTitle = useRef(page.title);
   const savedTitle = useRef(page.title);
   const titleSaveRunning = useRef(false);
+  const pageTree = useMemo(() => buildPageTree(pages), [pages]);
+
+  useEffect(() => {
+    const ancestors = ancestorPageIds(page.id, pages);
+    setCollapsedPageIds((current) => {
+      const next = new Set([...current].filter((id) => !ancestors.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [page.id, pages]);
 
   useEffect(() => {
     let disposed = false;
@@ -245,6 +274,11 @@ function DocumentWorkspace({
           const { page: updated } = await updatePageTitle(page.id, candidate);
           savedTitle.current = updated.title;
           setPage(updated);
+          setPages((current) =>
+            current.map((candidatePage) =>
+              candidatePage.id === updated.id ? updated : candidatePage,
+            ),
+          );
         } catch {
           window.clearTimeout(titleTimer.current);
           titleTimer.current = window.setTimeout(() => void flushTitle(), 1_500);
@@ -284,6 +318,28 @@ function DocumentWorkspace({
     window.setTimeout(() => setCopied(false), 1800);
   };
 
+  const createAndOpenPage = async (parentId: string | null) => {
+    if (creatingUnder !== undefined) return;
+    setCreatingUnder(parentId);
+    setTreeError(null);
+    try {
+      const { page: created } = await createPage('未命名页面', parentId);
+      navigateToPage(created.id);
+    } catch (reason) {
+      setTreeError(reason instanceof Error ? reason.message : '无法创建页面');
+      setCreatingUnder(undefined);
+    }
+  };
+
+  const togglePage = (pageId: string) => {
+    setCollapsedPageIds((current) => {
+      const next = new Set(current);
+      if (next.has(pageId)) next.delete(pageId);
+      else next.add(pageId);
+      return next;
+    });
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -306,25 +362,39 @@ function DocumentWorkspace({
             <Search size={16} />
             搜索 <kbd>⌘ K</kbd>
           </button>
-          <button onClick={() => void createPage().then(({ page }) => navigateToPage(page.id))}>
+          <button
+            onClick={() => void createAndOpenPage(null)}
+            disabled={creatingUnder !== undefined}
+          >
             <FilePlus2 size={16} />
-            新建页面
+            {creatingUnder === null ? '正在创建…' : '新建页面'}
           </button>
         </div>
         <nav className="sidebar-nav">
-          <p>空间</p>
-          <a className="active" href={`/p/${page.id}`}>
-            <FileText size={16} />
-            <span>{page.title}</span>
-          </a>
-          <a href="#favorites">
-            <Star size={16} />
-            <span>收藏</span>
-          </a>
-          <a href="#recent">
-            <Clock3 size={16} />
-            <span>最近访问</span>
-          </a>
+          <div className="sidebar-section-heading">
+            <p>空间</p>
+            <span>{pages.length}</span>
+          </div>
+          <PageTree
+            nodes={pageTree}
+            activePageId={page.id}
+            collapsedPageIds={collapsedPageIds}
+            creatingUnder={creatingUnder}
+            onToggle={togglePage}
+            onCreateChild={(parentId) => void createAndOpenPage(parentId)}
+          />
+          {pageTree.length === 0 && <div className="page-tree-empty">还没有页面</div>}
+          {treeError && <div className="page-tree-error">{treeError}</div>}
+          <div className="sidebar-shortcuts">
+            <a href="#favorites">
+              <Star size={16} />
+              <span>收藏</span>
+            </a>
+            <a href="#recent">
+              <Clock3 size={16} />
+              <span>最近访问</span>
+            </a>
+          </div>
         </nav>
         <div className="sidebar-footer">
           <IdentityBubble identity={identity} compact />
@@ -412,6 +482,84 @@ function DocumentWorkspace({
         </div>
       </aside>
     </div>
+  );
+}
+
+function PageTree({
+  nodes,
+  activePageId,
+  collapsedPageIds,
+  creatingUnder,
+  onToggle,
+  onCreateChild,
+  depth = 0,
+}: {
+  nodes: PageTreeNode[];
+  activePageId: string;
+  collapsedPageIds: ReadonlySet<string>;
+  creatingUnder: string | null | undefined;
+  onToggle: (pageId: string) => void;
+  onCreateChild: (parentId: string) => void;
+  depth?: number;
+}) {
+  return (
+    <ul className={depth === 0 ? 'page-tree' : 'page-tree-children'}>
+      {nodes.map((node) => {
+        const hasChildren = node.children.length > 0;
+        const collapsed = collapsedPageIds.has(node.id);
+        const active = node.id === activePageId;
+        return (
+          <li className="page-tree-node" key={node.id}>
+            <div
+              className={`page-tree-row ${active ? 'active' : ''}`}
+              style={{ '--tree-depth': depth } as CSSProperties}
+            >
+              <button
+                className={`page-tree-toggle ${hasChildren ? '' : 'placeholder'}`}
+                type="button"
+                aria-label={
+                  hasChildren ? (collapsed ? `展开${node.title}` : `收起${node.title}`) : undefined
+                }
+                aria-expanded={hasChildren ? !collapsed : undefined}
+                disabled={!hasChildren}
+                onClick={() => onToggle(node.id)}
+              >
+                {hasChildren &&
+                  (collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />)}
+              </button>
+              <a
+                href={`/p/${encodeURIComponent(node.id)}`}
+                aria-current={active ? 'page' : undefined}
+              >
+                <FileText size={14} />
+                <span>{node.title}</span>
+              </a>
+              <button
+                className="page-tree-add"
+                type="button"
+                title={`在“${node.title}”下新建子页面`}
+                aria-label={`在“${node.title}”下新建子页面`}
+                disabled={creatingUnder !== undefined}
+                onClick={() => onCreateChild(node.id)}
+              >
+                {creatingUnder === node.id ? <span className="mini-spinner" /> : <Plus size={13} />}
+              </button>
+            </div>
+            {hasChildren && !collapsed && (
+              <PageTree
+                nodes={node.children}
+                activePageId={activePageId}
+                collapsedPageIds={collapsedPageIds}
+                creatingUnder={creatingUnder}
+                onToggle={onToggle}
+                onCreateChild={onCreateChild}
+                depth={depth + 1}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
