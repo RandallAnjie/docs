@@ -49,3 +49,25 @@ export function ancestorPageIds(
   }
   return ancestors;
 }
+
+export function descendantPageIds(
+  pageId: string,
+  pages: readonly PageSummary[],
+): ReadonlySet<string> {
+  const children = new Map<string, string[]>();
+  for (const page of pages) {
+    if (!page.parentId) continue;
+    const current = children.get(page.parentId) ?? [];
+    current.push(page.id);
+    children.set(page.parentId, current);
+  }
+  const descendants = new Set<string>();
+  const pending = [...(children.get(pageId) ?? [])];
+  while (pending.length) {
+    const childId = pending.pop();
+    if (!childId || descendants.has(childId)) continue;
+    descendants.add(childId);
+    pending.push(...(children.get(childId) ?? []));
+  }
+  return descendants;
+}

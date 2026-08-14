@@ -4,20 +4,23 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 
 ## 当前状态
 
-当前仓库完成了 Phase 0 纵向原型的应用骨架：
+当前仓库已经完成 v0.1 的协作文档主链路：
 
 - React + Tiptap 富文本工作台与响应式首页。
-- 基于 D1 元数据的工作区页面树、根页面/子页面创建和页面切换。
+- 多组织、成员邀请、Guest、用户组、空间和可恢复归档。
+- 基于 D1 元数据的页面树、移动/排序、回收站和页面级缩小权限。
 - Yjs / y-websocket 兼容协议。
 - 浏览器 WebSocket 与应用层 HTTP/Yjs 双通道协作同步。
 - 短期 HMAC 协作票据、同源校验和 256 KiB frame 上限。
 - 每篇页面、每个 generation 一个 Durable Object。
 - DO SQLite 增量持久化、重启恢复和阈值快照。
-- 手动版本、恢复前自动版本、R2 不可变快照和幂等的新 generation 安全恢复。
+- 自动/手动版本、预览/比较、R2 不可变快照和幂等的新 generation 安全恢复。
 - WebAuthn 设备密钥登记与无用户名登录，不接入 GitHub OAuth，也不保存密码或设备私钥。
 - 只存哈希的应用会话、`Secure` / `HttpOnly` Cookie、精确 Origin 校验和自动失效回登录。
 - D1 领域模型、恢复操作状态机和版本化迁移。
-- R2 附件 binding 预留。
+- 私有 R2 图片/附件、可过期只读分享链接和附件引用安全复制。
+- 标题/正文搜索、中文 token、最近访问、收藏、评论、相对锚点、提及和通知中心。
+- generation 隔离的 IndexedDB 离线缓存、模板和 Markdown 导入导出。
 - 权限版本检查和已打开连接的撤权关闭路径。
 - RandallFlare 部署配置、单文件 Worker 构建和 CI。
 
@@ -27,9 +30,9 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 
 ![Rdocs Phase 0 首页](docs/preview.png)
 
-`docs.bigrandall.io` 是唯一正式验收域名，旧自动域名已经停用。原生 WebSocket 已在平台修复后的正式域名通过双客户端同步、DO 持久化和重连恢复复验；HTTP/Yjs 兼容通道继续提供无感自动保存、在线状态和协作者光标，详见 [RandallFlare 平台问题清单](docs/RANDALLFLARE_PLATFORM_ISSUES.md)。设备密钥代码已经就绪，但生产环境在首把真实设备密钥登记前仍显式使用匿名 `phase0`，因此暂时不应保存敏感或正式资料。
+`docs.bigrandall.io` 是唯一正式验收域名，旧自动域名已经停用。原生 WebSocket 已在平台修复后的正式域名通过双客户端同步、DO 持久化和重连恢复复验；HTTP/Yjs 恢复通道继续提供无感自动保存、在线状态和协作者光标气泡，详见 [RandallFlare 平台问题清单](docs/RANDALLFLARE_PLATFORM_ISSUES.md)。设备密钥代码已经就绪，但生产环境在首把真实设备密钥登记前仍显式使用匿名 `phase0`，因此暂时不应保存敏感或正式资料。
 
-完整需求对照、完成度和后续固定顺序见 [Rdocs 实施进度](docs/ROADMAP_STATUS.md)。
+完整需求对照见 [Rdocs 实施状态](docs/ROADMAP_STATUS.md)，与 Notion、飞书文档和飞书多维表格的边界见 [2026 产品对照](docs/PRODUCT_COMPARISON_2026.md)。
 
 ## 架构
 
@@ -117,10 +120,10 @@ RDOCS_SMOKE_ORIGIN='https://docs.bigrandall.io' \
 npm run smoke:collab
 ```
 
-该脚本验证 RandallFlare 原生 WebSocket 链路的双客户端收敛、DO 持久化、重连恢复和在线撤权。浏览器产品界面同时使用 HTTP/Yjs 兼容通道维持自动保存和多人同步。
+该脚本验证 RandallFlare 原生 WebSocket 链路的双客户端收敛、DO 持久化、重连恢复和在线撤权。浏览器产品界面同时使用 HTTP/Yjs 恢复通道维持无感自动保存，并在 WebSocket 短暂不可用时继续收敛。
 
 没有管理员密钥时，可以显式设置 `RDOCS_SMOKE_SKIP_REVOCATION=1`，仅跳过最后的在线撤权步骤；脚本会在结果中标明跳过项，不会把它误报为通过。
 
 ## 安全边界
 
-当前生产开关仍处于匿名 `phase0`。设备密钥和应用会话实现已经完成，但必须在首把真实密钥登记并验收后才关闭匿名写入。组织/空间权限、邀请、Turnstile 和审计日志仍属于后续 MVP 工作。
+当前生产开关仍处于匿名 `phase0`。设备密钥和应用会话实现已经完成，但必须在首把真实密钥登记并验收后才关闭匿名写入。多租户、组织/空间/页面权限、邀请和审计均已实现；公开匿名写操作仍未开放，因此当前没有需要 Turnstile 介入的入口。

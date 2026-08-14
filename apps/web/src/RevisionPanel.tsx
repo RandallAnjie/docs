@@ -1,9 +1,10 @@
-import { RotateCcw, Save } from 'lucide-react';
+import { Eye, RotateCcw, Save, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { RevisionKind, RevisionSummary } from '@rdocs/shared';
 
-import { createRevision, listRevisions, restoreRevision } from './api';
+import { createRevision, getRevisionSnapshot, listRevisions, restoreRevision } from './api';
+import { diffRevisionLines, textFromYjsSnapshot, type RevisionDiffLine } from './revision-diff';
 
 const revisionDateFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: 'short',
@@ -23,9 +24,11 @@ const revisionKindLabels: Record<RevisionKind, string> = {
 export function RevisionPanel({
   pageId,
   flushDocument,
+  getCurrentSnapshot,
 }: {
   pageId: string;
   flushDocument: () => Promise<void>;
+  getCurrentSnapshot: () => Uint8Array | null;
 }) {
   const [revisions, setRevisions] = useState<RevisionSummary[]>([]);
   const [label, setLabel] = useState('');
@@ -37,6 +40,12 @@ export function RevisionPanel({
     idempotencyKey: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{
+    revision: RevisionSummary;
+    text: string;
+    diff: RevisionDiffLine[];
+  } | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -93,6 +102,23 @@ export function RevisionPanel({
     }
   };
 
+  const showPreview = async (revision: RevisionSummary) => {
+    if (previewLoadingId) return;
+    setPreviewLoadingId(revision.id);
+    setError(null);
+    try {
+      const snapshot = await getRevisionSnapshot(revision.id);
+      const text = textFromYjsSnapshot(snapshot);
+      const currentSnapshot = getCurrentSnapshot();
+      const currentText = currentSnapshot ? textFromYjsSnapshot(currentSnapshot) : '';
+      setPreview({ revision, text, diff: diffRevisionLines(text, currentText) });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法预览此版本');
+    } finally {
+      setPreviewLoadingId(null);
+    }
+  };
+
   return (
     <div className="revision-panel">
       <section className="revision-create">
@@ -131,6 +157,35 @@ export function RevisionPanel({
         <span>版本记录</span>
         <b>{revisions.length}</b>
       </div>
+      {preview ? (
+        <section className="revision-preview">
+          <header>
+            <div>
+              <strong>{preview.revision.label || revisionKindLabels[preview.revision.kind]}</strong>
+              <span>与当前内容对比</span>
+            </div>
+            <button type="button" onClick={() => setPreview(null)} aria-label="关闭预览">
+              <X size={14} />
+            </button>
+          </header>
+          <div className="revision-diff" aria-label="版本差异">
+            {preview.diff.length ? (
+              preview.diff.map((line, index) => (
+                <div className={line.kind} key={`${index}-${line.text}`}>
+                  <span>{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}</span>
+                  <code>{line.text || ' '}</code>
+                </div>
+              ))
+            ) : (
+              <p>此版本与当前内容相同。</p>
+            )}
+          </div>
+          <details>
+            <summary>查看该版本纯文本</summary>
+            <pre>{preview.text || '（空文档）'}</pre>
+          </details>
+        </section>
+      ) : null}
       {loading ? (
         <div className="revision-state">
           <span className="mini-spinner" /> 正在读取版本…
@@ -150,6 +205,20 @@ export function RevisionPanel({
                 </small>
                 {revision.description ? <p>{revision.description}</p> : null}
               </div>
+              <button
+                type="button"
+                className="revision-preview-button"
+                aria-label={`预览版本“${revision.label || revisionKindLabels[revision.kind]}”`}
+                title="预览与当前内容的差异"
+                disabled={creating || !!restoringId || !!previewLoadingId}
+                onClick={() => void showPreview(revision)}
+              >
+                {previewLoadingId === revision.id ? (
+                  <span className="mini-spinner" />
+                ) : (
+                  <Eye size={14} />
+                )}
+              </button>
               <button
                 type="button"
                 className="revision-restore"

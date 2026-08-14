@@ -2,8 +2,7 @@
 
 更新时间：2026-08-14 UTC
 
-本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。问题已于
-2026-08-14 修复并完成现网复验。现网验证使用：
+本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。原 WebSocket 与发布链路问题已于 2026-08-14 修复并完成现网复验；Rdocs v0.1 迁移时又发现一项独立的 CLI migration 账本问题（RF-7）。现网验证使用：
 
 - Worker：`rdocs`
 - 正式 URL：`https://docs.bigrandall.io`
@@ -15,16 +14,56 @@
 
 ## 结论与优先级
 
-| ID   | 优先级    | 状态           | 问题                                                  |
-| ---- | --------- | -------------- | ----------------------------------------------------- |
-| RF-1 | P0        | 已修复、已复验 | 集群已转发的请求被禁止执行远端 DO WebSocket handoff   |
-| RF-2 | P0        | 已修复、已复验 | Durable Object 的 `bindingName` 与 `className` 被混用 |
-| RF-3 | P0 验收项 | 已修复、已复验 | 两个已连接 WebSocket 的 peer send/broadcast 曾不送达  |
-| RF-4 | P1        | 已修复、已复验 | Git build 成功不等于边缘版本已激活                    |
-| RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值          |
-| RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6 |
+| ID   | 优先级    | 状态           | 问题                                                       |
+| ---- | --------- | -------------- | ---------------------------------------------------------- |
+| RF-1 | P0        | 已修复、已复验 | 集群已转发的请求被禁止执行远端 DO WebSocket handoff        |
+| RF-2 | P0        | 已修复、已复验 | Durable Object 的 `bindingName` 与 `className` 被混用      |
+| RF-3 | P0 验收项 | 已修复、已复验 | 两个已连接 WebSocket 的 peer send/broadcast 曾不送达       |
+| RF-4 | P1        | 已修复、已复验 | Git build 成功不等于边缘版本已激活                         |
+| RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值               |
+| RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
+| RF-7 | P1        | 待修复         | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
+
+## RF-7：D1 migration 账本的参数写入丢失
+
+### 现象
+
+Rdocs 的实际 schema 已包含 `0001`–`0003`，但 `rrangler d1 migrations list rdocs-db` 始终把所有文件显示为未应用。执行 `migrations apply` 后，CLI 重跑已有迁移并在 `0003` 报错：
+
+```text
+duplicate column name: actor_id
+```
+
+检查 `d1_migrations` 后发现多行记录的 `name` 和 `applied_at` 都是 `NULL`。这意味着 SQL 文件执行成功，但随后用参数记录 migration 名称的请求没有把参数传入数据库。
+
+### 根因范围
+
+`rrangler/commands/index.mjs` 的 migration apply 使用：
+
+```js
+sql: "INSERT INTO d1_migrations (name, applied_at) VALUES (?, ?)",
+params: [file, timestamp]
+```
+
+当前 D1 exec API 对这条控制面请求没有正确应用 `params`，SQLite 因 `name` 允许 NULL 而静默插入空账本记录。问题不在 Rdocs Worker 的 D1 binding `.bind()`；应用内参数化查询正常。
+
+### Rdocs 本次安全处理
+
+1. 先导出 31 张表到本地临时备份。
+2. 对 `0004`–`0007` 做 schema 前置检查后，用 `d1 execute --file` 精确执行。
+3. 验证 `page_grants`、`notifications`、editor schema v2 和 `pragma_foreign_key_check=0`。
+4. 用 SQL 字面量重建 Rdocs 自己的 `d1_migrations` 账本；当前 7 个迁移均显示为已应用。
+
+没有修改 RandallFlare 代码。临时方案只作用于 `rdocs-db`。
+
+### 建议修复与验收
+
+- 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
+- `d1_migrations.name` 应为 `TEXT NOT NULL UNIQUE`，避免参数丢失静默成功。
+- 增加测试：迁移 SQL 成功后账本记录非 NULL；二次 apply 必须输出 `already up to date`，不能重跑 `ALTER TABLE`。
+- 用包含单引号、Unicode 和长文件名的 migration 名验证参数编码。
 
 ## 2026-08-14 修复与现网复验
 

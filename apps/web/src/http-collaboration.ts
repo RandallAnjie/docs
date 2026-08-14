@@ -34,6 +34,7 @@ export class HttpCollaborationTransport {
   private timer: ReturnType<typeof globalThis.setTimeout> | undefined;
   private timerDeadline = Number.POSITIVE_INFINITY;
   private failures = 0;
+  private renewedAfterAuthorizationFailure = false;
   private running = false;
   private syncAgain = false;
   private stopped = true;
@@ -89,11 +90,21 @@ export class HttpCollaborationTransport {
     this.abortController = new AbortController();
     try {
       const response = await this.sendSyncRequest();
-      if (response.status === 401) {
-        this.ticket = await this.renewTicket();
-        this.failures = 0;
-        this.schedule(0);
-        return;
+      if (
+        (response.status === 401 || response.status === 403) &&
+        !this.renewedAfterAuthorizationFailure
+      ) {
+        try {
+          this.ticket = await this.renewTicket();
+          this.renewedAfterAuthorizationFailure = true;
+          this.failures = 0;
+          this.schedule(0);
+          return;
+        } catch {
+          this.onState('forbidden');
+          this.stop();
+          return;
+        }
       }
       if (response.status === 403) {
         this.onState('forbidden');
@@ -110,6 +121,7 @@ export class HttpCollaborationTransport {
       const payload = decodeHttpSyncResponse(new Uint8Array(await response.arrayBuffer()));
       this.applyResponse(payload);
       this.failures = 0;
+      this.renewedAfterAuthorizationFailure = false;
       this.onState('synced');
       const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
       this.schedule(hidden ? 1_500 : this.pollIntervalMs);

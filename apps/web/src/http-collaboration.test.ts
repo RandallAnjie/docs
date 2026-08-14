@@ -95,4 +95,40 @@ describe('HttpCollaborationTransport', () => {
     awareness.destroy();
     clientDocument.destroy();
   });
+
+  it('renews a stale ACL ticket once and resumes syncing', async () => {
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    const response = encodeHttpSyncResponse({
+      serverUpdate: new Uint8Array(),
+      serverStateVector: Y.encodeStateVector(clientDocument),
+      awarenessUpdate: new Uint8Array(),
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 403 }))
+        .mockResolvedValueOnce(new Response(toArrayBuffer(response))),
+    );
+    const renewTicket = vi.fn(async () => 'fresh-acl-ticket');
+    const states: string[] = [];
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'stale-acl-ticket',
+      renewTicket,
+      onState: (state) => states.push(state),
+      pollIntervalMs: 60_000,
+    });
+
+    await transport.start();
+    await vi.waitFor(() => expect(states).toContain('synced'));
+    expect(renewTicket).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    transport.stop();
+    awareness.destroy();
+    clientDocument.destroy();
+  });
 });
