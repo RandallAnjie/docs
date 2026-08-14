@@ -7,7 +7,9 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 当前仓库完成了 Phase 0 纵向原型的应用骨架：
 
 - React + Tiptap 富文本工作台与响应式首页。
+- 基于 D1 元数据的工作区页面树、根页面/子页面创建和页面切换。
 - Yjs / y-websocket 兼容协议。
+- 浏览器 WebSocket 与应用层 HTTP/Yjs 双通道协作同步。
 - 短期 HMAC 协作票据、同源校验和 256 KiB frame 上限。
 - 每篇页面、每个 generation 一个 Durable Object。
 - DO SQLite 增量持久化、重启恢复和阈值快照。
@@ -22,15 +24,15 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 
 ![Rdocs Phase 0 首页](docs/preview.png)
 
-`docs.bigrandall.io` 暂未切换。实时协作验收发现 RandallFlare 的 DO WebSocket peer broadcast 当前不可用，详见 [RandallFlare blocker](docs/RANDALLFLARE_BLOCKER.md)。在这个核心闭环通过前，不应把预览视为可保存正式资料的生产系统。
+`docs.bigrandall.io` 暂未切换。Rdocs 已通过 HTTP/Yjs 兼容通道提供无感自动保存、多人正文同步、在线状态和协作者光标；RandallFlare 原生 WebSocket 链路仍待平台修复，详见 [RandallFlare 平台问题清单](docs/RANDALLFLARE_PLATFORM_ISSUES.md)。当前仍是匿名技术预览，不应保存敏感或正式资料。
 
 ## 架构
 
 ```text
 Browser
-  ├─ HTTPS ─────── Rdocs Worker ───── D1 / R2
-  └─ WebSocket ─── Rdocs Worker ───── DocumentRoom Durable Object
-                                          └─ private SQLite
+  ├─ HTTPS API ────────── Rdocs Worker ───── D1 / R2
+  ├─ HTTP/Yjs fallback ── Rdocs Worker ───── DocumentRoom Durable Object
+  └─ WebSocket ────────── Rdocs Worker ────────┘       └─ private SQLite
 ```
 
 前端构建为单个内联 HTML，再与 API、WebSocket 路由和 DO class 一起打包为一个 ESM Worker，适配 RandallFlare 的 Git build `output file` 部署方式。
@@ -107,7 +109,7 @@ RDOCS_SMOKE_ORIGIN='https://docs.bigrandall.io' \
 npm run smoke:collab
 ```
 
-该脚本验证双客户端收敛、DO 持久化、重连恢复和在线撤权。目前会在“双客户端收敛”处失败，这是已记录的平台阻塞，不是一个应被忽略的 flaky test。
+该脚本验证 RandallFlare 原生 WebSocket 链路的双客户端收敛、DO 持久化、重连恢复和在线撤权。该原生链路当前仍受已记录的平台问题影响；浏览器产品界面同时使用 HTTP/Yjs 兼容通道维持自动保存和多人同步。
 
 ## 安全边界
 
