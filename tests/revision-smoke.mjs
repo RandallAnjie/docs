@@ -5,6 +5,7 @@ const expectedOrigin = process.env.RDOCS_SMOKE_ORIGIN || 'https://docs.bigrandal
 const HTTP_SYNC_PROTOCOL_VERSION = 1;
 const HTTP_SYNC_FIELD_COUNT = 3;
 const UINT32_BYTES = 4;
+const SMOKE_TEXT_NAME = 'revision-smoke';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -128,7 +129,7 @@ const pageId = created.page.id;
 const originalGeneration = created.page.currentGeneration;
 const firstTicket = await ticket(pageId, 'revision-smoke-first');
 const firstDocument = new Y.Doc();
-const firstText = firstDocument.getText('default');
+const firstText = firstDocument.getText(SMOKE_TEXT_NAME);
 let firstServerStateVector = new Uint8Array([0]);
 
 firstText.insert(0, 'version-a');
@@ -196,11 +197,11 @@ let restoredServerStateVector = new Uint8Array([0]);
   restoredServerStateVector,
 ));
 assert(
-  restoredDocument.getText('default').toString() === 'version-a',
+  restoredDocument.getText(SMOKE_TEXT_NAME).toString() === 'version-a',
   'restored generation did not contain Version A',
 );
 
-restoredDocument.getText('default').insert(9, '-new-generation');
+restoredDocument.getText(SMOKE_TEXT_NAME).insert(9, '-new-generation');
 ({ serverStateVector: restoredServerStateVector } = await sync(
   pageId,
   restoredTicket,
@@ -215,7 +216,7 @@ await sync(
   new Uint8Array([0]),
 );
 assert(
-  verificationDocument.getText('default').toString() === 'version-a-new-generation',
+  verificationDocument.getText(SMOKE_TEXT_NAME).toString() === 'version-a-new-generation',
   'new generation did not remain writable and persistent',
 );
 
