@@ -1,6 +1,11 @@
 import appHtml from '../../web/dist/index.html';
 
-import { EDITOR_SCHEMA_VERSION, isPageId, type PageSummary } from '@rdocs/shared';
+import {
+  EDITOR_SCHEMA_VERSION,
+  isPageId,
+  MAX_HTTP_SYNC_BODY_BYTES,
+  type PageSummary,
+} from '@rdocs/shared';
 
 import { DocumentRoom } from './document-room';
 import type { Env } from './env';
@@ -13,6 +18,9 @@ const SYSTEM_USER_ID = 'usr_phase0_system';
 const PHASE0_ORGANIZATION_ID = 'org_phase0';
 const PHASE0_SPACE_ID = 'spc_phase0';
 const MAX_TITLE_LENGTH = 200;
+const COLLAB_AUTH_CACHE_MS = 2_000;
+
+const collaborationAuthorizationCache = new Map<string, { checkedAt: number; page: PageSummary }>();
 
 interface PageRow {
   id: string;
@@ -65,6 +73,20 @@ async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
     .bind(pageId)
     .first<PageRow>();
   return row ? pageFromRow(row) : null;
+}
+
+async function findPageForCollaboration(env: Env, pageId: string): Promise<PageSummary | null> {
+  const cached = collaborationAuthorizationCache.get(pageId);
+  if (cached && Date.now() - cached.checkedAt < COLLAB_AUTH_CACHE_MS) return cached.page;
+  const page = await findPage(env, pageId);
+  if (page) {
+    if (collaborationAuthorizationCache.size >= 256) {
+      const oldestKey = collaborationAuthorizationCache.keys().next().value;
+      if (oldestKey) collaborationAuthorizationCache.delete(oldestKey);
+    }
+    collaborationAuthorizationCache.set(pageId, { checkedAt: Date.now(), page });
+  }
+  return page;
 }
 
 async function createPage(request: Request, env: Env): Promise<Response> {
@@ -177,6 +199,7 @@ async function setCollaborationAccess(
   )
     .bind(body.enabled ? 1 : 0, nextVersion, Date.now(), pageId)
     .run();
+  collaborationAuthorizationCache.delete(pageId);
 
   const room = env.DocumentRoom.get(
     env.DocumentRoom.idFromName(`document:${pageId}:generation:${page.currentGeneration}`),
@@ -187,6 +210,60 @@ async function setCollaborationAccess(
     body: JSON.stringify({ enabled: body.enabled, aclVersion: nextVersion }),
   });
   return json({ page: await findPage(env, pageId) });
+}
+
+async function syncCollaborationOverHttp(
+  request: Request,
+  env: Env,
+  pageId: string,
+): Promise<Response> {
+  const origin = request.headers.get('origin');
+  if (origin && !isCollaborationOriginAllowed(request.url, origin, env.APP_ORIGIN)) {
+    return error('Origin 不允许', 403);
+  }
+
+  const authorization = request.headers.get('authorization') ?? '';
+  const ticketValue = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (!ticketValue || !env.COLLAB_TICKET_SECRET) return error('缺少协作凭证', 401);
+  const ticket = await verifyCollabTicket(ticketValue, env.COLLAB_TICKET_SECRET);
+  if (!ticket || ticket.pageId !== pageId) return error('协作凭证无效或已过期', 401);
+
+  const page = await findPageForCollaboration(env, pageId);
+  if (
+    !page ||
+    !page.collaborationEnabled ||
+    page.currentGeneration !== ticket.generation ||
+    page.aclVersion !== ticket.aclVersion
+  ) {
+    return error('页面权限或 generation 已变化', 403);
+  }
+
+  const declaredLength = Number(request.headers.get('content-length') ?? 0);
+  if (declaredLength > MAX_HTTP_SYNC_BODY_BYTES) return error('同步请求过大', 413);
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_HTTP_SYNC_BODY_BYTES) return error('同步请求过大', 413);
+
+  const room = env.DocumentRoom.get(
+    env.DocumentRoom.idFromName(`document:${pageId}:generation:${ticket.generation}`),
+  );
+  const headers = new Headers({
+    'content-type': 'application/octet-stream',
+    'x-rdocs-page-id': pageId,
+    'x-rdocs-generation': String(ticket.generation),
+    'x-rdocs-actor-id': ticket.actorId,
+    'x-rdocs-display-name': ticket.displayName,
+    'x-rdocs-role': ticket.role,
+    'x-rdocs-acl-version': String(ticket.aclVersion),
+    'x-rdocs-editing-enabled': '1',
+  });
+  const response = await room.fetch('https://rdocs.internal/internal/http-sync', {
+    method: 'POST',
+    headers,
+    body,
+  });
+  const responseHeaders = new Headers(response.headers);
+  responseHeaders.set('cache-control', 'no-store');
+  return new Response(response.body, { status: response.status, headers: responseHeaders });
 }
 
 async function openCollaborationSocket(
@@ -264,6 +341,14 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
   if (ticketMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(ticketMatch[1]);
     return isPageId(pageId) ? issueTicket(request, env, pageId) : error('页面 ID 无效', 400);
+  }
+
+  const httpSyncMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/collaboration-sync$/);
+  if (httpSyncMatch?.[1] && request.method === 'POST') {
+    const pageId = decodeURIComponent(httpSyncMatch[1]);
+    return isPageId(pageId)
+      ? syncCollaborationOverHttp(request, env, pageId)
+      : error('页面 ID 无效', 400);
   }
 
   const accessMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/collaboration-access$/);

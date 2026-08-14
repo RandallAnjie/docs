@@ -18,6 +18,7 @@
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "y-protocols": "latest",
     "y-websocket": "latest",
     "yjs": "latest"
   },

@@ -8,7 +8,12 @@ import {
 } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
-import { MAX_COLLAB_FRAME_BYTES } from '@rdocs/shared';
+import {
+  decodeHttpSyncRequest,
+  encodeHttpSyncResponse,
+  MAX_COLLAB_FRAME_BYTES,
+  MAX_HTTP_SYNC_BODY_BYTES,
+} from '@rdocs/shared';
 
 import type { Env } from './env';
 
@@ -19,6 +24,7 @@ const SYNC_STEP_2 = 1;
 const SYNC_UPDATE = 2;
 const SNAPSHOT_UPDATE_COUNT = 100;
 const SNAPSHOT_BYTE_COUNT = 512 * 1024;
+const HTTP_AWARENESS_TIMEOUT_MS = 10_000;
 
 interface SocketAttachment {
   actorId: string;
@@ -88,6 +94,16 @@ function awarenessClientIds(payload: Uint8Array): number[] {
   return ids;
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function containsYjsChanges(update: Uint8Array): boolean {
+  if (update.byteLength === 0) return false;
+  const decoded = Y.decodeUpdate(update);
+  return decoded.structs.length > 0 || decoded.ds.clients.size > 0;
+}
+
 async function normalizeBinaryMessage(rawMessage: unknown): Promise<Uint8Array | null> {
   if (typeof rawMessage === 'string') return null;
   if (rawMessage instanceof ArrayBuffer) return new Uint8Array(rawMessage);
@@ -108,6 +124,7 @@ export class DocumentRoom {
   private updatesSinceSnapshot = 0;
   private bytesSinceSnapshot = 0;
   private editingEnabled = true;
+  private readonly httpAwarenessSeenAt = new Map<number, number>();
   private readonly sockets = new Set<WebSocket>();
   private readonly attachments = new WeakMap<WebSocket, SocketAttachment>();
   private messageQueue: Promise<void> = Promise.resolve();
@@ -213,6 +230,15 @@ export class DocumentRoom {
       return Response.json({ ok: true, seq: this.currentSeq });
     }
 
+    if (url.pathname === '/internal/http-sync' && request.method === 'POST') {
+      const syncTask = this.messageQueue.then(() => this.handleHttpSync(request));
+      this.messageQueue = syncTask.then(
+        () => undefined,
+        () => undefined,
+      );
+      return syncTask;
+    }
+
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('WebSocket upgrade required', { status: 426 });
     }
@@ -266,6 +292,87 @@ export class DocumentRoom {
     }
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private async handleHttpSync(request: Request): Promise<Response> {
+    if (request.headers.get('x-rdocs-editing-enabled') !== '1' || !this.editingEnabled) {
+      return new Response('Collaboration is disabled', { status: 403 });
+    }
+
+    const body = new Uint8Array(await request.arrayBuffer());
+    if (body.byteLength > MAX_HTTP_SYNC_BODY_BYTES) {
+      return new Response('Sync request too large', { status: 413 });
+    }
+    let decodedRequest: ReturnType<typeof decodeHttpSyncRequest>;
+    try {
+      decodedRequest = decodeHttpSyncRequest(body);
+    } catch {
+      return new Response('Invalid sync request', { status: 400 });
+    }
+    const { clientStateVector, clientUpdate, awarenessUpdate } = decodedRequest;
+    const role = request.headers.get('x-rdocs-role') === 'viewer' ? 'viewer' : 'editor';
+    const actorId = request.headers.get('x-rdocs-actor-id') ?? 'unknown';
+
+    let hasDocumentChanges = false;
+    let awarenessIds: number[] = [];
+    try {
+      hasDocumentChanges = containsYjsChanges(clientUpdate);
+      if (awarenessUpdate.byteLength > 0) awarenessIds = awarenessClientIds(awarenessUpdate);
+    } catch {
+      return new Response('Invalid sync payload', { status: 400 });
+    }
+
+    if (hasDocumentChanges) {
+      if (role !== 'editor') return new Response('Editing is disabled', { status: 403 });
+      await this.persistUpdate(clientUpdate, actorId);
+      Y.applyUpdate(this.document, clientUpdate, 'http-sync');
+      this.broadcast(syncMessage(SYNC_UPDATE, clientUpdate));
+      await this.maybeCreateSnapshot();
+    }
+
+    if (awarenessUpdate.byteLength > 0) {
+      applyAwarenessUpdate(this.awareness, awarenessUpdate, 'http-sync');
+      const now = Date.now();
+      for (const clientId of awarenessIds) this.httpAwarenessSeenAt.set(clientId, now);
+    }
+
+    const awarenessCutoff = Date.now() - HTTP_AWARENESS_TIMEOUT_MS;
+    const socketAwarenessIds = new Set<number>();
+    for (const socket of this.sockets) {
+      for (const clientId of this.attachments.get(socket)?.awarenessClientIds ?? []) {
+        socketAwarenessIds.add(clientId);
+      }
+    }
+    const expiredAwarenessIds: number[] = [];
+    for (const [clientId, seenAt] of this.httpAwarenessSeenAt) {
+      if (seenAt >= awarenessCutoff) continue;
+      if (socketAwarenessIds.has(clientId)) {
+        this.httpAwarenessSeenAt.delete(clientId);
+        continue;
+      }
+      expiredAwarenessIds.push(clientId);
+      this.httpAwarenessSeenAt.delete(clientId);
+    }
+    if (expiredAwarenessIds.length > 0) {
+      removeAwarenessStates(this.awareness, expiredAwarenessIds, 'http-timeout');
+    }
+
+    const currentClients = [...this.awareness.getStates().keys()];
+    const response = encodeHttpSyncResponse({
+      serverUpdate: Y.encodeStateAsUpdate(this.document, clientStateVector),
+      serverStateVector: Y.encodeStateVector(this.document),
+      awarenessUpdate:
+        currentClients.length > 0
+          ? encodeAwarenessUpdate(this.awareness, currentClients)
+          : new Uint8Array(),
+    });
+    return new Response(toArrayBuffer(response), {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'cache-control': 'no-store',
+        'x-rdocs-sync-seq': String(this.currentSeq),
+      },
+    });
   }
 
   async webSocketMessage(socket: WebSocket, rawMessage: unknown): Promise<void> {

@@ -1,6 +1,5 @@
 export const PRODUCT_NAME = 'Rdocs';
 export const EDITOR_SCHEMA_VERSION = 1;
-export const MAX_COLLAB_FRAME_BYTES = 256 * 1024;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
 
@@ -30,3 +29,6 @@ export interface CreatePageResponse {
 export function isPageId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
+
+export * from './http-sync';
+export * from './limits';
