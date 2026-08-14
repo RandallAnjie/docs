@@ -30,6 +30,35 @@ export interface ListPagesResponse {
   pages: PageSummary[];
 }
 
+export type RevisionKind = 'automatic' | 'manual' | 'restore' | 'pre_delete' | 'pre_export';
+
+export interface RevisionSummary {
+  id: string;
+  pageId: string;
+  generation: number;
+  collabSeq: number;
+  kind: RevisionKind;
+  label: string | null;
+  description: string | null;
+  contentHash: string;
+  createdBy: string | null;
+  createdAt: number;
+}
+
+export interface ListRevisionsResponse {
+  revisions: RevisionSummary[];
+}
+
+export interface CreateRevisionResponse {
+  revision: RevisionSummary;
+}
+
+export interface RestoreRevisionResponse {
+  page: PageSummary;
+  restoredRevisionId: string;
+  previousRevision: RevisionSummary;
+}
+
 export function isPageId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

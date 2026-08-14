@@ -46,6 +46,7 @@ import { createPage, getCollabTicket, getPage, listPages, updatePageTitle } from
 import { HttpCollaborationTransport } from './http-collaboration';
 import { getLocalIdentity, type LocalIdentity } from './identity';
 import { ancestorPageIds, buildPageTree, type PageTreeNode } from './page-tree';
+import { RevisionPanel } from './RevisionPanel';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -189,6 +190,7 @@ function DocumentWorkspace({
   const [collab, setCollab] = useState<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null);
   const [onlineCount, setOnlineCount] = useState(1);
   const [copied, setCopied] = useState(false);
+  const [contextTab, setContextTab] = useState<'comments' | 'history'>('comments');
   const [collapsedPageIds, setCollapsedPageIds] = useState<ReadonlySet<string>>(new Set());
   const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
   const [treeError, setTreeError] = useState<string | null>(null);
@@ -197,6 +199,7 @@ function DocumentWorkspace({
   const savedTitle = useRef(page.title);
   const titleSaveRunning = useRef(false);
   const sidebarNavigation = useRef<HTMLElement>(null);
+  const httpTransportRef = useRef<HttpCollaborationTransport | null>(null);
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
 
   useLayoutEffect(() => {
@@ -266,6 +269,10 @@ function DocumentWorkspace({
         if (state === 'synced') {
           httpSynced = true;
           setConnection('synced');
+        } else if (state === 'rebased') {
+          terminalError = true;
+          setConnection('connecting');
+          window.location.reload();
         } else if (state === 'forbidden') {
           httpSynced = false;
           terminalError = true;
@@ -276,16 +283,22 @@ function DocumentWorkspace({
         }
       },
     });
+    httpTransportRef.current = httpTransport;
     void httpTransport.start();
     setCollab({ ydoc, provider });
 
     return () => {
       disposed = true;
+      if (httpTransportRef.current === httpTransport) httpTransportRef.current = null;
       httpTransport.stop();
       provider.destroy();
       ydoc.destroy();
     };
   }, [identity, initialTicket, page.id]);
+
+  const flushDocument = useCallback(async () => {
+    await httpTransportRef.current?.flushNow();
+  }, []);
 
   const flushTitle = useCallback(async () => {
     if (titleSaveRunning.current) return;
@@ -480,29 +493,41 @@ function DocumentWorkspace({
 
       <aside className="context-panel">
         <div className="context-tabs">
-          <button className="active">
+          <button
+            className={contextTab === 'comments' ? 'active' : ''}
+            onClick={() => setContextTab('comments')}
+          >
             <MessageSquare size={16} />
             评论
           </button>
-          <button>
+          <button
+            className={contextTab === 'history' ? 'active' : ''}
+            onClick={() => setContextTab('history')}
+          >
             <Clock3 size={16} />
             历史
           </button>
         </div>
-        <div className="context-empty">
-          <div className="empty-icon">
-            <MessageSquare size={21} />
-          </div>
-          <strong>从对话开始</strong>
-          <p>选中文字即可发起评论。评论与历史版本将在 Phase 1 接入。</p>
-        </div>
-        <div className="context-card">
-          <span>实时协作</span>
-          <strong>
-            <Users size={16} /> {onlineCount} 人在线
-          </strong>
-          <small>内容由 Yjs 与 Durable Object 实时同步</small>
-        </div>
+        {contextTab === 'comments' ? (
+          <>
+            <div className="context-empty">
+              <div className="empty-icon">
+                <MessageSquare size={21} />
+              </div>
+              <strong>从对话开始</strong>
+              <p>选中文字即可发起评论。评论将在 Phase 2 接入。</p>
+            </div>
+            <div className="context-card">
+              <span>实时协作</span>
+              <strong>
+                <Users size={16} /> {onlineCount} 人在线
+              </strong>
+              <small>内容由 Yjs 与 Durable Object 实时同步</small>
+            </div>
+          </>
+        ) : (
+          <RevisionPanel pageId={page.id} flushDocument={flushDocument} />
+        )}
       </aside>
     </div>
   );

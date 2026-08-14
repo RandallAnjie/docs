@@ -1,1 +1,2 @@
 export const MAX_COLLAB_FRAME_BYTES = 256 * 1024;
+export const MAX_REVISION_SNAPSHOT_BYTES = 8 * 1024 * 1024;

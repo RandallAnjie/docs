@@ -52,7 +52,7 @@ describe('HttpCollaborationTransport', () => {
     expect(clientDocument.getText('default').toString()).toBe('server');
 
     clientDocument.getText('default').insert(6, '-client');
-    await transport.syncNow();
+    await transport.flushNow();
     expect(serverDocument.getText('default').toString()).toBe('server-client');
     expect(requests).toHaveLength(2);
     expect(states).toContain('synced');
@@ -61,5 +61,38 @@ describe('HttpCollaborationTransport', () => {
     awareness.destroy();
     clientDocument.destroy();
     serverDocument.destroy();
+  });
+
+  it('reports a restored generation without retrying the old room', async () => {
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(null, {
+            status: 409,
+            headers: { 'x-rdocs-document-generation': '2' },
+          }),
+      ),
+    );
+
+    const states: string[] = [];
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'old-generation-ticket',
+      renewTicket: async () => 'unused',
+      onState: (state) => states.push(state),
+      pollIntervalMs: 60_000,
+    });
+
+    await transport.start();
+    expect(states).toEqual(['rebased']);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    awareness.destroy();
+    clientDocument.destroy();
   });
 });

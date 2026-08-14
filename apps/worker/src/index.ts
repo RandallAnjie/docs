@@ -4,7 +4,10 @@ import {
   EDITOR_SCHEMA_VERSION,
   isPageId,
   MAX_HTTP_SYNC_BODY_BYTES,
+  MAX_REVISION_SNAPSHOT_BYTES,
   type PageSummary,
+  type RevisionKind,
+  type RevisionSummary,
 } from '@rdocs/shared';
 
 import { DocumentRoom } from './document-room';
@@ -18,7 +21,11 @@ const SYSTEM_USER_ID = 'usr_phase0_system';
 const PHASE0_ORGANIZATION_ID = 'org_phase0';
 const PHASE0_SPACE_ID = 'spc_phase0';
 const MAX_TITLE_LENGTH = 200;
+const MAX_REVISION_LABEL_LENGTH = 100;
+const MAX_REVISION_DESCRIPTION_LENGTH = 500;
 const MAX_PAGE_TREE_SIZE = 500;
+const MAX_REVISIONS_PER_PAGE = 100;
+const MAX_GENERATION_INITIALIZATION_ATTEMPTS = 5;
 const COLLAB_AUTH_CACHE_MS = 2_000;
 
 const collaborationAuthorizationCache = new Map<string, { checkedAt: number; page: PageSummary }>();
@@ -34,6 +41,21 @@ interface PageRow {
   updated_at: number;
   collaboration_enabled: number;
   acl_version: number;
+}
+
+interface RevisionRow {
+  id: string;
+  page_id: string;
+  generation: number;
+  collab_seq: number;
+  kind: RevisionKind;
+  label: string | null;
+  description: string | null;
+  snapshot_location: 'do' | 'r2';
+  snapshot_ref: string;
+  content_hash: string;
+  created_by: string | null;
+  created_at: number;
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -60,6 +82,36 @@ function pageFromRow(row: PageRow): PageSummary {
     collaborationEnabled: Boolean(row.collaboration_enabled),
     aclVersion: Number(row.acl_version),
   };
+}
+
+function revisionFromRow(row: RevisionRow): RevisionSummary {
+  return {
+    id: row.id,
+    pageId: row.page_id,
+    generation: Number(row.generation),
+    collabSeq: Number(row.collab_seq),
+    kind: row.kind,
+    label: row.label,
+    description: row.description,
+    contentHash: row.content_hash,
+    createdBy: row.created_by,
+    createdAt: Number(row.created_at),
+  };
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', toArrayBuffer(bytes)));
+  return [...digest].map((value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function documentRoom(env: Env, pageId: string, generation: number): DurableObjectStub {
+  return env.DocumentRoom.get(
+    env.DocumentRoom.idFromName(`document:${pageId}:generation:${generation}`),
+  );
 }
 
 async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
@@ -92,6 +144,242 @@ async function listPages(env: Env): Promise<Response> {
       .all<PageRow>()
   ).results;
   return json({ pages: rows.map(pageFromRow) });
+}
+
+async function captureRevision(
+  env: Env,
+  page: PageSummary,
+  options: {
+    kind: RevisionKind;
+    label: string | null;
+    description: string | null;
+  },
+): Promise<RevisionSummary> {
+  const snapshotResponse = await documentRoom(env, page.id, page.currentGeneration).fetch(
+    'https://rdocs.internal/internal/export-snapshot',
+    {
+      method: 'POST',
+      headers: { 'x-rdocs-actor-id': SYSTEM_USER_ID },
+    },
+  );
+  if (!snapshotResponse.ok) {
+    throw new Error(`revision_snapshot_export_${snapshotResponse.status}`);
+  }
+
+  const snapshot = new Uint8Array(await snapshotResponse.arrayBuffer());
+  if (snapshot.byteLength === 0 || snapshot.byteLength > MAX_REVISION_SNAPSHOT_BYTES) {
+    throw new Error('revision_snapshot_size');
+  }
+  const collabSeq = Number(snapshotResponse.headers.get('x-rdocs-snapshot-seq') ?? -1);
+  if (!Number.isSafeInteger(collabSeq) || collabSeq < 0) {
+    throw new Error('revision_snapshot_seq');
+  }
+  const contentHash = await sha256Hex(snapshot);
+  const exportedHash = snapshotResponse.headers.get('x-rdocs-content-hash');
+  if (exportedHash !== contentHash) throw new Error('revision_snapshot_hash');
+
+  const revisionId = crypto.randomUUID();
+  const snapshotRef = `organizations/${page.organizationId}/pages/${page.id}/revisions/${revisionId}.yjs`;
+  const createdAt = Date.now();
+  await env.ATTACHMENTS.put(snapshotRef, toArrayBuffer(snapshot), {
+    httpMetadata: { contentType: 'application/octet-stream' },
+    customMetadata: {
+      pageId: page.id,
+      generation: String(page.currentGeneration),
+      collabSeq: String(collabSeq),
+      contentHash,
+    },
+  });
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO revisions(
+        id, organization_id, page_id, generation, collab_seq, kind,
+        label, description, snapshot_location, snapshot_ref, content_hash,
+        created_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'r2', ?, ?, ?, ?)`,
+    )
+      .bind(
+        revisionId,
+        page.organizationId,
+        page.id,
+        page.currentGeneration,
+        collabSeq,
+        options.kind,
+        options.label,
+        options.description,
+        snapshotRef,
+        contentHash,
+        SYSTEM_USER_ID,
+        createdAt,
+      )
+      .run();
+  } catch (reason) {
+    await env.ATTACHMENTS.delete(snapshotRef).catch(() => undefined);
+    throw reason;
+  }
+
+  return {
+    id: revisionId,
+    pageId: page.id,
+    generation: page.currentGeneration,
+    collabSeq,
+    kind: options.kind,
+    label: options.label,
+    description: options.description,
+    contentHash,
+    createdBy: SYSTEM_USER_ID,
+    createdAt,
+  };
+}
+
+async function listRevisions(env: Env, pageId: string): Promise<Response> {
+  const page = await findPage(env, pageId);
+  if (!page) return error('页面不存在', 404);
+  const rows = (
+    await env.DB.prepare(
+      `SELECT id, page_id, generation, collab_seq, kind, label, description,
+              snapshot_location, snapshot_ref, content_hash, created_by, created_at
+         FROM revisions
+        WHERE organization_id = ? AND page_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?`,
+    )
+      .bind(page.organizationId, page.id, MAX_REVISIONS_PER_PAGE)
+      .all<RevisionRow>()
+  ).results;
+  return json({ revisions: rows.map(revisionFromRow) });
+}
+
+async function createRevision(request: Request, env: Env, pageId: string): Promise<Response> {
+  const page = await findPage(env, pageId);
+  if (!page) return error('页面不存在', 404);
+  const body = (await request.json().catch(() => ({}))) as {
+    label?: unknown;
+    description?: unknown;
+  };
+  if (body.label !== undefined && typeof body.label !== 'string') {
+    return error('版本名称必须是字符串', 400);
+  }
+  if (body.description !== undefined && typeof body.description !== 'string') {
+    return error('版本说明必须是字符串', 400);
+  }
+  const label = typeof body.label === 'string' ? body.label.trim() : '';
+  const description = typeof body.description === 'string' ? body.description.trim() : '';
+  if (label.length > MAX_REVISION_LABEL_LENGTH) return error('版本名称过长', 400);
+  if (description.length > MAX_REVISION_DESCRIPTION_LENGTH) return error('版本说明过长', 400);
+
+  const revision = await captureRevision(env, page, {
+    kind: 'manual',
+    label: label || null,
+    description: description || null,
+  });
+  return json({ revision }, { status: 201 });
+}
+
+async function findRevision(env: Env, revisionId: string): Promise<RevisionRow | null> {
+  return env.DB.prepare(
+    `SELECT id, page_id, generation, collab_seq, kind, label, description,
+            snapshot_location, snapshot_ref, content_hash, created_by, created_at
+       FROM revisions
+      WHERE id = ?`,
+  )
+    .bind(revisionId)
+    .first<RevisionRow>();
+}
+
+async function restoreRevision(env: Env, revisionId: string): Promise<Response> {
+  const targetRevision = await findRevision(env, revisionId);
+  if (!targetRevision) return error('版本不存在', 404);
+  const page = await findPage(env, targetRevision.page_id);
+  if (!page) return error('页面不存在', 404);
+  if (targetRevision.snapshot_location !== 'r2') {
+    return error('此版本的快照位置暂不支持恢复', 409);
+  }
+
+  const snapshotObject = await env.ATTACHMENTS.get(targetRevision.snapshot_ref);
+  if (!snapshotObject) return error('版本快照不存在', 409);
+  if (snapshotObject.size > MAX_REVISION_SNAPSHOT_BYTES) return error('版本快照过大', 413);
+  const snapshot = new Uint8Array(await snapshotObject.arrayBuffer());
+  if ((await sha256Hex(snapshot)) !== targetRevision.content_hash) {
+    return error('版本快照校验失败', 409);
+  }
+
+  const previousRevision = await captureRevision(env, page, {
+    kind: 'restore',
+    label: '恢复前自动版本',
+    description: `恢复版本 ${targetRevision.id} 前自动保存`,
+  });
+
+  let nextGeneration: number | null = null;
+  for (let attempt = 1; attempt <= MAX_GENERATION_INITIALIZATION_ATTEMPTS; attempt += 1) {
+    const candidate = page.currentGeneration + attempt;
+    const initializeResponse = await documentRoom(env, page.id, candidate).fetch(
+      'https://rdocs.internal/internal/initialize-generation',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-rdocs-page-id': page.id,
+          'x-rdocs-generation': String(candidate),
+          'x-rdocs-revision-id': targetRevision.id,
+          'x-rdocs-content-hash': targetRevision.content_hash,
+          'x-rdocs-actor-id': SYSTEM_USER_ID,
+        },
+        body: toArrayBuffer(snapshot),
+      },
+    );
+    if (initializeResponse.status === 409) continue;
+    if (!initializeResponse.ok) {
+      throw new Error(`revision_generation_initialize_${initializeResponse.status}`);
+    }
+    nextGeneration = candidate;
+    break;
+  }
+  if (nextGeneration === null) return error('无法分配新的文档 generation', 409);
+
+  const update = await env.DB.prepare(
+    `UPDATE pages
+        SET current_generation = ?, updated_by = ?, updated_at = ?
+      WHERE id = ? AND organization_id = ? AND current_generation = ? AND deleted_at IS NULL`,
+  )
+    .bind(
+      nextGeneration,
+      SYSTEM_USER_ID,
+      Date.now(),
+      page.id,
+      page.organizationId,
+      page.currentGeneration,
+    )
+    .run();
+  if (!update.meta.changes) return error('页面已被其他恢复操作更新，请刷新后重试', 409);
+
+  collaborationAuthorizationCache.delete(page.id);
+  try {
+    await documentRoom(env, page.id, page.currentGeneration).fetch(
+      'https://rdocs.internal/internal/rebase',
+      {
+        method: 'POST',
+        headers: { 'x-rdocs-next-generation': String(nextGeneration) },
+      },
+    );
+  } catch (reason) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'revision_old_generation_close_failed',
+        pageId: page.id,
+        generation: page.currentGeneration,
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    );
+  }
+
+  return json({
+    page: await findPage(env, page.id),
+    restoredRevisionId: targetRevision.id,
+    previousRevision,
+  });
 }
 
 async function findPageForCollaboration(env: Env, pageId: string): Promise<PageSummary | null> {
@@ -266,13 +554,21 @@ async function syncCollaborationOverHttp(
   if (!ticket || ticket.pageId !== pageId) return error('协作凭证无效或已过期', 401);
 
   const page = await findPageForCollaboration(env, pageId);
-  if (
-    !page ||
-    !page.collaborationEnabled ||
-    page.currentGeneration !== ticket.generation ||
-    page.aclVersion !== ticket.aclVersion
-  ) {
-    return error('页面权限或 generation 已变化', 403);
+  if (page && page.currentGeneration !== ticket.generation) {
+    return json(
+      {
+        error: '文档已恢复到新的 generation',
+        code: 'document_rebased',
+        generation: page.currentGeneration,
+      },
+      {
+        status: 409,
+        headers: { 'x-rdocs-document-generation': String(page.currentGeneration) },
+      },
+    );
+  }
+  if (!page || !page.collaborationEnabled || page.aclVersion !== ticket.aclVersion) {
+    return error('页面权限已变化', 403);
   }
 
   const declaredLength = Number(request.headers.get('content-length') ?? 0);
@@ -365,6 +661,20 @@ async function handleApi(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === '/api/pages' && request.method === 'GET') {
     return listPages(env);
+  }
+
+  const pageRevisionsMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/revisions$/);
+  if (pageRevisionsMatch?.[1]) {
+    const pageId = decodeURIComponent(pageRevisionsMatch[1]);
+    if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    if (request.method === 'GET') return listRevisions(env, pageId);
+    if (request.method === 'POST') return createRevision(request, env, pageId);
+  }
+
+  const restoreRevisionMatch = url.pathname.match(/^\/api\/revisions\/([^/]+)\/restore$/);
+  if (restoreRevisionMatch?.[1] && request.method === 'POST') {
+    const revisionId = decodeURIComponent(restoreRevisionMatch[1]);
+    return isPageId(revisionId) ? restoreRevision(env, revisionId) : error('版本 ID 无效', 400);
   }
 
   const pageMatch = url.pathname.match(/^\/api\/pages\/([^/]+)$/);
