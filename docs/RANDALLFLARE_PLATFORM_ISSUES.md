@@ -23,6 +23,7 @@
 | RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值               |
 | RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
 | RF-7 | P1        | 待修复         | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
+| RF-8 | P1        | 待修复         | 顺序产品 smoke 的不同写端点间歇返回边缘 502                |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
 
@@ -64,6 +65,27 @@ params: [file, timestamp]
 - `d1_migrations.name` 应为 `TEXT NOT NULL UNIQUE`，避免参数丢失静默成功。
 - 增加测试：迁移 SQL 成功后账本记录非 NULL；二次 apply 必须输出 `already up to date`，不能重跑 `ALTER TABLE`。
 - 用包含单引号、Unicode 和长文件名的 migration 名验证参数编码。
+
+## RF-8：低并发顺序 API 仍会间歇返回 502
+
+### 现象
+
+在新版本部署完成、D1 外键检查通过后，`npm run smoke:product` 以单客户端顺序调用产品 API。三次运行中：
+
+1. 第一次在 `POST /api/pages/{id}/share-links` 返回 502。
+2. 第二次完整通过租户、页面、搜索、权限、评论、附件、分享、Markdown、用户组、邀请、审计和回收站。
+3. 第三次在 `POST /api/pages/{id}/export/markdown` 返回 502。
+
+单独重试相同类型的创建分享请求可以返回 201。失败端点不固定，请求不是并发洪泛；smoke 每一步都等待上一响应。Rdocs 返回的业务错误均为 JSON，而观测到的 502 没有业务错误字段，因此更像边缘、D1 executor、DO 转发或 R2 调用链上的间歇故障。
+
+Rdocs 没有自动重放创建分享、评论、邀请等非幂等写请求，因为响应丢失后盲目重试可能制造重复数据。产品 smoke 已增加 20 秒单请求超时，并在失败信息中输出 `x-request-id` 和最多 500 字节的原始错误体，供后续关联平台日志。
+
+### 建议排查与验收
+
+- 用 `x-request-id` 串联 front door、compute、D1 executor、DO 和 R2 日志；平台生成的 502 也必须返回可关联 ID。
+- 检查 PR #146 的 D1 executor 有界等待是否覆盖同一请求内的多次顺序 D1 调用，以及 DO→D1/R2 的内部调用。
+- 连续运行 `npm run smoke:product` 100 次，要求 100/100 通过且无 502/503/504。
+- 端点级压力测试至少覆盖分享创建、版本/导出快照、评论批量写和 ACL bump。
 
 ## 2026-08-14 修复与现网复验
 
