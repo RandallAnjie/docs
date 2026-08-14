@@ -57,6 +57,7 @@ export interface RestoreRevisionResponse {
   page: PageSummary;
   restoredRevisionId: string;
   previousRevision: RevisionSummary;
+  idempotencyKey: string;
 }
 
 export function isPageId(value: string): boolean {

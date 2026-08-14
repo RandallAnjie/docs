@@ -70,9 +70,13 @@ export function createRevision(
   });
 }
 
-export function restoreRevision(revisionId: string): Promise<RestoreRevisionResponse> {
+export function restoreRevision(
+  revisionId: string,
+  idempotencyKey: string,
+): Promise<RestoreRevisionResponse> {
   return request(`/api/revisions/${encodeURIComponent(revisionId)}/restore`, {
     method: 'POST',
+    headers: { 'idempotency-key': idempotencyKey },
   });
 }
 

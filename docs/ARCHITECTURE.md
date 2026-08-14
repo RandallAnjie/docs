@@ -106,6 +106,8 @@ flush 当前客户端
 
 新 generation 在 D1 切换前完成初始化；页面更新使用旧 generation 作为 compare-and-swap 条件，防止两个恢复操作同时生效。旧 generation 后续即使收到迟到 update，也不再是页面权威，且不能污染新 generation。
 
+恢复 API 强制使用 UUID `Idempotency-Key`。D1 `revision_restore_operations` 保存源/目标 generation、恢复前版本和 `pending → prepared → completed` 状态；外部快照初始化完成后才进入 `prepared`，页面 generation 切换成功后才进入 `completed`。客户端在 5xx 或连接中断后用同一键重试，只会继续或回放原操作，不会重复生成“恢复前版本”或再次推进 generation。旧 generation 的关闭由响应后的生命周期任务执行，不把连接清理延迟叠加到用户请求上。
+
 RandallFlare 的 `state.storage.sql` 是异步接口，因此所有查询和写入都必须显式 `await`。代码仍保持 Cloudflare 可接受的调用形状，但部署目标以 RandallFlare 行为为准。
 
 ## 当前 RandallFlare 适配
