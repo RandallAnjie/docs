@@ -254,6 +254,7 @@ button {
   height: 100vh;
   display: grid;
   grid-template-columns: 244px minmax(520px, 1fr) 286px;
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: #eeece7;
 }
