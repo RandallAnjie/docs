@@ -200,9 +200,17 @@ function DocumentWorkspace({
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
 
   useLayoutEffect(() => {
-    sidebarNavigation.current
-      ?.querySelector<HTMLElement>('a[aria-current="page"]')
-      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const navigation = sidebarNavigation.current;
+    const activeLink = navigation?.querySelector<HTMLElement>('a[aria-current="page"]');
+    if (!navigation || !activeLink) return;
+
+    const navigationBounds = navigation.getBoundingClientRect();
+    const activeBounds = activeLink.getBoundingClientRect();
+    if (activeBounds.top < navigationBounds.top) {
+      navigation.scrollTop -= navigationBounds.top - activeBounds.top;
+    } else if (activeBounds.bottom > navigationBounds.bottom) {
+      navigation.scrollTop += activeBounds.bottom - navigationBounds.bottom;
+    }
   }, [page.id, pages.length]);
 
   useEffect(() => {
