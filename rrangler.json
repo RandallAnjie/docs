@@ -23,7 +23,7 @@
     ]
   },
   "vars": {
-    "APP_ORIGIN": "https://docs.bigrandall.io",
+    "APP_ORIGIN": "https://docs.bigrandall.io,https://rdocs-randall.edge.bigrandall.io",
     "ENVIRONMENT": "production"
   },
   "publish": true
