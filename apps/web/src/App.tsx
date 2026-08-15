@@ -134,7 +134,6 @@ import {
   importMarkdown,
   movePage,
   recordPublicSiteEvent,
-  runPageAi,
   setOfflinePin,
   updateSpace,
   updatePageAppearance,
@@ -184,6 +183,7 @@ import {
 import { LandingPage } from './LandingPage';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
+import { AiSelectionToolbar, PageAiComposer, type EditorAiRequest } from './EditorAi';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -200,6 +200,7 @@ interface ActiveCollaborator {
 }
 
 type SlashCommandId =
+  | 'ai'
   | 'bookmark'
   | 'breadcrumb'
   | 'bullet-list'
@@ -247,6 +248,12 @@ interface SlashMenuState extends SlashContext {
 }
 
 const SLASH_COMMANDS: SlashCommandDefinition[] = [
+  {
+    id: 'ai',
+    label: '询问 AI',
+    description: '总结、续写或改写这段内容',
+    keywords: 'ai ask write summarize 人工智能 总结 续写 改写',
+  },
   { id: 'paragraph', label: '正文', description: '从普通文本开始', keywords: 'text 文本 段落' },
   { id: 'heading-1', label: '一级标题', description: '大号章节标题', keywords: 'h1 title 标题' },
   { id: 'heading-2', label: '二级标题', description: '中号章节标题', keywords: 'h2 subtitle 标题' },
@@ -401,6 +408,8 @@ function slashContext(editor: Editor): SlashContext | null {
 
 function slashCommandIcon(id: SlashCommandId): ReactNode {
   switch (id) {
+    case 'ai':
+      return <Sparkles size={17} />;
     case 'heading-1':
       return <Heading1 size={17} />;
     case 'heading-2':
@@ -1922,6 +1931,7 @@ function DocumentWorkspace({
     Boolean(commentThreadIdFromHash(locationHash)),
   );
   const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
+  const [aiRequest, setAiRequest] = useState<EditorAiRequest | null>(null);
   const [siteSearchOpen, setSiteSearchOpen] = useState(false);
   const titleTimer = useRef<number | undefined>(undefined);
   const latestTitle = useRef(page.title);
@@ -1962,6 +1972,36 @@ function DocumentWorkspace({
   const handleEditorReady = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
   }, []);
+  const openAi = useCallback(
+    (request: EditorAiRequest = { from: null, to: null, selectionText: '' }) => {
+      setAiRequest(request);
+    },
+    [],
+  );
+  const insertAiText = useCallback(
+    (text: string, replace: boolean) => {
+      const editor = editorRef.current;
+      const blocks = text
+        .split(/\n{2,}|\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => ({ type: 'paragraph', content: [{ type: 'text', text: line }] }));
+      if (!editor || !blocks.length) {
+        void navigator.clipboard.writeText(text);
+        setAiRequest(null);
+        return;
+      }
+      const chain = editor.chain().focus();
+      const from = aiRequest?.from;
+      const to = aiRequest?.to;
+      if (replace && from !== null && from !== undefined && to !== null && to !== undefined) {
+        chain.deleteRange({ from, to });
+      }
+      chain.insertContent(blocks).run();
+      setAiRequest(null);
+    },
+    [aiRequest],
+  );
   const unavailableMoveTargets = useMemo(
     () => new Set([page.id, ...descendantPageIds(page.id, pages)]),
     [page.id, pages],
@@ -2235,6 +2275,7 @@ function DocumentWorkspace({
     setDiscoveryTab(null);
     setCopied(false);
     setCreatingUnder(undefined);
+    setAiRequest(null);
 
     void (async () => {
       await settleWithin(Promise.all([flushTitleRef.current(), flushDocumentRef.current()]), 800);
@@ -2609,19 +2650,14 @@ function DocumentWorkspace({
             <CollaboratorStack collaborators={collaborators} />
             {onLogout && !renewTicket ? (
               <button
-                className="header-button"
+                className={`header-button ${aiRequest ? 'active' : ''}`}
                 type="button"
-                onClick={() => {
-                  const prompt = window.prompt('向 Rdocs AI 提问或要求改写', '总结这一页');
-                  if (!prompt) return;
-                  void runPageAi(page.id, { kind: 'ask', prompt })
-                    .then((result) => {
-                      window.alert(result.job.resultText || result.job.errorMessage || 'AI 已完成');
-                    })
-                    .catch((reason) =>
-                      window.alert(reason instanceof Error ? reason.message : 'AI 不可用'),
-                    );
-                }}
+                aria-pressed={Boolean(aiRequest)}
+                onClick={() =>
+                  aiRequest
+                    ? setAiRequest(null)
+                    : openAi({ from: null, to: null, selectionText: '' })
+                }
               >
                 <Sparkles size={16} /> AI
               </button>
@@ -2805,6 +2841,27 @@ function DocumentWorkspace({
                 <LockKeyhole size={15} /> 页面已锁定，当前为只读模式
               </div>
             ) : null}
+            {onLogout && !renewTicket && !isSwitching && !aiRequest && !database ? (
+              <button
+                className="ai-idle-hint"
+                type="button"
+                onClick={() => openAi({ from: null, to: null, selectionText: '' })}
+              >
+                <Sparkles size={14} /> 询问 AI，或输入 / 插入内容块
+              </button>
+            ) : null}
+            {onLogout && !renewTicket && aiRequest && !isSwitching ? (
+              <PageAiComposer
+                pageId={page.id}
+                pageTitle={page.title}
+                pageExcerpt={editorRef.current?.getText().slice(0, 6000) ?? ''}
+                request={aiRequest}
+                canEdit={canEdit}
+                onClose={() => setAiRequest(null)}
+                onInsert={(text) => insertAiText(text, false)}
+                onReplace={(text) => insertAiText(text, true)}
+              />
+            ) : null}
             {isSwitching ? (
               <div className="editor-loading" aria-live="polite">
                 <div className="loading-mark" />
@@ -2823,6 +2880,7 @@ function DocumentWorkspace({
                 collab={collab}
                 identity={identity}
                 onSelectionQuote={setCommentSelection}
+                onAskAi={openAi}
                 editable={canEdit}
                 onReady={handleEditorReady}
                 onRequestAttachment={requestAttachmentUpload}
@@ -3079,6 +3137,7 @@ function CollaborativeEditor({
   collab,
   identity,
   onSelectionQuote,
+  onAskAi,
   editable,
   onReady,
   onRequestAttachment,
@@ -3092,6 +3151,7 @@ function CollaborativeEditor({
   collab: { ydoc: Y.Doc; provider: WebsocketProvider };
   identity: LocalIdentity;
   onSelectionQuote: (selection: CommentSelection | null) => void;
+  onAskAi?: (request: EditorAiRequest) => void;
   editable: boolean;
   onReady: (editor: Editor | null) => void;
   onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
@@ -3137,6 +3197,13 @@ function CollaborativeEditor({
   );
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [aiToolbar, setAiToolbar] = useState<{
+    left: number;
+    top: number;
+    from: number;
+    to: number;
+    text: string;
+  } | null>(null);
 
   const updateSlashMenu = useCallback((currentEditor: Editor) => {
     const context = slashContext(currentEditor);
@@ -3224,9 +3291,27 @@ function CollaborativeEditor({
       const { from, to } = currentEditor.state.selection;
       if (from === to) {
         onSelectionQuote(null);
+        setAiToolbar(null);
         return;
       }
       const quotedText = currentEditor.state.doc.textBetween(from, to, ' ').trim().slice(0, 500);
+      if (quotedText && currentEditor.isEditable && onAskAi) {
+        try {
+          const start = currentEditor.view.coordsAtPos(from);
+          const end = currentEditor.view.coordsAtPos(to);
+          setAiToolbar({
+            left: Math.min(start.left, Math.max(12, window.innerWidth - 140)),
+            top: Math.max(12, Math.min(start.top, end.top) - 42),
+            from,
+            to,
+            text: quotedText,
+          });
+        } catch {
+          setAiToolbar(null);
+        }
+      } else {
+        setAiToolbar(null);
+      }
       const syncState = ySyncPluginKey.getState(currentEditor.state) as
         | { type?: Y.XmlFragment; binding?: { mapping?: Map<Y.AbstractType<unknown>, unknown> } }
         | undefined;
@@ -3423,6 +3508,17 @@ function CollaborativeEditor({
       if (!editor?.isEditable) return;
       const context = slashContext(editor);
       if (!context) return;
+
+      if (id === 'ai') {
+        editor.chain().focus().deleteRange(context).run();
+        setSlashMenu(null);
+        onAskAi?.({
+          from: context.from,
+          to: context.from,
+          selectionText: '',
+        });
+        return;
+      }
 
       if (id === 'bookmark') {
         const input = window.prompt('输入网页书签地址');
@@ -3667,7 +3763,7 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor, identity.id, onCreateSyncedBlock, onRequestAttachment, organizationId],
+    [editor, identity.id, onAskAi, onCreateSyncedBlock, onRequestAttachment, organizationId],
   );
 
   useEffect(() => setSlashIndex(0), [slashMenu?.query]);
@@ -3722,6 +3818,16 @@ function CollaborativeEditor({
   };
 
   const tools = [
+    {
+      label: '询问 AI',
+      icon: <Sparkles size={16} />,
+      action: () => {
+        const { from, to } = editor.state.selection;
+        const selectionText = from === to ? '' : editor.state.doc.textBetween(from, to, ' ').trim();
+        onAskAi?.({ from, to, selectionText });
+      },
+      active: false,
+    },
     {
       label: '插入内容块（也可输入 /）',
       icon: <Plus size={16} />,
@@ -3851,6 +3957,20 @@ function CollaborativeEditor({
         />
       ) : null}
       <EditorContent editor={editor} />
+      {aiToolbar && onAskAi ? (
+        <AiSelectionToolbar
+          left={aiToolbar.left}
+          top={aiToolbar.top}
+          onAsk={() => {
+            onAskAi({
+              from: aiToolbar.from,
+              to: aiToolbar.to,
+              selectionText: aiToolbar.text,
+            });
+            setAiToolbar(null);
+          }}
+        />
+      ) : null}
       {slashMenu ? (
         <div
           className="slash-menu"
