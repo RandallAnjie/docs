@@ -89,6 +89,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行数据库模板迁移 `0014_database_templates.sql` 时第七次复现：模板表及“每个数据库最多一个默认模板”的唯一索引均已创建，但第 14 条账本仍为 `(14, NULL, NULL)`。执行前 42 表完整备份位于 `/tmp/rdocs-db-backup-yRtCv1/before-0014.sql`（142,768 bytes）。复验确认目标表、索引存在且外键无违规后，只修复第 14 条 Rdocs 账本记录；迁移列表 `0001`–`0014` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行自动化迁移 `0015_database_automations.sql` 时第八次复现：CLI 报告成功，两张目标表已创建，生产表数由 43 增至 45，但第 15 条账本仍为 `(15, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-bdw4gk/before-0015.sql`（143,552 bytes）。复验目标表定义和外键后，只把第 15 条 Rdocs 账本记录修复为实际文件名；迁移列表 `0001`–`0015` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

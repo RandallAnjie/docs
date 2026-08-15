@@ -8,6 +8,10 @@ import type {
   CreateRevisionResponse,
   DatabasePropertySummary,
   DatabaseFormLinkSummary,
+  DatabaseAutomationAction,
+  DatabaseAutomationRunSummary,
+  DatabaseAutomationSummary,
+  DatabaseAutomationTrigger,
   DatabasePropertyType,
   DatabaseRowSummary,
   DatabaseSnapshot,
@@ -431,6 +435,77 @@ export function duplicateDatabaseRow(
   return request(
     `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}/duplicate`,
     { method: 'POST' },
+  );
+}
+
+export function executeDatabaseButton(
+  databaseId: string,
+  rowId: string,
+  propertyId: string,
+): Promise<{
+  row?: DatabaseRowSummary;
+  ok?: true;
+  archived?: boolean;
+  openUrl?: string;
+}> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}/buttons/${encodeURIComponent(propertyId)}`,
+    { method: 'POST' },
+  );
+}
+
+export function listDatabaseAutomations(databaseId: string): Promise<{
+  automations: DatabaseAutomationSummary[];
+  runs: DatabaseAutomationRunSummary[];
+}> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/automations`);
+}
+
+export function createDatabaseAutomation(
+  databaseId: string,
+  input: {
+    name: string;
+    triggerType: DatabaseAutomationTrigger;
+    triggerConfig: Record<string, JsonValue>;
+    actionType: DatabaseAutomationAction;
+    actionConfig: Record<string, JsonValue>;
+  },
+): Promise<{ automation: DatabaseAutomationSummary }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/automations`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateDatabaseAutomation(
+  databaseId: string,
+  automationId: string,
+  input: { name?: string; enabled?: boolean },
+): Promise<{ automation: DatabaseAutomationSummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/automations/${encodeURIComponent(automationId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteDatabaseAutomation(
+  databaseId: string,
+  automationId: string,
+): Promise<{ ok: true }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/automations/${encodeURIComponent(automationId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function runDatabaseAutomation(
+  databaseId: string,
+  automationId: string,
+  rowId: string,
+): Promise<{ run: DatabaseAutomationRunSummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/automations/${encodeURIComponent(automationId)}/run`,
+    { method: 'POST', body: JSON.stringify({ rowId }) },
   );
 }
 
