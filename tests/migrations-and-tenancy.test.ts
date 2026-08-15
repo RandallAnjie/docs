@@ -15,7 +15,10 @@ import {
 import { listPages } from '../apps/worker/src/page-tree';
 import { pageAccessSnapshot } from '../apps/worker/src/page-access';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
-import { handleCommentsAndNotificationsApi } from '../apps/worker/src/comments';
+import {
+  deliverPageUpdateNotifications,
+  handleCommentsAndNotificationsApi,
+} from '../apps/worker/src/comments';
 import { handleDatabasesApi, handlePublicDatabaseFormsApi } from '../apps/worker/src/databases';
 
 class TestStatement {
@@ -70,33 +73,36 @@ class TestD1 {
   }
 }
 
-function migratedDatabase(): DatabaseSync {
+const MIGRATIONS = [
+  '0001_initial.sql',
+  '0002_revision_restore_operations.sql',
+  '0003_passkey_authentication.sql',
+  '0004_invitation_passkey_registration.sql',
+  '0005_page_permissions.sql',
+  '0006_notifications.sql',
+  '0007_editor_blocks.sql',
+  '0008_page_acl_roles.sql',
+  '0009_complete_permissions.sql',
+  '0010_databases.sql',
+  '0011_database_relations_and_sequences.sql',
+  '0012_database_sequence_rollout_guards.sql',
+  '0013_public_database_forms.sql',
+  '0014_database_templates.sql',
+  '0015_database_automations.sql',
+  '0016_page_appearance_and_lock.sql',
+  '0017_editor_core_blocks.sql',
+  '0018_editor_block_controls_and_columns.sql',
+  '0019_editor_attachment_and_media_blocks.sql',
+  '0020_editor_page_button_and_breadcrumb.sql',
+  '0021_cross_page_synced_blocks.sql',
+  '0022_synced_block_lifecycle.sql',
+  '0023_page_discovery_and_links.sql',
+  '0024_page_notifications_and_inbox.sql',
+] as const;
+
+function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
   const database = new DatabaseSync(':memory:');
-  for (const migration of [
-    '0001_initial.sql',
-    '0002_revision_restore_operations.sql',
-    '0003_passkey_authentication.sql',
-    '0004_invitation_passkey_registration.sql',
-    '0005_page_permissions.sql',
-    '0006_notifications.sql',
-    '0007_editor_blocks.sql',
-    '0008_page_acl_roles.sql',
-    '0009_complete_permissions.sql',
-    '0010_databases.sql',
-    '0011_database_relations_and_sequences.sql',
-    '0012_database_sequence_rollout_guards.sql',
-    '0013_public_database_forms.sql',
-    '0014_database_templates.sql',
-    '0015_database_automations.sql',
-    '0016_page_appearance_and_lock.sql',
-    '0017_editor_core_blocks.sql',
-    '0018_editor_block_controls_and_columns.sql',
-    '0019_editor_attachment_and_media_blocks.sql',
-    '0020_editor_page_button_and_breadcrumb.sql',
-    '0021_cross_page_synced_blocks.sql',
-    '0022_synced_block_lifecycle.sql',
-    '0023_page_discovery_and_links.sql',
-  ]) {
+  for (const migration of migrations) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
   return database;
@@ -164,6 +170,21 @@ describe('database migrations', () => {
       name: string;
     }>;
     expect(columns.map((column) => column.name)).toContain('invitation_id');
+    const notificationColumns = database
+      .prepare(`PRAGMA table_info('notifications')`)
+      .all() as Array<{
+      name: string;
+    }>;
+    expect(notificationColumns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(['event_key', 'archived_at']),
+    );
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name = 'page_notification_subscriptions'",
+        )
+        .get(),
+    ).toEqual({ total: 1 });
     expect(
       readFileSync(join(process.cwd(), 'migrations', '0007_editor_blocks.sql'), 'utf8'),
     ).toContain('editor_schema_version = 2');
@@ -258,6 +279,43 @@ describe('database migrations', () => {
         )
         .get(),
     ).toMatchObject({ next_row_sequence: 2 });
+    database.close();
+  });
+
+  it('preserves existing notification rows while adding inbox state', () => {
+    const database = migratedDatabase(MIGRATIONS.slice(0, -1));
+    const owner = seedTenant(database, 'notification-migration');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO notifications(
+           id, organization_id, user_id, actor_id, type, page_id, thread_id,
+           comment_id, metadata_json, created_at, read_at
+         ) VALUES ('notification_before_0024', 'org_notification-migration', ?, NULL,
+                   'page_shared', NULL, NULL, NULL, '{"source":"legacy"}', ?, ?)`,
+      )
+      .run(owner.id, now, now);
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'migrations', '0024_page_notifications_and_inbox.sql'),
+        'utf8',
+      ),
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT type, metadata_json, created_at, read_at, archived_at, event_key
+             FROM notifications WHERE id = 'notification_before_0024'`,
+        )
+        .get(),
+    ).toEqual({
+      type: 'page_shared',
+      metadata_json: '{"source":"legacy"}',
+      created_at: now,
+      read_at: now,
+      archived_at: null,
+      event_key: null,
+    });
     database.close();
   });
 
@@ -1695,10 +1753,11 @@ describe('tenant boundary integration', () => {
     database.close();
   });
 
-  it('creates page comments and an unread mention notification inside the tenant', async () => {
+  it('creates mention and subscribed-comment notifications inside the tenant', async () => {
     const database = migratedDatabase();
     const owner = seedTenant(database, 'comment-owner');
     const commenter = seedTenant(database, 'commenter');
+    const watcher = seedTenant(database, 'comment-watcher');
     const now = Date.now();
     database
       .prepare(
@@ -1708,11 +1767,25 @@ describe('tenant boundary integration', () => {
       .run(commenter.id, now, now);
     database
       .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_comment-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(watcher.id, now, now);
+    database
+      .prepare(
         `INSERT INTO space_grants(
            id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
          ) VALUES ('grant_commenter', 'org_comment-owner', 'spc_comment-owner', 'user', ?, 'commenter', ?, ?)`,
       )
       .run(commenter.id, owner.id, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_comment_watcher', 'org_comment-owner', 'spc_comment-owner',
+                   'user', ?, 'viewer', ?, ?)`,
+      )
+      .run(watcher.id, owner.id, now);
     database
       .prepare(
         `INSERT INTO pages(
@@ -1729,6 +1802,16 @@ describe('tenant boundary integration', () => {
       )
       .run(now);
     const env = testEnv(database);
+    const watcherSettings = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_comments/notification-settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'all_comments' }),
+      }),
+      env,
+      watcher,
+    );
+    expect(watcherSettings?.status).toBe(200);
 
     const response = await handleCommentsAndNotificationsApi(
       new Request('https://docs.test/api/pages/page_comments/comments', {
@@ -1753,6 +1836,220 @@ describe('tenant boundary integration', () => {
       unreadCount: 1,
       notifications: [{ type: 'mention', pageId: 'page_comments' }],
     });
+    const watcherNotifications = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/notifications?organizationId=org_comment-owner'),
+      env,
+      watcher,
+    );
+    await expect(watcherNotifications?.json()).resolves.toMatchObject({
+      unreadCount: 1,
+      notifications: [{ type: 'page_comment', pageId: 'page_comments' }],
+    });
+    expect(
+      database
+        .prepare(
+          'SELECT mode FROM page_notification_subscriptions WHERE page_id = ? AND user_id = ?',
+        )
+        .get('page_comments', commenter.id),
+    ).toEqual({ mode: 'replies_mentions' });
+    database.close();
+  });
+
+  it('delivers permission-filtered page updates and supports inbox read and archive workflows', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'notify-owner');
+    const editor = seedTenant(database, 'notify-editor');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_notify-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(editor.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_notify_editor', 'org_notify-owner', 'spc_notify-owner',
+                   'user', ?, 'editor', ?, ?)`,
+      )
+      .run(editor.id, owner.id, now);
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, title, sort_key, created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_notify', 'org_notify-owner', 'spc_notify-owner',
+                   'Notification page', '1', ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, updated_at)
+         VALUES ('page_notify', 1, 1, ?)`,
+      )
+      .run(now);
+    const env = testEnv(database);
+
+    const defaultSettings = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_notify/notification-settings'),
+      env,
+      owner,
+    );
+    await expect(defaultSettings?.json()).resolves.toMatchObject({
+      settings: { mode: 'replies_mentions', explicitlySet: false },
+    });
+    const settings = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_notify/notification-settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'all_updates' }),
+      }),
+      env,
+      owner,
+    );
+    await expect(settings?.json()).resolves.toMatchObject({
+      settings: { mode: 'all_updates', explicitlySet: true },
+    });
+
+    const delivery = {
+      organizationId: 'org_notify-owner',
+      pageId: 'page_notify',
+      actorId: editor.id,
+      eventKey: 'page-content:page_notify:1:7',
+      metadata: { eventType: 'page.content_updated', collabSeq: 7 },
+    };
+    await expect(deliverPageUpdateNotifications(env, delivery)).resolves.toBe(1);
+    await expect(deliverPageUpdateNotifications(env, delivery)).resolves.toBe(1);
+    expect(
+      database
+        .prepare('SELECT COUNT(*) AS total FROM notifications WHERE event_key = ?')
+        .get(delivery.eventKey),
+    ).toEqual({ total: 1 });
+
+    const inbox = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/notifications?organizationId=org_notify-owner&view=inbox'),
+      env,
+      owner,
+    );
+    const inboxBody = (await inbox?.json()) as {
+      notifications: Array<{ id: string; type: string; archivedAt: number | null }>;
+      unreadCount: number;
+    };
+    expect(inboxBody).toMatchObject({
+      unreadCount: 1,
+      notifications: [{ type: 'page_updated', archivedAt: null }],
+    });
+    const notificationId = inboxBody.notifications[0]?.id;
+    expect(notificationId).toBeTruthy();
+
+    const read = await handleCommentsAndNotificationsApi(
+      new Request(`https://docs.test/api/notifications/${notificationId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ read: true }),
+      }),
+      env,
+      owner,
+    );
+    expect(read?.status).toBe(200);
+    const archive = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/notifications/archive-read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ organizationId: 'org_notify-owner' }),
+      }),
+      env,
+      owner,
+    );
+    expect(archive?.status).toBe(200);
+    const archived = await handleCommentsAndNotificationsApi(
+      new Request(
+        'https://docs.test/api/notifications?organizationId=org_notify-owner&view=archived',
+      ),
+      env,
+      owner,
+    );
+    await expect(archived?.json()).resolves.toMatchObject({
+      unreadCount: 0,
+      notifications: [{ id: notificationId, type: 'page_updated' }],
+    });
+    database.close();
+  });
+
+  it('hides previously delivered page notifications immediately after access is revoked', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'notify-revoke-owner');
+    const member = seedTenant(database, 'notify-revoke-member');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_notify-revoke-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_notify_revoke_space', 'org_notify-revoke-owner',
+                   'spc_notify-revoke-owner', 'user', ?, 'editor', ?, ?)`,
+      )
+      .run(member.id, owner.id, now);
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, title, sort_key, created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_notify_revoke', 'org_notify-revoke-owner',
+                   'spc_notify-revoke-owner', 'Restricted notifications', '1', ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(
+           page_id, collaboration_enabled, acl_version, access_mode, updated_at
+         ) VALUES ('page_notify_revoke', 1, 1, 'restricted', ?)`,
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO page_grants(
+           id, organization_id, page_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_notify_revoke_page', 'org_notify-revoke-owner',
+                   'page_notify_revoke', 'user', ?, 'viewer', ?, ?)`,
+      )
+      .run(member.id, owner.id, now);
+    const env = testEnv(database);
+    const settings = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_notify_revoke/notification-settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'all_updates' }),
+      }),
+      env,
+      member,
+    );
+    expect(settings?.status).toBe(200);
+    await deliverPageUpdateNotifications(env, {
+      organizationId: 'org_notify-revoke-owner',
+      pageId: 'page_notify_revoke',
+      actorId: owner.id,
+      eventKey: 'page-audit:revoke-check',
+    });
+    expect(
+      database
+        .prepare('SELECT COUNT(*) AS total FROM notifications WHERE user_id = ?')
+        .get(member.id),
+    ).toEqual({ total: 1 });
+
+    database.prepare("DELETE FROM page_grants WHERE id = 'grant_notify_revoke_page'").run();
+    const inbox = await handleCommentsAndNotificationsApi(
+      new Request(
+        'https://docs.test/api/notifications?organizationId=org_notify-revoke-owner&view=inbox',
+      ),
+      env,
+      member,
+    );
+    await expect(inbox?.json()).resolves.toMatchObject({ unreadCount: 0, notifications: [] });
     database.close();
   });
 

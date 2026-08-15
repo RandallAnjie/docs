@@ -4,9 +4,11 @@ import type {
   CommentThreadSummary,
   NotificationSummary,
   NotificationType,
+  PageNotificationMode,
+  PageNotificationSettings,
 } from '@rdocs/shared';
 
-import { requirePageAction, resolvePageAccess } from './access';
+import { findActiveMembership, requirePageAction, resolvePageAccess } from './access';
 import type { Env } from './env';
 
 const MAX_COMMENT_LENGTH = 5_000;
@@ -54,7 +56,19 @@ interface NotificationRow {
   metadata_json: string;
   created_at: number;
   read_at: number | null;
+  archived_at: number | null;
 }
+
+interface PageSubscriptionRow {
+  user_id: string;
+  mode: PageNotificationMode;
+}
+
+const PAGE_NOTIFICATION_MODES = new Set<PageNotificationMode>([
+  'all_updates',
+  'all_comments',
+  'replies_mentions',
+]);
 
 function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
@@ -69,6 +83,18 @@ function error(message: string, status: number): Response {
 
 async function requestBody<T>(request: Request): Promise<T | null> {
   return request.json<T>().catch(() => null);
+}
+
+async function mapInBatches<T, R>(
+  values: ReadonlyArray<T>,
+  batchSize: number,
+  mapper: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let offset = 0; offset < values.length; offset += batchSize) {
+    results.push(...(await Promise.all(values.slice(offset, offset + batchSize).map(mapper))));
+  }
+  return results;
 }
 
 function commentFromRow(row: CommentRow): CommentSummary {
@@ -150,14 +176,17 @@ function notificationStatement(
   actorId: string,
   type: NotificationType,
   pageId: string,
-  threadId: string,
-  commentId: string,
+  threadId: string | null,
+  commentId: string | null,
+  metadata: Record<string, unknown> = {},
+  eventKey: string | null = null,
 ): D1PreparedStatement {
   return env.DB.prepare(
     `INSERT INTO notifications(
        id, organization_id, user_id, actor_id, type, page_id, thread_id,
-       comment_id, metadata_json, created_at, read_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, NULL)`,
+       comment_id, metadata_json, event_key, created_at, read_at, archived_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+     ON CONFLICT(user_id, event_key) WHERE event_key IS NOT NULL DO NOTHING`,
   ).bind(
     crypto.randomUUID(),
     organizationId,
@@ -167,8 +196,28 @@ function notificationStatement(
     pageId,
     threadId,
     commentId,
+    JSON.stringify(metadata),
+    eventKey,
     Date.now(),
   );
+}
+
+async function ensurePageSubscription(
+  env: Env,
+  organizationId: string,
+  pageId: string,
+  userId: string,
+  mode: PageNotificationMode,
+  now = Date.now(),
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO page_notification_subscriptions(
+       page_id, organization_id, user_id, mode, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(page_id, user_id) DO NOTHING`,
+  )
+    .bind(pageId, organizationId, userId, mode, now, now)
+    .run();
 }
 
 async function notificationRecipients(
@@ -180,6 +229,20 @@ async function notificationRecipients(
   actorId: string,
 ): Promise<Map<string, NotificationType>> {
   const recipients = new Map<string, NotificationType>();
+  const subscribers = (
+    await env.DB.prepare(
+      `SELECT s.user_id, s.mode
+         FROM page_notification_subscriptions s
+         JOIN organization_members m
+           ON m.organization_id = s.organization_id AND m.user_id = s.user_id
+        WHERE s.page_id = ? AND s.organization_id = ?
+          AND s.mode IN ('all_updates', 'all_comments')
+          AND m.status = 'active' AND s.user_id <> ?`,
+    )
+      .bind(pageId, organizationId, actorId)
+      .all<PageSubscriptionRow>()
+  ).results;
+  for (const subscriber of subscribers) recipients.set(subscriber.user_id, 'page_comment');
   const participants = (
     await env.DB.prepare(
       `SELECT DISTINCT c.author_id AS user_id
@@ -211,6 +274,14 @@ async function notificationRecipients(
         recipients.set(member.id, 'mention');
       }
     }
+  }
+  const recipientIds = [...recipients.keys()];
+  const access = await mapInBatches(recipientIds, 8, async (userId) =>
+    Boolean(await resolvePageAccess(env, pageId, userId)),
+  );
+  for (let index = 0; index < recipientIds.length; index += 1) {
+    const recipientId = recipientIds[index];
+    if (!access[index] && recipientId) recipients.delete(recipientId);
   }
   return recipients;
 }
@@ -267,6 +338,14 @@ async function createThread(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
     ).bind(commentId, threadId, page.organization_id, actor.id, body, now, now),
   ]);
+  await ensurePageSubscription(
+    env,
+    page.organization_id,
+    pageId,
+    actor.id,
+    'replies_mentions',
+    now,
+  );
   const recipients = await notificationRecipients(
     env,
     page.organization_id,
@@ -322,6 +401,14 @@ async function replyToThread(
   )
     .bind(commentId, thread.id, thread.organization_id, actor.id, body, now, now)
     .run();
+  await ensurePageSubscription(
+    env,
+    thread.organization_id,
+    thread.page_id,
+    actor.id,
+    'replies_mentions',
+    now,
+  );
   const recipients = await notificationRecipients(
     env,
     thread.organization_id,
@@ -372,6 +459,107 @@ async function resolveThread(
   return listThreads(env, thread.page_id);
 }
 
+export async function deliverPageUpdateNotifications(
+  env: Env,
+  input: {
+    organizationId: string;
+    pageId: string;
+    actorId: string;
+    eventKey: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<number> {
+  const subscriptions = (
+    await env.DB.prepare(
+      `SELECT s.user_id, s.mode
+         FROM page_notification_subscriptions s
+         JOIN organization_members m
+           ON m.organization_id = s.organization_id AND m.user_id = s.user_id
+        WHERE s.page_id = ? AND s.organization_id = ? AND s.mode = 'all_updates'
+          AND m.status = 'active' AND s.user_id <> ?`,
+    )
+      .bind(input.pageId, input.organizationId, input.actorId)
+      .all<PageSubscriptionRow>()
+  ).results;
+  const access = await mapInBatches(subscriptions, 8, async (subscription) =>
+    Boolean(await resolvePageAccess(env, input.pageId, subscription.user_id)),
+  );
+  const statements = subscriptions.flatMap((subscription, index) => {
+    if (!access[index]) return [];
+    return [
+      notificationStatement(
+        env,
+        input.organizationId,
+        subscription.user_id,
+        input.actorId,
+        'page_updated',
+        input.pageId,
+        null,
+        null,
+        input.metadata,
+        input.eventKey,
+      ),
+    ];
+  });
+  for (let offset = 0; offset < statements.length; offset += 50) {
+    await env.DB.batch(statements.slice(offset, offset + 50));
+  }
+  return statements.length;
+}
+
+async function pageNotificationSettings(
+  env: Env,
+  actor: AuthUserSummary,
+  pageId: string,
+): Promise<Response> {
+  const access = await resolvePageAccess(env, pageId, actor.id);
+  if (!access) return error('页面不存在或无权访问', 404);
+  const row = await env.DB.prepare(
+    'SELECT mode FROM page_notification_subscriptions WHERE page_id = ? AND user_id = ?',
+  )
+    .bind(pageId, actor.id)
+    .first<{ mode: PageNotificationMode }>();
+  const settings: PageNotificationSettings = {
+    pageId,
+    mode: row?.mode ?? 'replies_mentions',
+    explicitlySet: Boolean(row),
+  };
+  return json({ settings });
+}
+
+async function updatePageNotificationSettings(
+  request: Request,
+  env: Env,
+  actor: AuthUserSummary,
+  pageId: string,
+): Promise<Response> {
+  const access = await resolvePageAccess(env, pageId, actor.id);
+  if (!access) return error('页面不存在或无权访问', 404);
+  const input = await requestBody<{ mode?: unknown }>(request);
+  if (
+    typeof input?.mode !== 'string' ||
+    !PAGE_NOTIFICATION_MODES.has(input.mode as PageNotificationMode)
+  ) {
+    return error('页面通知级别无效', 400);
+  }
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO page_notification_subscriptions(
+       page_id, organization_id, user_id, mode, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(page_id, user_id) DO UPDATE SET
+       mode = excluded.mode, organization_id = excluded.organization_id, updated_at = excluded.updated_at`,
+  )
+    .bind(pageId, access.organizationId, actor.id, input.mode, now, now)
+    .run();
+  const settings: PageNotificationSettings = {
+    pageId,
+    mode: input.mode as PageNotificationMode,
+    explicitlySet: true,
+  };
+  return json({ settings });
+}
+
 function notificationFromRow(row: NotificationRow): NotificationSummary {
   let metadata: Record<string, unknown> = {};
   try {
@@ -398,39 +586,111 @@ function notificationFromRow(row: NotificationRow): NotificationSummary {
     metadata,
     createdAt: Number(row.created_at),
     readAt: row.read_at === null ? null : Number(row.read_at),
+    archivedAt: row.archived_at === null ? null : Number(row.archived_at),
   };
 }
 
 async function listNotifications(env: Env, actor: AuthUserSummary, url: URL): Promise<Response> {
   const organizationId = url.searchParams.get('organizationId');
-  const unreadOnly = url.searchParams.get('unread') === '1';
+  const view = url.searchParams.get('view') ?? 'inbox';
+  if (!['inbox', 'unread', 'archived'].includes(view)) return error('通知筛选无效', 400);
+  if (organizationId && !(await findActiveMembership(env, organizationId, actor.id))) {
+    return error('组织不存在或无权访问', 404);
+  }
   const rows = (
     await env.DB.prepare(
       `SELECT n.id, n.organization_id, n.actor_id, n.type, n.page_id,
               p.title AS page_title, n.thread_id, n.comment_id, n.metadata_json,
-              n.created_at, n.read_at, u.email AS actor_email,
+              n.created_at, n.read_at, n.archived_at, u.email AS actor_email,
               u.display_name AS actor_display_name, u.avatar_url AS actor_avatar_url
          FROM notifications n
          LEFT JOIN users u ON u.id = n.actor_id
          LEFT JOIN pages p ON p.id = n.page_id
         WHERE n.user_id = ? AND (? IS NULL OR n.organization_id = ?)
-          AND (? = 0 OR n.read_at IS NULL)
-        ORDER BY n.created_at DESC LIMIT 100`,
+        ORDER BY n.created_at DESC LIMIT 200`,
     )
-      .bind(actor.id, organizationId, organizationId, unreadOnly ? 1 : 0)
+      .bind(actor.id, organizationId, organizationId)
       .all<NotificationRow>()
   ).results;
-  const notifications: NotificationSummary[] = [];
+  const pageIds = [...new Set(rows.flatMap((row) => (row.page_id === null ? [] : [row.page_id])))];
+  const organizationIds = [
+    ...new Set(rows.flatMap((row) => (row.page_id === null ? [row.organization_id] : []))),
+  ];
+  const [pageAccessEntries, membershipEntries] = await Promise.all([
+    mapInBatches(
+      pageIds,
+      8,
+      async (pageId) => [pageId, Boolean(await resolvePageAccess(env, pageId, actor.id))] as const,
+    ),
+    mapInBatches(
+      organizationIds,
+      8,
+      async (candidateOrganizationId) =>
+        [
+          candidateOrganizationId,
+          Boolean(await findActiveMembership(env, candidateOrganizationId, actor.id)),
+        ] as const,
+    ),
+  ]);
+  const visiblePages = new Map(pageAccessEntries);
+  const visibleOrganizations = new Map(membershipEntries);
+  const visible: NotificationSummary[] = [];
   for (const row of rows) {
-    if (row.page_id && !(await resolvePageAccess(env, row.page_id, actor.id))) continue;
-    notifications.push(notificationFromRow(row));
+    if (row.page_id && !visiblePages.get(row.page_id)) continue;
+    if (!row.page_id && !visibleOrganizations.get(row.organization_id)) continue;
+    visible.push(notificationFromRow(row));
   }
-  const unread = await env.DB.prepare(
-    'SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL',
-  )
-    .bind(actor.id)
-    .first<{ count: number }>();
-  return json({ notifications, unreadCount: Number(unread?.count ?? 0) });
+  const unreadCount = visible.filter(
+    (notification) => notification.archivedAt === null && notification.readAt === null,
+  ).length;
+  const notifications = visible
+    .filter((notification) => {
+      if (view === 'archived') return notification.archivedAt !== null;
+      if (notification.archivedAt !== null) return false;
+      return view !== 'unread' || notification.readAt === null;
+    })
+    .slice(0, 100);
+  return json({ notifications, unreadCount, resultCapReached: rows.length === 200 });
+}
+
+async function bulkNotificationAction(
+  request: Request,
+  env: Env,
+  actor: AuthUserSummary,
+  action: 'read-all' | 'archive-read' | 'archive-all',
+): Promise<Response> {
+  const input = await requestBody<{ organizationId?: unknown }>(request);
+  const organizationId = input?.organizationId;
+  if (
+    typeof organizationId !== 'string' ||
+    !(await findActiveMembership(env, organizationId, actor.id))
+  ) {
+    return error('组织不存在或无权访问', 404);
+  }
+  const now = Date.now();
+  if (action === 'read-all') {
+    await env.DB.prepare(
+      `UPDATE notifications SET read_at = ?
+        WHERE user_id = ? AND organization_id = ? AND archived_at IS NULL AND read_at IS NULL`,
+    )
+      .bind(now, actor.id, organizationId)
+      .run();
+  } else if (action === 'archive-read') {
+    await env.DB.prepare(
+      `UPDATE notifications SET archived_at = ?
+        WHERE user_id = ? AND organization_id = ? AND archived_at IS NULL AND read_at IS NOT NULL`,
+    )
+      .bind(now, actor.id, organizationId)
+      .run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE notifications SET archived_at = ?
+        WHERE user_id = ? AND organization_id = ? AND archived_at IS NULL`,
+    )
+      .bind(now, actor.id, organizationId)
+      .run();
+  }
+  return json({ ok: true });
 }
 
 export async function handleCommentsAndNotificationsApi(
@@ -443,12 +703,13 @@ export async function handleCommentsAndNotificationsApi(
     return listNotifications(env, actor, url);
   }
   if (url.pathname === '/api/notifications/read-all' && request.method === 'POST') {
-    await env.DB.prepare(
-      'UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL',
-    )
-      .bind(Date.now(), actor.id)
-      .run();
-    return json({ ok: true });
+    return bulkNotificationAction(request, env, actor, 'read-all');
+  }
+  if (url.pathname === '/api/notifications/archive-read' && request.method === 'POST') {
+    return bulkNotificationAction(request, env, actor, 'archive-read');
+  }
+  if (url.pathname === '/api/notifications/archive-all' && request.method === 'POST') {
+    return bulkNotificationAction(request, env, actor, 'archive-all');
   }
   const notificationReadMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)\/read$/);
   if (notificationReadMatch?.[1] && request.method === 'PATCH') {
@@ -456,6 +717,50 @@ export async function handleCommentsAndNotificationsApi(
       .bind(Date.now(), decodeURIComponent(notificationReadMatch[1]), actor.id)
       .run();
     return json({ ok: true });
+  }
+
+  const notificationMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)$/);
+  if (notificationMatch?.[1] && request.method === 'PATCH') {
+    const input = await requestBody<{ read?: unknown; archived?: unknown }>(request);
+    if (
+      (input?.read !== undefined && typeof input.read !== 'boolean') ||
+      (input?.archived !== undefined && typeof input.archived !== 'boolean') ||
+      (input?.read === undefined && input?.archived === undefined)
+    ) {
+      return error('通知状态无效', 400);
+    }
+    const id = decodeURIComponent(notificationMatch[1]);
+    const now = Date.now();
+    const statements: D1PreparedStatement[] = [];
+    if (typeof input.read === 'boolean') {
+      statements.push(
+        env.DB.prepare('UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?').bind(
+          input.read ? now : null,
+          id,
+          actor.id,
+        ),
+      );
+    }
+    if (typeof input.archived === 'boolean') {
+      statements.push(
+        env.DB.prepare(
+          'UPDATE notifications SET archived_at = ? WHERE id = ? AND user_id = ?',
+        ).bind(input.archived ? now : null, id, actor.id),
+      );
+    }
+    await env.DB.batch(statements);
+    return json({ ok: true });
+  }
+
+  const pageNotificationMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/notification-settings$/,
+  );
+  if (pageNotificationMatch?.[1]) {
+    const pageId = decodeURIComponent(pageNotificationMatch[1]);
+    if (request.method === 'GET') return pageNotificationSettings(env, actor, pageId);
+    if (request.method === 'PUT') {
+      return updatePageNotificationSettings(request, env, actor, pageId);
+    }
   }
 
   const pageCommentsMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/comments$/);

@@ -44,6 +44,14 @@ DELETE /api/pages/{pageId}      → 子树软删除
 
 列表按 `sort_key`、`id` 稳定排序，当前技术预览最多返回 500 个页面。创建子页面前，Worker 会验证父页面存在且属于当前组织与空间。前端会防御性处理孤儿节点、自引用和循环父链，保证异常元数据不会让页面从导航中消失。
 
+## 页面通知与收件箱
+
+页面通知偏好保存在 D1 的 `page_notification_subscriptions`，每个正式成员可为有权查看的页面选择 `all_updates`、`all_comments` 或 `replies_mentions`。参与评论会自动创建最低噪声的 `replies_mentions` 订阅，但不会覆盖成员已经明确选择的更高通知级别。
+
+通知投递和展示都重新计算当前页面 ACL。成员在投递后被撤权时，旧通知不会继续出现在列表或未读数字中；不同组织的未读数互不混合。页面内容变更使用 generation 和协作序列组成稳定事件键，D1 唯一索引避免 Durable Object 重试产生重复通知。
+
+正文同步不等待关注者扇出：DocumentRoom 完成 `persist → apply → broadcast` 后，只同步登记节流后的审计事件，再通过生命周期后台任务进行通知 ACL 复核和批量写入。权限复核采用有界并发，通知写入按批次执行，因此关注者数量不会进入正文持久化与广播的关键延迟路径。
+
 ## 设备密钥与应用会话
 
 Rdocs 不使用 GitHub OAuth，也不实现密码登录。正式登录采用 WebAuthn discoverable credential：浏览器和系统认证器在设备上生成并保管私钥，Rdocs 只在 D1 保存 credential ID、公钥、签名计数器和备份属性，不接触生物识别数据。
