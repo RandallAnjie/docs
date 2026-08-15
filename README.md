@@ -19,6 +19,7 @@ Rdocs 是一个面向中小团队的多人实时协作知识库。项目以 Reac
 - 只存哈希的应用会话、`Secure` / `HttpOnly` Cookie、精确 Origin 校验和自动失效回登录。
 - D1 领域模型、恢复操作状态机和版本化迁移。
 - 私有 R2 图片/附件、可过期只读分享链接和附件引用安全复制。
+- Rdocs Sites：递归发布普通页面、独立路径与导航、浅色/暗色/系统主题、SEO/分享元数据、`robots.txt`/sitemap、站内搜索、匿名聚合分析与 Google Analytics；受限子树和数据库页面默认不公开。
 - 标题/正文搜索、中文 token、最近访问、收藏、资料库批量管理、稳定块链接、评论、相对锚点和提及；页面通知三档偏好、权限感知去重投递、按页面/评论线程分组并可直接回复的收件箱，以及页面、正文 `@remind` 和数据库日期属性提醒。
 - 跨页同步块的删除操作在每个引用位置保留同一恢复占位，30 天内可在严格双页权限校验下整体撤销且不覆盖后续编辑。
 - generation 隔离的 IndexedDB 离线缓存、模板和 Markdown 导入导出。
@@ -80,14 +81,15 @@ npm run dev -w @rdocs/web
 
 本项目只通过 `rrangler` 使用 RandallFlare 已有能力，不应修改 RandallFlare 平台代码。
 
+生产发布只使用 RandallFlare 已有的 Git build。迁移前必须先导出并重放验证 Rdocs D1；业务代码合并到 `main` 后触发精确分支构建：
+
 ```bash
 npm run build
-node /develop/bigrandall.io/rrangler/bin/rrangler.mjs deploy --no-publish
 npm run migrate:randallflare
-node /develop/bigrandall.io/rrangler/bin/rrangler.mjs secret put COLLAB_TICKET_SECRET --worker rdocs
-node /develop/bigrandall.io/rrangler/bin/rrangler.mjs secret put PHASE0_ADMIN_SECRET --worker rdocs
-node /develop/bigrandall.io/rrangler/bin/rrangler.mjs deploy
+node /develop/bigrandall.io/rrangler/bin/rrangler.mjs worker build rdocs --branch main
 ```
+
+Rdocs 不创建、修改或补丁 RandallFlare 平台配置。下列绑定必须由现有 `rdocs` 项目配置提供；平台能力不足时记录到问题清单后停止对应能力上线。
 
 配置会创建或同步以下 Rdocs 专属资源：
 
@@ -135,4 +137,4 @@ npm run smoke:product
 
 ## 安全边界
 
-生产业务 API 必须持有有效设备密钥会话。新邀请只允许管理员或正式成员；历史 `guest` 只作为外部只读兼容身份保留，不能加入用户组，空间和页面权限都由服务端永久封顶为只读。匿名用户只能持有效分享令牌查看指定页面，不能评论或编辑。完整边界见 [权限系统](docs/PERMISSION_SYSTEM.md)。
+生产业务 API 必须持有有效设备密钥会话。新邀请只允许管理员或正式成员；历史 `guest` 只作为外部只读兼容身份保留，不能加入用户组，空间和页面权限都由服务端永久封顶为只读。匿名用户只能通过仍有效的指定页面分享令牌或已发布 Site 获取 viewer 票据，不能评论或编辑；Site 还会裁剪受限子树及隐藏祖先。完整边界见 [权限系统](docs/PERMISSION_SYSTEM.md)。

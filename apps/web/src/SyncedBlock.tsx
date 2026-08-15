@@ -17,6 +17,7 @@ import type { SyncedBlockReferenceSummary } from '@rdocs/shared';
 import {
   deleteAllSyncedBlock,
   getPublicSyncedBlockTicket,
+  getPublicSiteSyncedBlockTicket,
   getSyncedBlockTicket,
   listSyncedBlockReferences,
   restoreDeletedSyncedBlock,
@@ -29,6 +30,7 @@ export interface SyncedBlockContext {
   identity: LocalIdentity;
   pageId: string;
   publicShareToken?: string;
+  publicSiteSlug?: string;
 }
 
 interface SyncedBlockOptions {
@@ -111,6 +113,8 @@ function SyncedBlockNodeView(props: NodeViewProps) {
   const identityColor = context?.identity.color ?? '';
   const pageId = context?.pageId ?? '';
   const publicShareToken = context?.publicShareToken ?? '';
+  const publicSiteSlug = context?.publicSiteSlug ?? '';
+  const publicReadOnly = Boolean(publicShareToken || publicSiteSlug);
   const [session, setSession] = useState<SyncedBlockSession | null>(null);
   const [collab, setCollab] = useState<{
     document: Y.Doc;
@@ -129,17 +133,21 @@ function SyncedBlockNodeView(props: NodeViewProps) {
     if (!pageId || !blockId || !identityName) throw new Error('同步块上下文不可用');
     const response = publicShareToken
       ? await getPublicSyncedBlockTicket(publicShareToken, pageId, blockId)
-      : await getSyncedBlockTicket(pageId, blockId, { name: identityName });
+      : publicSiteSlug
+        ? await getPublicSiteSyncedBlockTicket(publicSiteSlug, pageId, blockId)
+        : await getSyncedBlockTicket(pageId, blockId, { name: identityName });
     return {
       generation: response.generation,
       role: response.role,
       sourcePageId:
         'syncedBlock' in response && response.syncedBlock
           ? response.syncedBlock.sourcePageId
-          : pageId,
+          : 'sourcePageId' in response && typeof response.sourcePageId === 'string'
+            ? response.sourcePageId
+            : pageId,
       ticket: response.ticket,
     } satisfies SyncedBlockSession;
-  }, [blockId, identityName, pageId, publicShareToken]);
+  }, [blockId, identityName, pageId, publicShareToken, publicSiteSlug]);
 
   useEffect(() => {
     let active = true;
@@ -172,7 +180,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
     let httpSynced = false;
     const document = new Y.Doc();
     const offline =
-      publicShareToken || session.role !== 'editor'
+      publicReadOnly || session.role !== 'editor'
         ? null
         : new IndexeddbPersistence(
             `rdocs:synced-block:${blockId}:generation:${session.generation}`,
@@ -235,7 +243,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
       offline?.destroy();
       document.destroy();
     };
-  }, [blockId, identityColor, identityId, identityName, loadTicket, publicShareToken, session]);
+  }, [blockId, identityColor, identityId, identityName, loadTicket, publicReadOnly, session]);
 
   const duplicateReference = () => {
     const position = typeof props.getPos === 'function' ? props.getPos() : undefined;
@@ -267,7 +275,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
   const toggleLocations = () => {
     const nextOpen = !locationsOpen;
     setLocationsOpen(nextOpen);
-    if (!nextOpen || locations || publicShareToken) return;
+    if (!nextOpen || locations || publicReadOnly) return;
     setLocationsError(null);
     void listSyncedBlockReferences(pageId, blockId)
       .then((result) => setLocations(result.references))
@@ -289,7 +297,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
   };
 
   const deleteReference = async () => {
-    if (session?.sourcePageId !== pageId || publicShareToken) {
+    if (session?.sourcePageId !== pageId || publicReadOnly) {
       props.deleteNode();
       return;
     }
@@ -312,7 +320,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
           <i className={state} aria-live="polite">
             {state === 'synced' ? '已同步' : state === 'error' ? '无法访问' : '同步中…'}
           </i>
-          {session && publicShareToken ? (
+          {session && publicReadOnly ? (
             <em className="rdocs-synced-block-public-label">原始页面</em>
           ) : session ? (
             <button
@@ -348,7 +356,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
             >
               <Unlink size={13} />
             </button>
-            {session?.sourcePageId === pageId && !publicShareToken ? (
+            {session?.sourcePageId === pageId && !publicReadOnly ? (
               <button
                 type="button"
                 title="取消全部副本的同步"
@@ -373,7 +381,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
           </span>
         ) : null}
       </header>
-      {locationsOpen && !publicShareToken ? (
+      {locationsOpen && !publicReadOnly ? (
         <div className="rdocs-synced-block-locations" role="dialog" aria-label="同步块引用位置">
           <strong>引用位置</strong>
           {locationsError ? <p>{locationsError}</p> : null}
@@ -478,7 +486,8 @@ function DeletedSyncedBlockNodeView(props: NodeViewProps) {
     }
   };
 
-  const canRestore = props.editor.isEditable && !context?.publicShareToken;
+  const canRestore =
+    props.editor.isEditable && !context?.publicShareToken && !context?.publicSiteSlug;
   return (
     <NodeViewWrapper className="rdocs-deleted-synced-block" contentEditable={false}>
       <span>
