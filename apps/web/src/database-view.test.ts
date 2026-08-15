@@ -4,8 +4,10 @@ import type { DatabasePropertySummary, DatabaseRowSummary } from '@rdocs/shared'
 
 import {
   applyDatabaseView,
+  databaseCalendarDays,
   databaseAggregationValue,
   groupDatabaseRows,
+  moveDatabaseDate,
   orderedVisibleDatabaseProperties,
 } from './database-view';
 
@@ -76,5 +78,26 @@ describe('applyDatabaseView', () => {
     expect(databaseAggregationValue(rows, 'hours', 'sum')).toBe('13');
     expect(databaseAggregationValue(rows, 'hours', 'average')).toBe(String(13 / 3));
     expect(databaseAggregationValue(rows, 'status', 'count_unique')).toBe('2');
+  });
+
+  it('builds Monday-first calendar grids and moves date ranges without losing duration', () => {
+    const august = databaseCalendarDays('2026-08');
+    expect(august).toHaveLength(42);
+    expect(august[0]).toEqual({ date: '2026-07-27', inMonth: false });
+    expect(august[41]).toEqual({ date: '2026-09-06', inMonth: false });
+    expect(
+      moveDatabaseDate(
+        {
+          start: '2026-08-15T09:30:00.000Z',
+          end: '2026-08-17T09:30:00.000Z',
+          timezone: 'Asia/Shanghai',
+        },
+        '2026-08-20',
+      ),
+    ).toEqual({
+      start: '2026-08-20T09:30:00.000Z',
+      end: '2026-08-22T09:30:00.000Z',
+      timezone: 'Asia/Shanghai',
+    });
   });
 });

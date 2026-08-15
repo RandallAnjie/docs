@@ -16,7 +16,7 @@ import { listPages } from '../apps/worker/src/page-tree';
 import { pageAccessSnapshot } from '../apps/worker/src/page-access';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
 import { handleCommentsAndNotificationsApi } from '../apps/worker/src/comments';
-import { handleDatabasesApi } from '../apps/worker/src/databases';
+import { handleDatabasesApi, handlePublicDatabaseFormsApi } from '../apps/worker/src/databases';
 
 class TestStatement {
   constructor(
@@ -85,6 +85,7 @@ function migratedDatabase(): DatabaseSync {
     '0010_databases.sql',
     '0011_database_relations_and_sequences.sql',
     '0012_database_sequence_rollout_guards.sql',
+    '0013_public_database_forms.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -171,7 +172,7 @@ describe('database migrations', () => {
           "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
         )
         .get(),
-    ).toMatchObject({ total: 7 });
+    ).toMatchObject({ total: 9 });
     const rolloutOwner = seedTenant(database, 'rollout-guard');
     const seed = {
       id: 'page_rollout_parent',
@@ -394,6 +395,141 @@ describe('structured database integration', () => {
         owner,
       );
     }
+
+    const duplicateResponse = await handleDatabasesApi(
+      new Request(
+        `https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}/duplicate`,
+        {
+          method: 'POST',
+        },
+      ),
+      env,
+      owner,
+    );
+    const duplicate = (await duplicateResponse?.json()) as {
+      row: { id: string; sequenceNumber: number; values: Record<string, unknown> };
+    };
+    expect(duplicateResponse?.status).toBe(201);
+    expect(duplicate.row.sequenceNumber).toBe(4);
+    expect(duplicate.row.values[titlePropertyId!]).toBe('发布 Rdocs 副本');
+    await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${duplicate.row.id}`, {
+        method: 'DELETE',
+      }),
+      env,
+      owner,
+    );
+    const archivedResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}?archived=true`),
+      env,
+      owner,
+    );
+    const archived = (await archivedResponse?.json()) as { rows: Array<{ id: string }> };
+    expect(archived.rows.map((row) => row.id)).toContain(duplicate.row.id);
+    const restoredResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${duplicate.row.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: {}, archived: false }),
+      }),
+      env,
+      owner,
+    );
+    expect(restoredResponse?.status).toBe(200);
+    await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${duplicate.row.id}`, {
+        method: 'DELETE',
+      }),
+      env,
+      owner,
+    );
+
+    const formViewResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/views`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '需求收集',
+          type: 'form',
+          config: {
+            formTitle: '提交需求',
+            formDescription: '无需登录，只能提交公开字段。',
+            requiredPropertyIds: [titlePropertyId],
+            successMessage: '已经收到。',
+          },
+        }),
+      }),
+      env,
+      owner,
+    );
+    const formView = (await formViewResponse?.json()) as { view: { id: string } };
+    const formLinkResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/forms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewId: formView.view.id, expiresInDays: 30 }),
+      }),
+      env,
+      owner,
+    );
+    const formLink = (await formLinkResponse?.json()) as { token: string };
+    expect(formLinkResponse?.status).toBe(201);
+    const publicDefinition = await handlePublicDatabaseFormsApi(
+      new Request(`https://docs.test/api/public/forms/${formLink.token}`),
+      env,
+    );
+    await expect(publicDefinition?.json()).resolves.toMatchObject({
+      form: {
+        title: '提交需求',
+        successMessage: '已经收到。',
+        fields: expect.arrayContaining([
+          expect.objectContaining({ id: titlePropertyId, required: true }),
+        ]),
+      },
+    });
+    const missingRequired = await handlePublicDatabaseFormsApi(
+      new Request(`https://docs.test/api/public/forms/${formLink.token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: {} }),
+      }),
+      env,
+    );
+    expect(missingRequired?.status).toBe(400);
+    const publicSubmission = await handlePublicDatabaseFormsApi(
+      new Request(`https://docs.test/api/public/forms/${formLink.token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [titlePropertyId!]: '匿名提交的需求' } }),
+      }),
+      env,
+    );
+    const submission = (await publicSubmission?.json()) as {
+      submissionId: string;
+      message: string;
+    };
+    expect(publicSubmission?.status).toBe(201);
+    expect(submission.message).toBe('已经收到。');
+    expect(
+      database
+        .prepare('SELECT created_by FROM database_rows WHERE id = ?')
+        .get(submission.submissionId),
+    ).toMatchObject({ created_by: 'usr_rdocs_forms' });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM organization_members
+            WHERE user_id = 'usr_rdocs_forms'`,
+        )
+        .get(),
+    ).toMatchObject({ count: 0 });
+    await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${submission.submissionId}`, {
+        method: 'DELETE',
+      }),
+      env,
+      owner,
+    );
 
     const hidden = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}`),

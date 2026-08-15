@@ -197,6 +197,34 @@ export interface DatabaseSnapshot {
   rows: DatabaseRowSummary[];
 }
 
+export interface DatabaseFormLinkSummary {
+  id: string;
+  databaseId: string;
+  viewId: string;
+  status: 'active' | 'revoked';
+  expiresAt: number | null;
+  createdAt: number;
+  revokedAt: number | null;
+}
+
+export interface PublicDatabaseFormField {
+  id: string;
+  name: string;
+  type: DatabasePropertyType;
+  config: Record<string, JsonValue>;
+  required: boolean;
+}
+
+export interface PublicDatabaseFormDefinition {
+  id: string;
+  title: string;
+  description: string;
+  submitLabel: string;
+  successMessage: string;
+  fields: PublicDatabaseFormField[];
+  expiresAt: number | null;
+}
+
 export interface CreateDatabaseResponse extends DatabaseSnapshot {
   page: PageSummary;
 }

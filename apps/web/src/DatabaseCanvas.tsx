@@ -4,7 +4,11 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Columns3,
+  Copy,
+  Download,
   ExternalLink,
   FileText,
   GalleryHorizontal,
@@ -16,6 +20,7 @@ import {
   MapPinned,
   Plus,
   Rss,
+  RotateCcw,
   Search,
   Settings2,
   Table2,
@@ -34,6 +39,7 @@ import {
 
 import type {
   AttachmentSummary,
+  DatabaseFormLinkSummary,
   DatabasePropertySummary,
   DatabasePropertyType,
   DatabaseRowSummary,
@@ -46,13 +52,17 @@ import type {
 
 import {
   createDatabaseProperty,
+  createDatabaseFormLink,
   createDatabaseRow,
   createDatabaseView,
   deleteDatabaseProperty,
   deleteDatabaseRow,
   deleteDatabaseView,
+  duplicateDatabaseRow,
+  getArchivedDatabaseRows,
   getDatabase,
   listAttachments,
+  listDatabaseFormLinks,
   listOrganizationDatabases,
   listOrganizationMembers,
   updateDatabase,
@@ -60,13 +70,16 @@ import {
   updateDatabaseRow,
   updateDatabaseView,
   uploadAttachment,
+  revokeDatabaseFormLink,
 } from './api';
 import {
   applyDatabaseView,
   databaseAggregationValue,
+  databaseCalendarDays,
   databaseViewFilters,
   databaseViewSorts,
   groupDatabaseRows,
+  moveDatabaseDate,
   orderedVisibleDatabaseProperties,
   type DatabaseAggregation,
   type DatabaseFilterOperator,
@@ -183,6 +196,10 @@ function rowTitle(row: DatabaseRowSummary, properties: DatabasePropertySummary[]
 
 function dateInputValue(value: JsonValue | undefined): string {
   if (typeof value === 'string') return value.slice(0, 10);
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  }
   if (value && !Array.isArray(value) && typeof value === 'object') {
     return typeof value.start === 'string' ? value.start.slice(0, 10) : '';
   }
@@ -720,6 +737,7 @@ function TableDatabaseView({
   saveCell,
   addRow,
   removeRow,
+  duplicateRow,
   openProperty,
   view,
   updateViewConfig,
@@ -817,6 +835,14 @@ function TableDatabaseView({
                       <td className="database-row-actions">
                         <button
                           type="button"
+                          title="复制记录"
+                          aria-label={`复制${rowTitle(row, properties)}`}
+                          onClick={() => duplicateRow(row)}
+                        >
+                          <Copy size={14} />
+                        </button>
+                        <button
+                          type="button"
                           title="归档记录"
                           aria-label={`归档${rowTitle(row, properties)}`}
                           onClick={() => removeRow(row)}
@@ -864,6 +890,7 @@ interface DatabaseViewProps {
   organizationId: string;
   rows: DatabaseRowSummary[];
   properties: DatabasePropertySummary[];
+  allProperties: DatabasePropertySummary[];
   view: DatabaseViewSummary;
   canEdit: boolean;
   saveCell: (
@@ -874,6 +901,7 @@ interface DatabaseViewProps {
   addRow: () => void;
   createRow: (values: Record<string, JsonValue>) => Promise<boolean>;
   removeRow: (row: DatabaseRowSummary) => void;
+  duplicateRow: (row: DatabaseRowSummary) => void;
   updateViewConfig: (config: Record<string, JsonValue>) => Promise<void>;
 }
 
@@ -907,11 +935,11 @@ function PropertyPicker({
 }
 
 function BoardDatabaseView(props: DatabaseViewProps) {
-  const groupCandidates = props.properties.filter((property) =>
+  const groupCandidates = props.allProperties.filter((property) =>
     ['status', 'select', 'checkbox'].includes(property.type),
   );
   const groupProperty =
-    props.properties.find((property) => property.id === props.view.config.groupPropertyId) ??
+    props.allProperties.find((property) => property.id === props.view.config.groupPropertyId) ??
     groupCandidates[0];
   if (!groupProperty) {
     return (
@@ -921,12 +949,30 @@ function BoardDatabaseView(props: DatabaseViewProps) {
       />
     );
   }
-  const groups = new Map<string, DatabaseRowSummary[]>();
-  for (const row of props.rows) {
-    const name = valueText(row.values[groupProperty.id]) || '未分组';
-    groups.set(name, [...(groups.get(name) ?? []), row]);
+  const groups = new Map<string, { value: JsonValue; rows: DatabaseRowSummary[] }>();
+  if (groupProperty.type === 'checkbox') {
+    groups.set('已选', { value: true, rows: [] });
+    groups.set('未选', { value: false, rows: [] });
   }
-  for (const option of optionNames(groupProperty)) if (!groups.has(option)) groups.set(option, []);
+  for (const option of optionNames(groupProperty)) {
+    groups.set(option, { value: option, rows: [] });
+  }
+  for (const row of props.rows) {
+    const current = row.values[groupProperty.id];
+    const name =
+      groupProperty.type === 'checkbox'
+        ? current === true
+          ? '已选'
+          : '未选'
+        : valueText(current) || '未分组';
+    const group = groups.get(name) ?? { value: current ?? null, rows: [] };
+    groups.set(name, { ...group, rows: [...group.rows, row] });
+  }
+  if (!groups.size || props.rows.some((row) => !valueText(row.values[groupProperty.id]))) {
+    if (groupProperty.type !== 'checkbox' && !groups.has('未分组')) {
+      groups.set('未分组', { value: null, rows: [] });
+    }
+  }
   return (
     <div className="database-board-shell">
       <PropertyPicker
@@ -938,14 +984,37 @@ function BoardDatabaseView(props: DatabaseViewProps) {
         }
       />
       <div className="database-board">
-        {[...groups].map(([name, rows]) => (
-          <section key={name}>
+        {[...groups].map(([name, group]) => (
+          <section
+            key={name}
+            onDragOver={(event) => {
+              if (!props.canEdit) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (!props.canEdit) return;
+              const row = props.rows.find(
+                (candidate) =>
+                  candidate.id === event.dataTransfer.getData('application/x-rdocs-row'),
+              );
+              if (row) void props.saveCell(row, groupProperty, group.value);
+            }}
+          >
             <header>
               <span>{name}</span>
-              <small>{rows.length}</small>
+              <small>{group.rows.length}</small>
             </header>
-            {rows.map((row) => (
-              <article key={row.id}>
+            {group.rows.map((row) => (
+              <article
+                key={row.id}
+                draggable={props.canEdit}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = 'move';
+                  event.dataTransfer.setData('application/x-rdocs-row', row.id);
+                }}
+              >
                 <a href={`/p/${encodeURIComponent(row.pageId)}`}>
                   {rowTitle(row, props.properties)}
                 </a>
@@ -982,47 +1051,159 @@ function BoardDatabaseView(props: DatabaseViewProps) {
 const DATE_TYPES = new Set<DatabasePropertyType>(['date', 'created_time', 'last_edited_time']);
 
 function CalendarDatabaseView(props: DatabaseViewProps) {
-  const dateCandidates = props.properties.filter((property) => DATE_TYPES.has(property.type));
+  const dateCandidates = props.allProperties.filter((property) => DATE_TYPES.has(property.type));
   const dateProperty =
-    props.properties.find((property) => property.id === props.view.config.datePropertyId) ??
+    props.allProperties.find((property) => property.id === props.view.config.datePropertyId) ??
     dateCandidates[0];
   if (!dateProperty) {
     return (
       <ViewRequirement icon={<CalendarDays size={24} />} text="添加日期属性后即可使用日历。" />
     );
   }
-  const datedRows = props.rows
-    .map((row) => ({ row, date: dateInputValue(row.values[dateProperty.id]) }))
-    .filter((item) => item.date)
-    .sort((left, right) => left.date.localeCompare(right.date));
+  const configuredMonth =
+    typeof props.view.config.calendarMonth === 'string' &&
+    /^\d{4}-\d{2}$/.test(props.view.config.calendarMonth)
+      ? props.view.config.calendarMonth
+      : new Date().toISOString().slice(0, 7);
+  const days = databaseCalendarDays(configuredMonth);
+  const rowsByDate = new Map<string, DatabaseRowSummary[]>();
+  const unscheduled: DatabaseRowSummary[] = [];
+  for (const row of props.rows) {
+    const date = dateInputValue(row.values[dateProperty.id]);
+    if (!date) unscheduled.push(row);
+    else rowsByDate.set(date, [...(rowsByDate.get(date) ?? []), row]);
+  }
+  const moveMonth = (offset: number) => {
+    const month = new Date(`${configuredMonth}-01T00:00:00.000Z`);
+    month.setUTCMonth(month.getUTCMonth() + offset);
+    void props.updateViewConfig({
+      ...props.view.config,
+      calendarMonth: month.toISOString().slice(0, 7),
+    });
+  };
+  const moveRow = (rowId: string, date: string) => {
+    if (!props.canEdit || dateProperty.type !== 'date') return;
+    const row = props.rows.find((candidate) => candidate.id === rowId);
+    if (row) {
+      void props.saveCell(row, dateProperty, moveDatabaseDate(row.values[dateProperty.id], date));
+    }
+  };
   return (
     <div className="database-calendar-shell">
-      <PropertyPicker
-        label="日期"
-        value={dateProperty.id}
-        properties={dateCandidates}
-        onChange={(datePropertyId) =>
-          void props.updateViewConfig({ ...props.view.config, datePropertyId })
-        }
-      />
-      <div className="database-calendar-list">
-        {datedRows.length ? (
-          datedRows.map(({ row, date }) => (
-            <article key={row.id}>
-              <time>
-                {new Date(`${date}T00:00:00Z`).toLocaleDateString(undefined, {
-                  month: 'short',
-                  day: 'numeric',
-                  weekday: 'short',
-                })}
-              </time>
-              <a href={`/p/${encodeURIComponent(row.pageId)}`}>{rowTitle(row, props.properties)}</a>
-            </article>
-          ))
-        ) : (
-          <ViewRequirement icon={<CalendarDays size={24} />} text="还没有设置日期的记录。" />
-        )}
+      <div className="database-calendar-toolbar">
+        <PropertyPicker
+          label="日期"
+          value={dateProperty.id}
+          properties={dateCandidates}
+          onChange={(datePropertyId) =>
+            void props.updateViewConfig({ ...props.view.config, datePropertyId })
+          }
+        />
+        <div>
+          <button type="button" aria-label="上个月" onClick={() => moveMonth(-1)}>
+            <ChevronLeft size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void props.updateViewConfig({
+                ...props.view.config,
+                calendarMonth: new Date().toISOString().slice(0, 7),
+              })
+            }
+          >
+            今天
+          </button>
+          <strong>
+            {new Date(`${configuredMonth}-01T00:00:00.000Z`).toLocaleDateString('zh-CN', {
+              year: 'numeric',
+              month: 'long',
+              timeZone: 'UTC',
+            })}
+          </strong>
+          <button type="button" aria-label="下个月" onClick={() => moveMonth(1)}>
+            <ChevronRight size={15} />
+          </button>
+        </div>
       </div>
+      <div className="database-calendar-weekdays" aria-hidden="true">
+        {['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((weekday) => (
+          <span key={weekday}>{weekday}</span>
+        ))}
+      </div>
+      <div className="database-calendar-grid">
+        {days.map((day) => {
+          const dayRows = rowsByDate.get(day.date) ?? [];
+          return (
+            <section
+              key={day.date}
+              className={`${day.inMonth ? '' : 'outside'} ${
+                day.date === new Date().toISOString().slice(0, 10) ? 'today' : ''
+              }`}
+              onDragOver={(event) => {
+                if (!props.canEdit || dateProperty.type !== 'date') return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                moveRow(event.dataTransfer.getData('application/x-rdocs-row'), day.date);
+              }}
+            >
+              <header>
+                <time dateTime={day.date}>{Number(day.date.slice(-2))}</time>
+                {props.canEdit && dateProperty.type === 'date' ? (
+                  <button
+                    type="button"
+                    aria-label={`${day.date}新建记录`}
+                    onClick={() => {
+                      const title = titleProperty(props.properties);
+                      void props.createRow({
+                        ...(title ? { [title.id]: '未命名' } : {}),
+                        [dateProperty.id]: day.date,
+                      });
+                    }}
+                  >
+                    <Plus size={12} />
+                  </button>
+                ) : null}
+              </header>
+              {dayRows.map((row) => (
+                <a
+                  key={row.id}
+                  href={`/p/${encodeURIComponent(row.pageId)}`}
+                  draggable={props.canEdit && dateProperty.type === 'date'}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('application/x-rdocs-row', row.id);
+                  }}
+                >
+                  {rowTitle(row, props.properties)}
+                </a>
+              ))}
+            </section>
+          );
+        })}
+      </div>
+      {unscheduled.length ? (
+        <details className="database-calendar-unscheduled">
+          <summary>无日期 · {unscheduled.length}</summary>
+          <div>
+            {unscheduled.map((row) => (
+              <a
+                key={row.id}
+                href={`/p/${encodeURIComponent(row.pageId)}`}
+                draggable={props.canEdit && dateProperty.type === 'date'}
+                onDragStart={(event) =>
+                  event.dataTransfer.setData('application/x-rdocs-row', row.id)
+                }
+              >
+                {rowTitle(row, props.properties)}
+              </a>
+            ))}
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -1069,9 +1250,9 @@ function GalleryDatabaseView(props: DatabaseViewProps) {
 }
 
 function TimelineDatabaseView(props: DatabaseViewProps) {
-  const dateCandidates = props.properties.filter((property) => DATE_TYPES.has(property.type));
+  const dateCandidates = props.allProperties.filter((property) => DATE_TYPES.has(property.type));
   const dateProperty =
-    props.properties.find((property) => property.id === props.view.config.datePropertyId) ??
+    props.allProperties.find((property) => property.id === props.view.config.datePropertyId) ??
     dateCandidates[0];
   if (!dateProperty)
     return <ViewRequirement icon={<Columns3 size={24} />} text="添加日期属性后即可使用时间线。" />;
@@ -1100,42 +1281,325 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
 }
 
 function ChartDatabaseView(props: DatabaseViewProps) {
-  const candidates = props.properties.filter((property) =>
+  const candidates = props.allProperties.filter((property) =>
     ['select', 'status', 'checkbox', 'person'].includes(property.type),
   );
   const groupProperty =
-    props.properties.find((property) => property.id === props.view.config.groupPropertyId) ??
+    props.allProperties.find((property) => property.id === props.view.config.groupPropertyId) ??
     candidates[0];
   if (!groupProperty)
     return (
       <ViewRequirement icon={<BarChart3 size={24} />} text="添加状态或选项属性后即可创建图表。" />
     );
-  const counts = new Map<string, number>();
+  const numericProperties = props.allProperties.filter((property) => property.type === 'number');
+  const valueProperty =
+    props.allProperties.find((property) => property.id === props.view.config.valuePropertyId) ??
+    numericProperties[0];
+  const calculation =
+    props.view.config.calculation === 'sum' || props.view.config.calculation === 'average'
+      ? props.view.config.calculation
+      : 'count';
+  const chartType =
+    props.view.config.chartType === 'line' || props.view.config.chartType === 'donut'
+      ? props.view.config.chartType
+      : 'bar';
+  const groupedRows = new Map<string, DatabaseRowSummary[]>();
   for (const row of props.rows) {
     const key = valueText(row.values[groupProperty.id]) || '空';
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    groupedRows.set(key, [...(groupedRows.get(key) ?? []), row]);
   }
-  const maximum = Math.max(1, ...counts.values());
+  const points = [...groupedRows].map(([label, rows]) => {
+    const numbers = valueProperty
+      ? rows
+          .map((row) => row.values[valueProperty.id])
+          .filter((value): value is number => typeof value === 'number')
+      : [];
+    const value =
+      calculation === 'sum'
+        ? numbers.reduce((total, number) => total + number, 0)
+        : calculation === 'average'
+          ? numbers.length
+            ? numbers.reduce((total, number) => total + number, 0) / numbers.length
+            : 0
+          : rows.length;
+    return { label, value, rows };
+  });
+  const maximum = Math.max(1, ...points.map((point) => point.value));
+  const total = points.reduce((sum, point) => sum + point.value, 0);
+  const drillInto = (label: string) => {
+    const filters = databaseViewFilters(props.view.config).filter(
+      (filter) => filter.propertyId !== groupProperty.id,
+    );
+    void props.updateViewConfig({
+      ...props.view.config,
+      filters: [
+        ...filters.map(({ propertyId, operator, value }) => ({ propertyId, operator, value })),
+        { propertyId: groupProperty.id, operator: 'equals', value: label === '空' ? null : label },
+      ],
+    });
+  };
+  const exportCsv = () => {
+    const csv = [
+      ['分组', calculation === 'count' ? '记录数' : (valueProperty?.name ?? '值')],
+      ...points.map((point) => [point.label, String(point.value)]),
+    ]
+      .map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(','))
+      .join('\n');
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${props.view.name}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <div className="database-chart-view">
-      <PropertyPicker
-        label="分组"
-        value={groupProperty.id}
-        properties={candidates}
-        onChange={(groupPropertyId) =>
-          void props.updateViewConfig({ ...props.view.config, groupPropertyId })
-        }
-      />
-      <div className="database-bars">
-        {[...counts].map(([label, count]) => (
-          <div key={label}>
-            <span>{label}</span>
-            <i style={{ '--bar-size': count / maximum } as React.CSSProperties} />
-            <strong>{count}</strong>
-          </div>
-        ))}
+      <div className="database-chart-toolbar">
+        <PropertyPicker
+          label="分组"
+          value={groupProperty.id}
+          properties={candidates}
+          onChange={(groupPropertyId) =>
+            void props.updateViewConfig({ ...props.view.config, groupPropertyId })
+          }
+        />
+        <label>
+          图表
+          <select
+            value={chartType}
+            onChange={(event) =>
+              void props.updateViewConfig({ ...props.view.config, chartType: event.target.value })
+            }
+          >
+            <option value="bar">柱状图</option>
+            <option value="line">折线图</option>
+            <option value="donut">环形图</option>
+          </select>
+        </label>
+        <label>
+          计算
+          <select
+            value={calculation}
+            onChange={(event) =>
+              void props.updateViewConfig({ ...props.view.config, calculation: event.target.value })
+            }
+          >
+            <option value="count">记录数</option>
+            <option value="sum">求和</option>
+            <option value="average">平均值</option>
+          </select>
+        </label>
+        {calculation !== 'count' ? (
+          <PropertyPicker
+            label="数值"
+            value={valueProperty?.id ?? ''}
+            properties={numericProperties}
+            onChange={(valuePropertyId) =>
+              void props.updateViewConfig({ ...props.view.config, valuePropertyId })
+            }
+          />
+        ) : null}
+        <button type="button" onClick={exportCsv}>
+          <Download size={14} /> 导出 CSV
+        </button>
       </div>
+      {chartType === 'line' ? (
+        <div className="database-line-chart">
+          <svg viewBox="0 0 720 260" role="img" aria-label={`${props.view.name}折线图`}>
+            <polyline
+              points={points
+                .map(
+                  (point, index) =>
+                    `${60 + (index * 620) / Math.max(1, points.length - 1)},${220 - (point.value / maximum) * 180}`,
+                )
+                .join(' ')}
+            />
+            {points.map((point, index) => (
+              <g
+                key={point.label}
+                role="button"
+                tabIndex={0}
+                onClick={() => drillInto(point.label)}
+                onKeyDown={(event) => event.key === 'Enter' && drillInto(point.label)}
+              >
+                <circle
+                  cx={60 + (index * 620) / Math.max(1, points.length - 1)}
+                  cy={220 - (point.value / maximum) * 180}
+                  r="6"
+                />
+                <text x={60 + (index * 620) / Math.max(1, points.length - 1)} y="245">
+                  {point.label.slice(0, 10)}
+                </text>
+              </g>
+            ))}
+          </svg>
+        </div>
+      ) : chartType === 'donut' ? (
+        <div className="database-donut-chart">
+          <div
+            className="database-donut"
+            style={{
+              background: `conic-gradient(${points
+                .reduce<{ offset: number; stops: string[] }>(
+                  (state, point, index) => {
+                    const start = state.offset;
+                    const end = start + (total ? (point.value / total) * 100 : 0);
+                    return {
+                      offset: end,
+                      stops: [
+                        ...state.stops,
+                        `hsl(${(index * 67) % 360} 48% 62%) ${start}% ${end}%`,
+                      ],
+                    };
+                  },
+                  { offset: 0, stops: [] },
+                )
+                .stops.join(', ')})`,
+            }}
+          >
+            <span>{total.toLocaleString()}</span>
+          </div>
+          <div className="database-chart-legend">
+            {points.map((point, index) => (
+              <button key={point.label} type="button" onClick={() => drillInto(point.label)}>
+                <i style={{ background: `hsl(${(index * 67) % 360} 48% 62%)` }} />
+                <span>{point.label}</span>
+                <strong>{point.value.toLocaleString()}</strong>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="database-bars">
+          {points.map((point) => (
+            <button key={point.label} type="button" onClick={() => drillInto(point.label)}>
+              <span>{point.label}</span>
+              <i style={{ '--bar-size': point.value / maximum } as React.CSSProperties} />
+              <strong>{point.value.toLocaleString()}</strong>
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="database-chart-hint">点击图形即可把当前分组作为视图筛选条件。</p>
     </div>
+  );
+}
+
+function FormPublishingPanel(props: DatabaseViewProps) {
+  const [links, setLinks] = useState<DatabaseFormLinkSummary[]>([]);
+  const [expiresInDays, setExpiresInDays] = useState<number | null>(30);
+  const [createdPath, setCreatedPath] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!props.canEdit) return;
+    let active = true;
+    listDatabaseFormLinks(props.view.databaseId)
+      .then((result) => active && setLinks(result.links))
+      .catch(
+        (reason: unknown) =>
+          active && setError(reason instanceof Error ? reason.message : '无法读取公开链接'),
+      );
+    return () => {
+      active = false;
+    };
+  }, [props.canEdit, props.view.databaseId]);
+
+  if (!props.canEdit) return null;
+  const createLink = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await createDatabaseFormLink(
+        props.view.databaseId,
+        props.view.id,
+        expiresInDays,
+      );
+      setLinks((current) => [result.link, ...current]);
+      setCreatedPath(result.path);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法发布表单');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const revoke = async (link: DatabaseFormLinkSummary) => {
+    if (busy || !window.confirm('关闭这个表单链接？已打开的链接将立即失效。')) return;
+    setBusy(true);
+    try {
+      const result = await revokeDatabaseFormLink(link.id);
+      setLinks((current) =>
+        current.map((candidate) =>
+          candidate.id === link.id
+            ? { ...candidate, status: 'revoked', revokedAt: result.revokedAt }
+            : candidate,
+        ),
+      );
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法关闭表单链接');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="database-form-publishing">
+      <header>
+        <div>
+          <strong>公开收集</strong>
+          <p>任何拿到链接的人都能提交，但不会获得数据库读取或编辑权限。</p>
+        </div>
+        <div>
+          <select
+            aria-label="表单链接有效期"
+            value={expiresInDays ?? 0}
+            onChange={(event) =>
+              setExpiresInDays(event.target.value === '0' ? null : Number(event.target.value))
+            }
+          >
+            <option value={7}>7 天</option>
+            <option value={30}>30 天</option>
+            <option value={90}>90 天</option>
+            <option value={0}>永久</option>
+          </select>
+          <button type="button" disabled={busy} onClick={() => void createLink()}>
+            发布表单
+          </button>
+        </div>
+      </header>
+      {createdPath ? (
+        <div className="database-form-created-link">
+          <input readOnly value={`${window.location.origin}${createdPath}`} />
+          <button
+            type="button"
+            onClick={() =>
+              void navigator.clipboard.writeText(`${window.location.origin}${createdPath}`)
+            }
+          >
+            <Copy size={14} /> 复制
+          </button>
+        </div>
+      ) : null}
+      {links.map((link) => (
+        <div key={link.id} className="database-form-link-row">
+          <span className={link.status}>{link.status === 'active' ? '收集中' : '已关闭'}</span>
+          <small>
+            创建于 {new Date(link.createdAt).toLocaleString()}
+            {link.expiresAt
+              ? ` · ${new Date(link.expiresAt).toLocaleDateString()} 到期`
+              : ' · 永久'}
+          </small>
+          {link.status === 'active' ? (
+            <button type="button" disabled={busy} onClick={() => void revoke(link)}>
+              关闭
+            </button>
+          ) : null}
+        </div>
+      ))}
+      {error ? <p className="database-error">{error}</p> : null}
+    </section>
   );
 }
 
@@ -1157,47 +1621,129 @@ function FormDatabaseView(props: DatabaseViewProps) {
       setBusy(false);
     }
   };
+  const requiredPropertyIds = new Set(
+    Array.isArray(props.view.config.requiredPropertyIds)
+      ? props.view.config.requiredPropertyIds.filter(
+          (value): value is string => typeof value === 'string',
+        )
+      : [],
+  );
   return (
-    <form className="database-form-view" onSubmit={(event) => void submit(event)}>
-      <header>
-        <ListPlus size={22} />
-        <div>
-          <h3>{props.view.name}</h3>
-          <p>提交内容会成为数据库中的一条记录。</p>
-        </div>
-      </header>
-      {editable.map((property) => (
-        <label key={property.id}>
-          <span>{property.name}</span>
-          {property.type === 'checkbox' ? (
-            <input
-              type="checkbox"
-              checked={values[property.id] === true}
-              onChange={(event) =>
-                setValues((current) => ({ ...current, [property.id]: event.target.checked }))
-              }
-            />
-          ) : (
-            <input
-              type={
-                property.type === 'number' ? 'number' : property.type === 'date' ? 'date' : 'text'
-              }
-              value={toInputValue(property, values[property.id])}
-              onChange={(event) =>
-                setValues((current) => ({
-                  ...current,
-                  [property.id]: fromInputValue(property, event.target.value),
-                }))
-              }
-            />
-          )}
-        </label>
-      ))}
-      <button type="submit" disabled={!props.canEdit || busy}>
-        {submitted ? <Check size={15} /> : null}
-        {submitted ? '已提交' : busy ? '提交中…' : '提交'}
-      </button>
-    </form>
+    <>
+      <FormPublishingPanel {...props} />
+      <form className="database-form-view" onSubmit={(event) => void submit(event)}>
+        <header>
+          <ListPlus size={22} />
+          <div>
+            <h3>
+              {typeof props.view.config.formTitle === 'string'
+                ? props.view.config.formTitle
+                : props.view.name}
+            </h3>
+            <p>
+              {typeof props.view.config.formDescription === 'string'
+                ? props.view.config.formDescription
+                : '提交内容会成为数据库中的一条记录。'}
+            </p>
+          </div>
+        </header>
+        {editable.map((property) => {
+          const propertyValue = values[property.id];
+          return (
+            <label key={property.id}>
+              <span>
+                {property.name} {requiredPropertyIds.has(property.id) ? <b>*</b> : null}
+              </span>
+              {property.type === 'checkbox' ? (
+                <input
+                  type="checkbox"
+                  checked={propertyValue === true}
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, [property.id]: event.target.checked }))
+                  }
+                />
+              ) : property.type === 'select' || property.type === 'status' ? (
+                <select
+                  required={requiredPropertyIds.has(property.id)}
+                  value={typeof propertyValue === 'string' ? propertyValue : ''}
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, [property.id]: event.target.value }))
+                  }
+                >
+                  <option value="">请选择</option>
+                  {optionNames(property).map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              ) : property.type === 'multi_select' ? (
+                <div className="public-form-options">
+                  {optionNames(property).map((option) => {
+                    const selected = Array.isArray(propertyValue)
+                      ? propertyValue.filter((value): value is string => typeof value === 'string')
+                      : [];
+                    return (
+                      <label key={option}>
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(option)}
+                          onChange={(event) =>
+                            setValues((current) => ({
+                              ...current,
+                              [property.id]: event.target.checked
+                                ? [...selected, option]
+                                : selected.filter((value) => value !== option),
+                            }))
+                          }
+                        />
+                        <span>{option}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : property.type === 'text' ? (
+                <textarea
+                  required={requiredPropertyIds.has(property.id)}
+                  value={typeof propertyValue === 'string' ? propertyValue : ''}
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, [property.id]: event.target.value }))
+                  }
+                />
+              ) : (
+                <input
+                  type={
+                    property.type === 'number'
+                      ? 'number'
+                      : property.type === 'date'
+                        ? 'date'
+                        : 'text'
+                  }
+                  required={requiredPropertyIds.has(property.id)}
+                  value={toInputValue(property, propertyValue)}
+                  onChange={(event) =>
+                    setValues((current) => ({
+                      ...current,
+                      [property.id]: fromInputValue(property, event.target.value),
+                    }))
+                  }
+                />
+              )}
+            </label>
+          );
+        })}
+        <button type="submit" disabled={!props.canEdit || busy}>
+          {submitted ? <Check size={15} /> : null}
+          {submitted
+            ? '已提交'
+            : busy
+              ? '提交中…'
+              : typeof props.view.config.submitLabel === 'string'
+                ? props.view.config.submitLabel
+                : '提交'}
+        </button>
+      </form>
+    </>
   );
 }
 
@@ -1228,9 +1774,9 @@ function FeedDatabaseView(props: DatabaseViewProps) {
 }
 
 function MapDatabaseView(props: DatabaseViewProps) {
-  const places = props.properties.filter((property) => property.type === 'place');
+  const places = props.allProperties.filter((property) => property.type === 'place');
   const placeProperty =
-    props.properties.find((property) => property.id === props.view.config.placePropertyId) ??
+    props.allProperties.find((property) => property.id === props.view.config.placePropertyId) ??
     places[0];
   if (!placeProperty)
     return (
@@ -1667,6 +2213,93 @@ function ViewOptionsPanel({
           })}
         </div>
       </section>
+      {view.type === 'form' ? (
+        <section className="database-form-settings">
+          <header>
+            <strong>表单内容</strong>
+          </header>
+          <label>
+            <span>标题</span>
+            <input
+              defaultValue={
+                typeof view.config.formTitle === 'string' ? view.config.formTitle : view.name
+              }
+              disabled={!canEdit}
+              onBlur={(event) =>
+                void onUpdate({ ...view.config, formTitle: event.target.value.trim() || view.name })
+              }
+            />
+          </label>
+          <label>
+            <span>说明</span>
+            <textarea
+              defaultValue={
+                typeof view.config.formDescription === 'string' ? view.config.formDescription : ''
+              }
+              disabled={!canEdit}
+              onBlur={(event) =>
+                void onUpdate({ ...view.config, formDescription: event.target.value.trim() })
+              }
+            />
+          </label>
+          <label>
+            <span>提交按钮</span>
+            <input
+              defaultValue={
+                typeof view.config.submitLabel === 'string' ? view.config.submitLabel : '提交'
+              }
+              disabled={!canEdit}
+              onBlur={(event) =>
+                void onUpdate({ ...view.config, submitLabel: event.target.value.trim() || '提交' })
+              }
+            />
+          </label>
+          <label>
+            <span>成功提示</span>
+            <input
+              defaultValue={
+                typeof view.config.successMessage === 'string'
+                  ? view.config.successMessage
+                  : '提交成功，感谢填写。'
+              }
+              disabled={!canEdit}
+              onBlur={(event) =>
+                void onUpdate({
+                  ...view.config,
+                  successMessage: event.target.value.trim() || '提交成功，感谢填写。',
+                })
+              }
+            />
+          </label>
+          <strong className="database-form-required-title">必填字段</strong>
+          {properties
+            .filter((property) => FORM_PROPERTY_TYPES.has(property.type))
+            .map((property) => {
+              const required = new Set(
+                Array.isArray(view.config.requiredPropertyIds)
+                  ? view.config.requiredPropertyIds.filter(
+                      (value): value is string => typeof value === 'string',
+                    )
+                  : [],
+              );
+              return (
+                <label key={property.id} className="database-dialog-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={required.has(property.id)}
+                    disabled={!canEdit}
+                    onChange={(event) => {
+                      if (event.target.checked) required.add(property.id);
+                      else required.delete(property.id);
+                      void onUpdate({ ...view.config, requiredPropertyIds: [...required] });
+                    }}
+                  />
+                  {property.name}
+                </label>
+              );
+            })}
+        </section>
+      ) : null}
       <footer>
         {canLock ? (
           <button type="button" onClick={() => void onToggleLock()}>
@@ -2066,6 +2699,58 @@ function ViewDialog({
   );
 }
 
+function DatabaseTrashDialog({
+  snapshot,
+  busyRowId,
+  onRestore,
+  onClose,
+}: {
+  snapshot: DatabaseSnapshot | null;
+  busyRowId: string | null;
+  onRestore: (row: DatabaseRowSummary) => Promise<void>;
+  onClose: () => void;
+}) {
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="rdocs-dialog database-trash-dialog" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <h2>已归档记录</h2>
+            <p>恢复后会回到数据库，并保留原来的唯一 ID。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>
+            ×
+          </button>
+        </header>
+        {!snapshot ? <p className="database-trash-loading">正在读取…</p> : null}
+        {snapshot && !snapshot.rows.length ? (
+          <p className="database-trash-loading">没有已归档记录。</p>
+        ) : null}
+        <div className="database-trash-list">
+          {snapshot?.rows.map((row) => (
+            <article key={row.id}>
+              <div>
+                <strong>{rowTitle(row, snapshot.properties)}</strong>
+                <span>
+                  {row.archivedAt ? new Date(row.archivedAt).toLocaleString() : '已归档'} · #
+                  {row.sequenceNumber}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={Boolean(busyRowId)}
+                onClick={() => void onRestore(row)}
+              >
+                <RotateCcw size={14} /> {busyRowId === row.id ? '恢复中…' : '恢复'}
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function DatabaseCanvas({
   initialSnapshot,
   canEdit,
@@ -2081,6 +2766,9 @@ export function DatabaseCanvas({
   );
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [archivedSnapshot, setArchivedSnapshot] = useState<DatabaseSnapshot | null>(null);
+  const [restoringRowId, setRestoringRowId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const viewSaveQueue = useRef(new Map<string, Promise<void>>());
@@ -2182,6 +2870,54 @@ export function DatabaseCanvas({
     }
   };
 
+  const duplicateRow = async (row: DatabaseRowSummary) => {
+    if (!editable || busy) return;
+    setBusy(true);
+    try {
+      const { row: duplicate } = await duplicateDatabaseRow(snapshot.database.id, row.id);
+      setSnapshot((current) => ({ ...current, rows: [...current.rows, duplicate] }));
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法复制记录');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTrash = async () => {
+    setTrashOpen(true);
+    setArchivedSnapshot(null);
+    try {
+      setArchivedSnapshot(await getArchivedDatabaseRows(snapshot.database.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取已归档记录');
+    }
+  };
+
+  const restoreRow = async (row: DatabaseRowSummary) => {
+    if (!editable || restoringRowId) return;
+    setRestoringRowId(row.id);
+    try {
+      const result = await updateDatabaseRow(snapshot.database.id, row.id, {
+        values: {},
+        archived: false,
+      });
+      if (result.row) {
+        setSnapshot((current) => ({ ...current, rows: [...current.rows, result.row!] }));
+        setArchivedSnapshot((current) =>
+          current
+            ? { ...current, rows: current.rows.filter((candidate) => candidate.id !== row.id) }
+            : current,
+        );
+      }
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法恢复记录');
+    } finally {
+      setRestoringRowId(null);
+    }
+  };
+
   const updateViewConfig = async (config: Record<string, JsonValue>) => {
     if (!activeView || !editable) return;
     const databaseId = snapshot.database.id;
@@ -2250,12 +2986,14 @@ export function DatabaseCanvas({
     organizationId: snapshot.database.organizationId,
     rows: filteredRows,
     properties: viewProperties,
+    allProperties: snapshot.properties,
     view: activeView,
     canEdit: editable,
     saveCell,
     addRow: () => void addRow(),
     createRow,
     removeRow: (row) => void removeRow(row),
+    duplicateRow: (row) => void duplicateRow(row),
     updateViewConfig,
   };
 
@@ -2310,6 +3048,11 @@ export function DatabaseCanvas({
               <Plus size={14} /> 属性
             </button>
           ) : null}
+          {editable ? (
+            <button type="button" title="已归档记录" onClick={() => void openTrash()}>
+              <Archive size={14} />
+            </button>
+          ) : null}
           <button
             type="button"
             aria-label="视图设置"
@@ -2358,6 +3101,14 @@ export function DatabaseCanvas({
             await refresh();
             setActiveViewId(view.id);
           }}
+        />
+      ) : null}
+      {trashOpen ? (
+        <DatabaseTrashDialog
+          snapshot={archivedSnapshot}
+          busyRowId={restoringRowId}
+          onRestore={restoreRow}
+          onClose={() => setTrashOpen(false)}
         />
       ) : null}
     </section>

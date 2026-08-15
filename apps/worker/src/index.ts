@@ -30,7 +30,7 @@ import {
 } from './access';
 import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
 import { handleCommentsAndNotificationsApi } from './comments';
-import { handleDatabasesApi } from './databases';
+import { handleDatabasesApi, handlePublicDatabaseFormsApi } from './databases';
 import {
   cacheCollaborationPage,
   getCachedCollaborationPage,
@@ -2428,6 +2428,9 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (publicShareMatch?.[1] && request.method === 'GET') {
     return resolvePublicShare(request, env, decodeURIComponent(publicShareMatch[1]));
   }
+
+  const publicFormResponse = await handlePublicDatabaseFormsApi(request, env);
+  if (publicFormResponse) return publicFormResponse;
 
   const ticketedSyncMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/collaboration-sync$/);
   if (ticketedSyncMatch?.[1] && request.method === 'POST') {

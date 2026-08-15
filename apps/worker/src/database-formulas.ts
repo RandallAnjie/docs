@@ -159,6 +159,9 @@ function numericList(values: FormulaValue[]): number[] {
 }
 
 function parseDate(value: FormulaValue): Date | null {
+  if (value && !Array.isArray(value) && typeof value === 'object') {
+    return parseDate(value.start);
+  }
   if (typeof value === 'number') {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : date;
@@ -192,6 +195,8 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
       return asString(arguments_[0]).trim();
     case 'replace':
       return asString(arguments_[0]).replace(asString(arguments_[1]), asString(arguments_[2]));
+    case 'replaceall':
+      return asString(arguments_[0]).split(asString(arguments_[1])).join(asString(arguments_[2]));
     case 'contains':
     case 'includes':
       return Array.isArray(arguments_[0])
@@ -203,6 +208,10 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
       return asString(arguments_[0]).endsWith(asString(arguments_[1]));
     case 'format':
       return asString(arguments_[0]);
+    case 'style':
+      return asString(arguments_[0]);
+    case 'link':
+      return { label: asString(arguments_[0]), url: asString(arguments_[1]) };
     case 'tonumber':
       return asNumber(arguments_[0]);
     case 'round':
@@ -215,6 +224,18 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
       return Math.abs(asNumber(arguments_[0]));
     case 'sqrt':
       return Math.sqrt(asNumber(arguments_[0]));
+    case 'cbrt':
+      return Math.cbrt(asNumber(arguments_[0]));
+    case 'exp':
+      return Math.exp(asNumber(arguments_[0]));
+    case 'ln':
+      return Math.log(asNumber(arguments_[0]));
+    case 'log10':
+      return Math.log10(asNumber(arguments_[0]));
+    case 'log2':
+      return Math.log2(asNumber(arguments_[0]));
+    case 'sign':
+      return Math.sign(asNumber(arguments_[0]));
     case 'pow':
       return Math.pow(asNumber(arguments_[0]), asNumber(arguments_[1]));
     case 'min':
@@ -242,6 +263,32 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
       return Array.isArray(arguments_[0])
         ? arguments_[0].map(asString).join(asString(arguments_[1]))
         : asString(arguments_[0]);
+    case 'reverse':
+      return Array.isArray(arguments_[0])
+        ? [...arguments_[0]].reverse()
+        : [...asString(arguments_[0])].reverse().join('');
+    case 'sort':
+      return Array.isArray(arguments_[0])
+        ? [...arguments_[0]].sort((left, right) =>
+            comparable(left) < comparable(right)
+              ? -1
+              : comparable(left) > comparable(right)
+                ? 1
+                : 0,
+          )
+        : arguments_[0];
+    case 'flat':
+      return Array.isArray(arguments_[0]) ? arguments_[0].flat(1) : arguments_[0];
+    case 'slice': {
+      const value = arguments_[0];
+      const start = asNumber(arguments_[1]);
+      const end = arguments_[2] === undefined ? undefined : asNumber(arguments_[2]);
+      return Array.isArray(value) ? value.slice(start, end) : asString(value).slice(start, end);
+    }
+    case 'repeat': {
+      const count = Math.max(0, Math.min(1_000, Math.trunc(asNumber(arguments_[1]))));
+      return asString(arguments_[0]).repeat(count);
+    }
     case 'unique':
       return Array.isArray(arguments_[0])
         ? [...new Map(arguments_[0].map((value) => [JSON.stringify(value), value])).values()]
@@ -258,6 +305,23 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
     case 'fromtimestamp': {
       const date = parseDate(asNumber(arguments_[0]));
       return date?.toISOString() ?? null;
+    }
+    case 'parsedate':
+      return parseDate(arguments_[0])?.toISOString() ?? null;
+    case 'datestart': {
+      const value = arguments_[0];
+      if (value && !Array.isArray(value) && typeof value === 'object') {
+        return typeof value.start === 'string' ? value.start : null;
+      }
+      return parseDate(value)?.toISOString() ?? null;
+    }
+    case 'dateend': {
+      const value = arguments_[0];
+      if (value && !Array.isArray(value) && typeof value === 'object') {
+        if (typeof value.end === 'string') return value.end;
+        return typeof value.start === 'string' ? value.start : null;
+      }
+      return parseDate(value)?.toISOString() ?? null;
     }
     case 'dateadd': {
       const date = parseDate(arguments_[0]);
@@ -297,7 +361,18 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
         days: 86_400_000,
         weeks: 604_800_000,
       };
-      return Math.trunc(difference / (divisors[asString(arguments_[2]).toLowerCase()] ?? 1));
+      const unit = asString(arguments_[2]).toLowerCase();
+      if (unit === 'months' || unit === 'month') {
+        return (
+          (first.getUTCFullYear() - second.getUTCFullYear()) * 12 +
+          first.getUTCMonth() -
+          second.getUTCMonth()
+        );
+      }
+      if (unit === 'years' || unit === 'year') {
+        return first.getUTCFullYear() - second.getUTCFullYear();
+      }
+      return Math.trunc(difference / (divisors[unit] ?? 1));
     }
     case 'year':
       return parseDate(arguments_[0])?.getUTCFullYear() ?? null;
@@ -305,6 +380,38 @@ function callFunction(name: string, arguments_: FormulaValue[], now: Date): Form
       return (parseDate(arguments_[0])?.getUTCMonth() ?? -1) + 1;
     case 'day':
       return parseDate(arguments_[0])?.getUTCDate() ?? null;
+    case 'hour':
+      return parseDate(arguments_[0])?.getUTCHours() ?? null;
+    case 'minute':
+      return parseDate(arguments_[0])?.getUTCMinutes() ?? null;
+    case 'week': {
+      const date = parseDate(arguments_[0]);
+      if (!date) return null;
+      const target = new Date(
+        Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+      );
+      const day = target.getUTCDay() || 7;
+      target.setUTCDate(target.getUTCDate() + 4 - day);
+      const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+      return Math.ceil(((target.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+    }
+    case 'formatdate': {
+      const date = parseDate(arguments_[0]);
+      if (!date) return '';
+      const pad = (value: number) => String(value).padStart(2, '0');
+      const replacements: Record<string, string> = {
+        YYYY: String(date.getUTCFullYear()),
+        MM: pad(date.getUTCMonth() + 1),
+        DD: pad(date.getUTCDate()),
+        HH: pad(date.getUTCHours()),
+        mm: pad(date.getUTCMinutes()),
+        ss: pad(date.getUTCSeconds()),
+      };
+      return Object.entries(replacements).reduce(
+        (formatted, [token, replacement]) => formatted.split(token).join(replacement),
+        asString(arguments_[1]),
+      );
+    }
     default:
       throw new Error(`不支持的公式函数：${name}`);
   }

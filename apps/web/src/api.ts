@@ -7,6 +7,7 @@ import type {
   CreatePageResponse,
   CreateRevisionResponse,
   DatabasePropertySummary,
+  DatabaseFormLinkSummary,
   DatabasePropertyType,
   DatabaseRowSummary,
   DatabaseSnapshot,
@@ -27,6 +28,7 @@ import type {
   PageGrantSummary,
   PageSearchResult,
   PageSummary,
+  PublicDatabaseFormDefinition,
   RecentPageResult,
   RestoreRevisionResponse,
   ShareLinkSummary,
@@ -255,6 +257,10 @@ export function getDatabase(databaseId: string): Promise<DatabaseSnapshot> {
   return request(`/api/databases/${encodeURIComponent(databaseId)}`);
 }
 
+export function getArchivedDatabaseRows(databaseId: string): Promise<DatabaseSnapshot> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}?archived=true`);
+}
+
 export function listOrganizationDatabases(
   organizationId: string,
 ): Promise<{ databases: DatabaseSummary[] }> {
@@ -338,6 +344,43 @@ export function deleteDatabaseView(databaseId: string, viewId: string): Promise<
   );
 }
 
+export function listDatabaseFormLinks(
+  databaseId: string,
+): Promise<{ links: DatabaseFormLinkSummary[] }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/forms`);
+}
+
+export function createDatabaseFormLink(
+  databaseId: string,
+  viewId: string,
+  expiresInDays: number | null,
+): Promise<{ link: DatabaseFormLinkSummary; token: string; path: string }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/forms`, {
+    method: 'POST',
+    body: JSON.stringify({ viewId, expiresInDays }),
+  });
+}
+
+export function revokeDatabaseFormLink(linkId: string): Promise<{ ok: true; revokedAt: number }> {
+  return request(`/api/database-form-links/${encodeURIComponent(linkId)}`, { method: 'DELETE' });
+}
+
+export function getPublicDatabaseForm(
+  token: string,
+): Promise<{ form: PublicDatabaseFormDefinition }> {
+  return request(`/api/public/forms/${encodeURIComponent(token)}`);
+}
+
+export function submitPublicDatabaseForm(
+  token: string,
+  values: Record<string, JsonValue>,
+): Promise<{ ok: true; submissionId: string; message: string }> {
+  return request(`/api/public/forms/${encodeURIComponent(token)}`, {
+    method: 'POST',
+    body: JSON.stringify({ values }),
+  });
+}
+
 export function createDatabaseRow(
   databaseId: string,
   values: Record<string, JsonValue>,
@@ -366,6 +409,16 @@ export function deleteDatabaseRow(
   return request(
     `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}`,
     { method: 'DELETE' },
+  );
+}
+
+export function duplicateDatabaseRow(
+  databaseId: string,
+  rowId: string,
+): Promise<{ row: DatabaseRowSummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}/duplicate`,
+    { method: 'POST' },
   );
 }
 
