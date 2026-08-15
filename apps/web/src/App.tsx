@@ -8,7 +8,13 @@ import { TableKit } from '@tiptap/extension-table';
 import type { Editor } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { absolutePositionToRelativePosition, ySyncPluginKey } from '@tiptap/y-tiptap';
+import {
+  absolutePositionToRelativePosition,
+  prosemirrorJSONToYDoc,
+  relativePositionToAbsolutePosition,
+  ySyncPluginKey,
+} from '@tiptap/y-tiptap';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import {
   browserSupportsWebAuthn,
   startAuthentication,
@@ -104,6 +110,7 @@ import {
   createPage,
   createSyncedBlock,
   createSpace,
+  deleteOrphanSyncedBlock,
   deletePage,
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
@@ -149,7 +156,7 @@ import { SpaceAccessDialog } from './SpaceAccessDialog';
 import { SpaceTrashDialog } from './SpaceTrashDialog';
 import { TemplateDialog } from './TemplateDialog';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
-import { removeAttachmentNodes } from './editor-block-operations';
+import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -1708,10 +1715,13 @@ function DocumentWorkspace({
   const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
   const canManagePage = page.role === 'space_admin';
   const canEdit = canEditStructure && !page.isLocked;
-  const createSyncedBlockResource = useCallback(async () => {
-    const result = await createSyncedBlock(page.id);
-    return result.syncedBlock.id;
-  }, [page.id]);
+  const createSyncedBlockResource = useCallback(
+    async (snapshot?: Uint8Array) => {
+      const result = await createSyncedBlock(page.id, snapshot);
+      return result.syncedBlock.id;
+    },
+    [page.id],
+  );
   const handleEditorReady = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
   }, []);
@@ -2666,7 +2676,7 @@ function CollaborativeEditor({
   editable: boolean;
   onReady: (editor: Editor | null) => void;
   onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
-  onCreateSyncedBlock: () => Promise<string>;
+  onCreateSyncedBlock: (snapshot?: Uint8Array) => Promise<string>;
   breadcrumbItems: readonly { id: string; title: string }[];
   pageId: string;
   publicShareToken?: string;
@@ -2806,6 +2816,77 @@ function CollaborativeEditor({
     editor?.view.dom.dispatchEvent(new Event('rdocs:breadcrumb-refresh'));
   }, [breadcrumbItems, editor]);
 
+  const convertRangeToSyncedBlock = useCallback(
+    async (from: number, to: number, content: Record<string, unknown>[]) => {
+      if (!editor?.isEditable) return;
+      const syncState = ySyncPluginKey.getState(editor.state) as
+        | {
+            doc: Y.Doc;
+            type: Y.XmlFragment;
+            binding: { mapping: Map<Y.AbstractType<unknown>, unknown> };
+          }
+        | undefined;
+      if (!syncState) throw new Error('协作位置尚未就绪，请稍后重试');
+      const relativeFrom = absolutePositionToRelativePosition(
+        from,
+        syncState.type,
+        syncState.binding.mapping as never,
+      );
+      const relativeTo = absolutePositionToRelativePosition(
+        to,
+        syncState.type,
+        syncState.binding.mapping as never,
+      );
+      const source = prosemirrorJSONToYDoc(editor.schema, { type: 'doc', content }, 'default');
+      const snapshot = Y.encodeStateAsUpdate(source);
+      source.destroy();
+      let syncedBlockId: string | null = null;
+      try {
+        syncedBlockId = await onCreateSyncedBlock(snapshot);
+        const latest = ySyncPluginKey.getState(editor.state) as typeof syncState;
+        if (!latest) throw new Error('协作位置已经失效，请重新转换');
+        const mappedFrom = relativePositionToAbsolutePosition(
+          latest.doc,
+          latest.type,
+          relativeFrom,
+          latest.binding.mapping as never,
+        );
+        const mappedTo = relativePositionToAbsolutePosition(
+          latest.doc,
+          latest.type,
+          relativeTo,
+          latest.binding.mapping as never,
+        );
+        if (mappedFrom === null || mappedTo === null || mappedTo <= mappedFrom) {
+          throw new Error('内容位置已经失效，请重新转换');
+        }
+        const current = editor.state.doc.slice(mappedFrom, mappedTo).content.toJSON();
+        if (JSON.stringify(current) !== JSON.stringify(content)) {
+          throw new Error('内容在转换期间已变化，请重新操作');
+        }
+        const inserted = editor
+          .chain()
+          .focus()
+          .insertContentAt(
+            { from: mappedFrom, to: mappedTo },
+            { type: 'syncedBlock', attrs: { syncedBlockId } },
+          )
+          .run();
+        if (!inserted) throw new Error('同步块未能插入页面，请重新转换');
+      } catch (reason) {
+        if (syncedBlockId) await deleteOrphanSyncedBlock(syncedBlockId).catch(() => undefined);
+        throw reason;
+      }
+    },
+    [editor, onCreateSyncedBlock],
+  );
+
+  const convertBlockToSyncedBlock = useCallback(
+    (position: number, node: ProseMirrorNode) =>
+      convertRangeToSyncedBlock(position, position + node.nodeSize, [node.toJSON()]),
+    [convertRangeToSyncedBlock],
+  );
+
   useEffect(() => {
     editorInstance.current = editor;
     onReady(editor);
@@ -2929,13 +3010,17 @@ function CollaborativeEditor({
         editor.chain().focus().deleteRange(context).run();
         setSlashMenu(null);
         void onCreateSyncedBlock()
-          .then((syncedBlockId) => {
-            if (!editor.isEditable) return;
-            editor
+          .then(async (syncedBlockId) => {
+            if (!editor.isEditable) {
+              await deleteOrphanSyncedBlock(syncedBlockId).catch(() => undefined);
+              return;
+            }
+            const inserted = editor
               .chain()
               .focus()
               .insertContent({ type: 'syncedBlock', attrs: { syncedBlockId } })
               .run();
+            if (!inserted) await deleteOrphanSyncedBlock(syncedBlockId).catch(() => undefined);
           })
           .catch((reason) => {
             window.alert(reason instanceof Error ? reason.message : '同步块创建失败');
@@ -3052,6 +3137,25 @@ function CollaborativeEditor({
 
   if (!editor) return null;
 
+  const convertSelectionToSyncedBlock = () => {
+    const { from, to } = editor.state.selection;
+    const blocks = topLevelBlocks(editor.state.doc).filter(({ node, position }) => {
+      const end = position + node.nodeSize;
+      return from === to ? position <= from && end >= from : position < to && end > from;
+    });
+    if (!blocks.length || blocks.some(({ node }) => node.type.name === 'syncedBlock')) return;
+    const first = blocks[0];
+    const last = blocks.at(-1);
+    if (!first || !last) return;
+    void convertRangeToSyncedBlock(
+      first.position,
+      last.position + last.node.nodeSize,
+      blocks.map(({ node }) => node.toJSON()),
+    ).catch((reason) => {
+      window.alert(reason instanceof Error ? reason.message : '无法转换为同步块');
+    });
+  };
+
   const tools = [
     {
       label: '插入内容块（也可输入 /）',
@@ -3069,6 +3173,12 @@ function CollaborativeEditor({
         }
       },
       active: Boolean(slashMenu),
+    },
+    {
+      label: '将选中的完整内容块转为同步块',
+      icon: <RefreshCw size={16} />,
+      action: convertSelectionToSyncedBlock,
+      active: false,
     },
     {
       label: '正文',
@@ -3159,7 +3269,7 @@ function CollaborativeEditor({
         {tools.map((tool, index) => (
           <button
             key={tool.label}
-            className={`${tool.active ? 'active' : ''} ${[1, 4, 6, 10].includes(index) ? 'tool-separator' : ''}`}
+            className={`${tool.active ? 'active' : ''} ${[2, 5, 7, 11].includes(index) ? 'tool-separator' : ''}`}
             onClick={tool.action}
             title={tool.label}
             type="button"
@@ -3168,7 +3278,9 @@ function CollaborativeEditor({
           </button>
         ))}
       </div>
-      {editable ? <EditorBlockHandle editor={editor} /> : null}
+      {editable ? (
+        <EditorBlockHandle editor={editor} onConvertToSyncedBlock={convertBlockToSyncedBlock} />
+      ) : null}
       <EditorContent editor={editor} />
       {slashMenu ? (
         <div

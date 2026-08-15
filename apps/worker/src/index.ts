@@ -1,4 +1,5 @@
 import appHtml from '../../web/dist/index.html';
+import * as Y from 'yjs';
 
 import {
   EDITOR_SCHEMA_VERSION,
@@ -18,10 +19,11 @@ import {
   type SpaceGrantPrincipalType,
   type SpaceRole,
   type SyncedBlockSummary,
+  type SyncedBlockReferenceSummary,
   type TrashedPageSummary,
 } from '@rdocs/shared';
 
-import { DocumentRoom } from './document-room';
+import { DocumentRoom, documentContainsSyncedBlock } from './document-room';
 import type { Env } from './env';
 import {
   requirePageAction as requireEffectivePageAction,
@@ -126,6 +128,7 @@ interface SyncedBlockRow {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  lifecycle_state: 'active' | 'unsyncing';
 }
 
 interface ShareLinkRow {
@@ -262,23 +265,40 @@ async function findSyncedBlock(env: Env, blockId: string): Promise<SyncedBlockSu
   const row = await env.DB.prepare(
     `SELECT id, organization_id, source_page_id, current_generation,
             editor_schema_version, acl_version, created_by, created_at,
-            updated_at, deleted_at
-       FROM synced_blocks WHERE id = ? AND deleted_at IS NULL`,
+            updated_at, deleted_at, lifecycle_state
+       FROM synced_blocks
+      WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'`,
   )
     .bind(blockId)
     .first<SyncedBlockRow>();
   return row ? syncedBlockFromRow(row) : null;
 }
 
+async function findSyncedBlockForUnsync(
+  env: Env,
+  blockId: string,
+): Promise<{ block: SyncedBlockSummary; lifecycleState: 'active' | 'unsyncing' } | null> {
+  const row = await env.DB.prepare(
+    `SELECT id, organization_id, source_page_id, current_generation,
+            editor_schema_version, acl_version, created_by, created_at,
+            updated_at, deleted_at, lifecycle_state
+       FROM synced_blocks WHERE id = ? AND deleted_at IS NULL`,
+  )
+    .bind(blockId)
+    .first<SyncedBlockRow>();
+  return row ? { block: syncedBlockFromRow(row), lifecycleState: row.lifecycle_state } : null;
+}
+
 async function touchSyncedBlockReference(env: Env, blockId: string, pageId: string): Promise<void> {
   const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO synced_block_references(synced_block_id, page_id, first_seen_at, last_seen_at)
-     VALUES (?, ?, ?, ?)
+     SELECT id, ?, ?, ? FROM synced_blocks
+      WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'
      ON CONFLICT(synced_block_id, page_id)
      DO UPDATE SET last_seen_at = excluded.last_seen_at`,
   )
-    .bind(blockId, pageId, now, now)
+    .bind(pageId, now, now, blockId)
     .run();
 }
 
@@ -1903,20 +1923,43 @@ async function createPage(request: Request, env: Env, actorId: string): Promise<
 }
 
 async function createSyncedBlock(
+  request: Request,
   env: Env,
   sourcePage: PageSummary,
   actorId: string,
 ): Promise<Response> {
   const id = crypto.randomUUID();
   const now = Date.now();
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO synced_blocks(
-         id, organization_id, source_page_id, current_generation,
-         editor_schema_version, acl_version, created_by, updated_by,
-         created_at, updated_at, deleted_at
-       ) VALUES (?, ?, ?, 1, ?, 1, ?, ?, ?, ?, NULL)`,
-    ).bind(
+  const declaredLength = Number(request.headers.get('content-length') ?? 0);
+  if (declaredLength > MAX_REVISION_SNAPSHOT_BYTES) {
+    return error('同步块初始内容过大', 413);
+  }
+  const requestedSnapshot = new Uint8Array(await request.arrayBuffer());
+  if (requestedSnapshot.byteLength > MAX_REVISION_SNAPSHOT_BYTES) {
+    return error('同步块初始内容过大', 413);
+  }
+  const snapshot = requestedSnapshot.byteLength
+    ? requestedSnapshot
+    : markdownToYjsSnapshot('输入同步内容').snapshot;
+  const candidate = new Y.Doc();
+  try {
+    Y.applyUpdate(candidate, snapshot, 'validate-synced-block-initial-state');
+    if (documentContainsSyncedBlock(candidate)) {
+      return error('同步块不能包含另一个同步块', 400, 'nested_synced_block');
+    }
+  } catch {
+    return error('同步块初始内容无效', 400, 'invalid_synced_block_snapshot');
+  } finally {
+    candidate.destroy();
+  }
+  await env.DB.prepare(
+    `INSERT INTO synced_blocks(
+       id, organization_id, source_page_id, current_generation,
+       editor_schema_version, acl_version, created_by, updated_by,
+       created_at, updated_at, deleted_at
+     ) VALUES (?, ?, ?, 1, ?, 1, ?, ?, ?, ?, NULL)`,
+  )
+    .bind(
       id,
       sourcePage.organizationId,
       sourcePage.id,
@@ -1925,16 +1968,9 @@ async function createSyncedBlock(
       actorId,
       now,
       now,
-    ),
-    env.DB.prepare(
-      `INSERT INTO synced_block_references(
-         synced_block_id, page_id, first_seen_at, last_seen_at
-       ) VALUES (?, ?, ?, ?)`,
-    ).bind(id, sourcePage.id, now, now),
-  ]);
-
-  const initial = markdownToYjsSnapshot('输入同步内容');
-  const contentHash = await sha256Hex(initial.snapshot);
+    )
+    .run();
+  const contentHash = await sha256Hex(snapshot);
   const initialized = await syncedBlockRoom(env, id, 1).fetch(
     'https://rdocs.internal/internal/initialize-generation',
     {
@@ -1946,8 +1982,9 @@ async function createSyncedBlock(
         'x-rdocs-revision-id': `synced_block_${id}`,
         'x-rdocs-content-hash': contentHash,
         'x-rdocs-actor-id': actorId,
+        'x-rdocs-resource-kind': 'synced_block',
       },
-      body: toArrayBuffer(initial.snapshot),
+      body: toArrayBuffer(snapshot),
     },
   );
   if (!initialized.ok) {
@@ -1958,6 +1995,58 @@ async function createSyncedBlock(
   if (!block) return error('同步块创建失败', 500);
   await pageAudit(env, sourcePage, actorId, 'synced_block.created', { syncedBlockId: id });
   return json({ syncedBlock: block }, { status: 201 });
+}
+
+async function deleteOrphanSyncedBlock(
+  env: Env,
+  blockId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const block = await findSyncedBlock(env, blockId);
+  if (!block || block.createdBy !== actor.id) return error('同步块不存在', 404);
+  const sourceAccess = await requirePageAction(env, block.sourcePageId, actor.id, 'view');
+  if (!sourceAccess || sourceAccess.page.organizationId !== block.organizationId) {
+    return error('同步块不存在', 404);
+  }
+  const references = await env.DB.prepare(
+    'SELECT COUNT(*) AS count FROM synced_block_references WHERE synced_block_id = ?',
+  )
+    .bind(blockId)
+    .first<{ count: number }>();
+  if (Number(references?.count ?? 0) > 0) {
+    return error('同步块已经被页面引用，不能作为孤儿资源清理', 409, 'synced_block_in_use');
+  }
+  const containsResponse = await documentRoom(
+    env,
+    sourceAccess.page.id,
+    sourceAccess.page.currentGeneration,
+  ).fetch('https://rdocs.internal/internal/contains-synced-block', {
+    method: 'POST',
+    headers: { 'x-rdocs-synced-block-id': blockId },
+  });
+  if (!containsResponse.ok) {
+    return error('无法确认同步块是否已插入页面，请稍后重试', 503);
+  }
+  const contains = (await containsResponse.json()) as { contains?: boolean };
+  if (contains.contains) {
+    return error('同步块已经被页面引用，不能作为孤儿资源清理', 409, 'synced_block_in_use');
+  }
+  const deleted = await env.DB.prepare(
+    `DELETE FROM synced_blocks
+      WHERE id = ? AND created_by = ? AND deleted_at IS NULL AND lifecycle_state = 'active'
+        AND NOT EXISTS (
+          SELECT 1 FROM synced_block_references WHERE synced_block_id = synced_blocks.id
+        )`,
+  )
+    .bind(blockId, actor.id)
+    .run();
+  if (!deleted.meta.changes) {
+    return error('同步块已被使用或状态已经变化', 409, 'synced_block_in_use');
+  }
+  await pageAudit(env, sourceAccess.page, actor.id, 'synced_block.orphan_deleted', {
+    syncedBlockId: blockId,
+  });
+  return json({ ok: true });
 }
 
 async function updatePage(
@@ -2687,6 +2776,229 @@ async function issueSyncedBlockTicket(
   });
 }
 
+async function listSyncedBlockReferences(
+  env: Env,
+  containerPageId: string,
+  blockId: string,
+  authenticatedUser: AuthUserSummary,
+): Promise<Response> {
+  const block = await findSyncedBlock(env, blockId);
+  if (!block) return error('同步块不存在', 404);
+  const [sourceAccess, containerAccess] = await Promise.all([
+    requirePageAction(env, block.sourcePageId, authenticatedUser.id, 'view'),
+    requirePageAction(env, containerPageId, authenticatedUser.id, 'view'),
+  ]);
+  if (
+    !sourceAccess ||
+    !containerAccess ||
+    sourceAccess.page.organizationId !== block.organizationId ||
+    containerAccess.page.organizationId !== block.organizationId
+  ) {
+    return error('同步块不存在或无权访问', 404);
+  }
+  const rows = (
+    await env.DB.prepare(
+      `SELECT DISTINCT p.id, p.title, p.updated_at
+         FROM pages p
+        WHERE p.deleted_at IS NULL AND p.organization_id = ?
+          AND p.id IN (
+            SELECT page_id FROM synced_block_references WHERE synced_block_id = ?
+          )
+        ORDER BY CASE WHEN p.id = ? THEN 0 ELSE 1 END, p.updated_at DESC, p.id ASC`,
+    )
+      .bind(block.organizationId, block.id, block.sourcePageId)
+      .all<{ id: string; title: string; updated_at: number }>()
+  ).results;
+  const visible = await Promise.all(
+    rows.map(async (row): Promise<SyncedBlockReferenceSummary | null> => {
+      const access = await requirePageAction(env, row.id, authenticatedUser.id, 'view');
+      return access
+        ? {
+            isSource: row.id === block.sourcePageId,
+            pageId: row.id,
+            title: row.title,
+            updatedAt: Number(row.updated_at),
+          }
+        : null;
+    }),
+  );
+  return json({ references: visible.filter((row) => row !== null) });
+}
+
+async function unsyncAllSyncedBlock(
+  env: Env,
+  sourcePageId: string,
+  blockId: string,
+  actor: AuthUserSummary,
+  mode: 'delete' | 'unsync' = 'unsync',
+): Promise<Response> {
+  const resource = await findSyncedBlockForUnsync(env, blockId);
+  if (!resource || resource.block.sourcePageId !== sourcePageId) {
+    return error('只能从原始页面取消全部同步', 404);
+  }
+  const pageIds = (
+    await env.DB.prepare(
+      `SELECT DISTINCT p.id
+         FROM pages p
+       WHERE p.deleted_at IS NULL AND p.organization_id = ?
+          AND (p.id = ? OR p.id IN (
+            SELECT page_id FROM synced_block_references WHERE synced_block_id = ?
+          ))
+        ORDER BY CASE WHEN p.id = ? THEN 1 ELSE 0 END, p.id ASC`,
+    )
+      .bind(resource.block.organizationId, sourcePageId, blockId, sourcePageId)
+      .all<{ id: string }>()
+  ).results.map((row) => row.id);
+  const access = await Promise.all(
+    pageIds.map((pageId) => requirePageAction(env, pageId, actor.id, 'edit_content')),
+  );
+  if (access.some((item) => !item || item.page.isLocked || !item.page.collaborationEnabled)) {
+    return error('必须能编辑并解锁同步块所在的全部页面', 409, 'synced_block_pages_locked');
+  }
+  const leaseAt = Date.now();
+  if (resource.lifecycleState === 'active') {
+    const transitioned = await env.DB.prepare(
+      `UPDATE synced_blocks
+          SET lifecycle_state = 'unsyncing', acl_version = acl_version + 1, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'`,
+    )
+      .bind(leaseAt, blockId)
+      .run();
+    if (!transitioned.meta.changes) return error('同步块状态已变化，请重试', 409);
+  } else {
+    if (leaseAt - resource.block.updatedAt < 5 * 60 * 1000) {
+      return error('另一个取消同步操作正在进行', 409, 'unsync_in_progress');
+    }
+    const recovered = await env.DB.prepare(
+      `UPDATE synced_blocks
+          SET acl_version = acl_version + 1, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'unsyncing' AND updated_at = ?`,
+    )
+      .bind(leaseAt, blockId, resource.block.updatedAt)
+      .run();
+    if (!recovered.meta.changes) return error('同步块状态已变化，请重试', 409);
+  }
+  const reactivate = async () => {
+    await env.DB.prepare(
+      `UPDATE synced_blocks
+          SET lifecycle_state = 'active', acl_version = acl_version + 1, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'unsyncing' AND updated_at = ?`,
+    )
+      .bind(Date.now(), blockId, leaseAt)
+      .run();
+  };
+  let replacements = 0;
+  try {
+    const blockRoom = syncedBlockRoom(env, resource.block.id, resource.block.currentGeneration);
+    const disconnected = await blockRoom.fetch('https://rdocs.internal/internal/access', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true, closeConnections: true }),
+    });
+    if (!disconnected.ok) throw new Error('synced_block_disconnect_failed');
+    let snapshot: ArrayBuffer;
+    if (mode === 'delete') {
+      const empty = new Y.Doc();
+      snapshot = toArrayBuffer(Y.encodeStateAsUpdate(empty));
+      empty.destroy();
+    } else {
+      const exported = await blockRoom.fetch('https://rdocs.internal/internal/export-snapshot', {
+        method: 'POST',
+        headers: { 'x-rdocs-actor-id': actor.id },
+      });
+      if (!exported.ok) throw new Error('synced_block_export_failed');
+      snapshot = await exported.arrayBuffer();
+    }
+    for (const item of access) {
+      if (!item) continue;
+      const response = await documentRoom(env, item.page.id, item.page.currentGeneration).fetch(
+        'https://rdocs.internal/internal/unsync-synced-block',
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/octet-stream',
+            'x-rdocs-page-id': item.page.id,
+            'x-rdocs-generation': String(item.page.currentGeneration),
+            'x-rdocs-actor-id': actor.id,
+            'x-rdocs-synced-block-id': blockId,
+          },
+          body: snapshot.slice(0),
+        },
+      );
+      if (!response.ok) throw new Error(`page_unsync_failed:${item.page.id}`);
+      const result = (await response.json()) as { replacements?: number };
+      replacements += Number(result.replacements ?? 0);
+    }
+    const remaining = await env.DB.prepare(
+      'SELECT COUNT(*) AS count FROM synced_block_references WHERE synced_block_id = ?',
+    )
+      .bind(blockId)
+      .first<{ count: number }>();
+    if (Number(remaining?.count ?? 0) > 0) throw new Error('synced_block_references_remain');
+    const completedAt = Date.now();
+    const completed = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE synced_blocks
+            SET deleted_at = ?, updated_by = ?, updated_at = ?
+          WHERE id = ? AND lifecycle_state = 'unsyncing' AND updated_at = ?`,
+      ).bind(completedAt, actor.id, completedAt, blockId, leaseAt),
+      env.DB.prepare(
+        `DELETE FROM synced_block_references
+          WHERE synced_block_id = ? AND EXISTS (
+            SELECT 1 FROM synced_blocks
+             WHERE id = ? AND deleted_at = ? AND updated_by = ?
+          )`,
+      ).bind(blockId, blockId, completedAt, actor.id),
+    ]);
+    if (!completed[0]?.meta.changes) throw new Error('synced_block_lifecycle_lost');
+  } catch (reason) {
+    await reactivate().catch(() => undefined);
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event:
+          mode === 'delete' ? 'synced_block_delete_all_failed' : 'synced_block_unsync_all_failed',
+        syncedBlockId: blockId,
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    );
+    return error(
+      mode === 'delete'
+        ? '部分页面尚未删除同步引用，可安全重试'
+        : '部分页面尚未取消同步，可安全重试',
+      503,
+      'unsync_incomplete',
+    );
+  }
+  const sourcePage = await findPage(env, sourcePageId);
+  if (sourcePage) {
+    await pageAudit(
+      env,
+      sourcePage,
+      actor.id,
+      mode === 'delete' ? 'synced_block.deleted_all' : 'synced_block.unsynced_all',
+      {
+        pages: pageIds.length,
+        replacements,
+        syncedBlockId: blockId,
+      },
+    ).catch((reason) =>
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event:
+            mode === 'delete'
+              ? 'synced_block_delete_all_audit_failed'
+              : 'synced_block_unsync_all_audit_failed',
+          syncedBlockId: blockId,
+          message: reason instanceof Error ? reason.message : String(reason),
+        }),
+      ),
+    );
+  }
+  return json({ ok: true, mode, pages: pageIds.length, replacements });
+}
+
 async function setCollaborationAccess(
   request: Request,
   env: Env,
@@ -2984,7 +3296,48 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     if (!authorized) return error('页面不存在或无权创建同步块', 404);
     if (!authorized.page.collaborationEnabled) return error('此页面已停止协作', 403);
     if (authorized.page.isLocked) return error('页面已锁定，请先解锁', 423, 'page_locked');
-    return createSyncedBlock(env, authorized.page, actorId);
+    return createSyncedBlock(request, env, authorized.page, actorId);
+  }
+
+  const orphanSyncedBlockMatch = url.pathname.match(/^\/api\/synced-blocks\/([^/]+)\/orphan$/);
+  if (orphanSyncedBlockMatch?.[1] && request.method === 'DELETE') {
+    const blockId = decodeURIComponent(orphanSyncedBlockMatch[1]);
+    if (!isPageId(blockId)) return error('同步块 ID 无效', 400);
+    return deleteOrphanSyncedBlock(env, blockId, actor);
+  }
+
+  const syncedBlockReferencesMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/synced-blocks\/([^/]+)\/references$/,
+  );
+  if (
+    syncedBlockReferencesMatch?.[1] &&
+    syncedBlockReferencesMatch[2] &&
+    request.method === 'GET'
+  ) {
+    const pageId = decodeURIComponent(syncedBlockReferencesMatch[1]);
+    const blockId = decodeURIComponent(syncedBlockReferencesMatch[2]);
+    if (!isPageId(pageId) || !isPageId(blockId)) return error('同步块 ID 无效', 400);
+    return listSyncedBlockReferences(env, pageId, blockId, actor);
+  }
+
+  const syncedBlockUnsyncAllMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/synced-blocks\/([^/]+)\/unsync-all$/,
+  );
+  if (syncedBlockUnsyncAllMatch?.[1] && syncedBlockUnsyncAllMatch[2] && request.method === 'POST') {
+    const pageId = decodeURIComponent(syncedBlockUnsyncAllMatch[1]);
+    const blockId = decodeURIComponent(syncedBlockUnsyncAllMatch[2]);
+    if (!isPageId(pageId) || !isPageId(blockId)) return error('同步块 ID 无效', 400);
+    return unsyncAllSyncedBlock(env, pageId, blockId, actor);
+  }
+
+  const syncedBlockDeleteAllMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/synced-blocks\/([^/]+)\/delete-all$/,
+  );
+  if (syncedBlockDeleteAllMatch?.[1] && syncedBlockDeleteAllMatch[2] && request.method === 'POST') {
+    const pageId = decodeURIComponent(syncedBlockDeleteAllMatch[1]);
+    const blockId = decodeURIComponent(syncedBlockDeleteAllMatch[2]);
+    if (!isPageId(pageId) || !isPageId(blockId)) return error('同步块 ID 无效', 400);
+    return unsyncAllSyncedBlock(env, pageId, blockId, actor, 'delete');
   }
 
   const syncedBlockTicketMatch = url.pathname.match(
