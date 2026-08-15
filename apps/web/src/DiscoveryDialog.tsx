@@ -1,15 +1,21 @@
 import {
   Activity,
+  CheckSquare,
   Clock3,
   Command,
   FilePlus2,
   FileText,
+  FolderInput,
+  LibraryBig,
   Search,
   SlidersHorizontal,
+  Square,
   Star,
+  StarOff,
+  Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import type {
   FavoritePageResult,
@@ -23,16 +29,25 @@ import type {
 } from '@rdocs/shared';
 
 import {
+  deletePage,
   listFavoritePages,
   listOrganizationMembers,
   listPageUpdates,
   listRecentPages,
+  movePage,
   searchPages,
   setPageFavorite,
+  updatePageAppearance,
 } from './api';
+import {
+  canManagePageStructure,
+  selectedPageRootIds,
+  unavailableBatchMoveTargetIds,
+} from './page-batch';
 
-type DiscoveryTab = 'favorites' | 'recent' | 'search' | 'updates';
+export type DiscoveryTab = 'favorites' | 'library' | 'recent' | 'search' | 'updates';
 type DatePreset = '30d' | '7d' | 'all' | 'today';
+type PageBatchAction = 'favorite' | 'icon' | 'move' | 'trash' | 'unfavorite';
 
 function updateText(update: PageUpdateSummary): string {
   const actor = update.actor?.displayName ?? '系统';
@@ -82,6 +97,36 @@ export function DiscoveryDialog({
   const [createdBy, setCreatedBy] = useState('');
   const [datePreset, setDatePreset] = useState<DatePreset>('all');
   const [commandIndex, setCommandIndex] = useState(0);
+  const [selectedPageIds, setSelectedPageIds] = useState<ReadonlySet<string>>(new Set());
+  const [batchParentId, setBatchParentId] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchMessage, setBatchMessage] = useState<string | null>(null);
+
+  const pagesById = useMemo(() => new Map(pages.map((page) => [page.id, page])), [pages]);
+  const spacesById = useMemo(() => new Map(spaces.map((space) => [space.id, space])), [spaces]);
+  const selectedPages = useMemo(
+    () => pages.filter((page) => selectedPageIds.has(page.id)),
+    [pages, selectedPageIds],
+  );
+  const selectedRootIds = useMemo(
+    () => selectedPageRootIds(pages, selectedPageIds),
+    [pages, selectedPageIds],
+  );
+  const unavailableMoveTargets = useMemo(
+    () => unavailableBatchMoveTargetIds(pages, selectedPageIds),
+    [pages, selectedPageIds],
+  );
+  const selectedSpaceIds = useMemo(
+    () => new Set(selectedPages.map((page) => page.spaceId)),
+    [selectedPages],
+  );
+  const selectedCanChangeStructure = selectedPages.every(canManagePageStructure);
+
+  useEffect(() => {
+    setSelectedPageIds(new Set());
+    setBatchParentId('');
+    setBatchMessage(null);
+  }, [tab]);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -145,7 +190,10 @@ export function DiscoveryDialog({
   }, [createdBy, datePreset, inPageId, organizationId, query, sort, spaceId, tab, titleOnly]);
 
   useEffect(() => {
-    if (tab === 'search') return;
+    if (tab === 'search' || tab === 'library') {
+      setLoading(false);
+      return;
+    }
     let active = true;
     setLoading(true);
     setError(null);
@@ -190,6 +238,90 @@ export function DiscoveryDialog({
     }
   };
 
+  const runPageBatch = async (action: PageBatchAction) => {
+    if (!selectedPages.length || batchBusy) return;
+    setError(null);
+    setBatchMessage(null);
+
+    const structural = action === 'icon' || action === 'move' || action === 'trash';
+    if (structural && !selectedCanChangeStructure) {
+      setError('所选页面中包含只读或仅评论页面，不能执行结构操作');
+      return;
+    }
+    const destination = batchParentId ? pagesById.get(batchParentId) : null;
+    if (action === 'move' && batchParentId && !destination) {
+      setError('移动目标已不可用');
+      return;
+    }
+    if (action === 'move' && batchParentId && unavailableMoveTargets.has(batchParentId)) {
+      setError('不能把页面移动到自身或其子页面下');
+      return;
+    }
+    if (
+      action === 'move' &&
+      destination &&
+      selectedRootIds.some((pageId) => pagesById.get(pageId)?.spaceId !== destination.spaceId)
+    ) {
+      setError('页面只能批量移动到同一团队空间内；可先移到各自空间根目录');
+      return;
+    }
+
+    let icon: string | null = null;
+    if (action === 'icon') {
+      const input = window.prompt('输入要应用到所选页面的 Emoji；留空移除图标', '📄');
+      if (input === null) return;
+      icon = [...input.trim()].slice(0, 2).join('') || null;
+    }
+    if (
+      action === 'trash' &&
+      !window.confirm(`确定将所选的 ${selectedRootIds.length} 个页面子树移入回收站吗？`)
+    ) {
+      return;
+    }
+
+    const targetIds =
+      action === 'move' || action === 'trash'
+        ? selectedRootIds
+        : selectedPages.map((page) => page.id);
+    setBatchBusy(true);
+    const failures: Array<{ id: string; message: string }> = [];
+    let completed = 0;
+    for (const pageId of targetIds) {
+      try {
+        if (action === 'favorite') await setPageFavorite(pageId, true);
+        else if (action === 'unfavorite') await setPageFavorite(pageId, false);
+        else if (action === 'move') await movePage(pageId, { parentId: batchParentId || null });
+        else if (action === 'icon') await updatePageAppearance(pageId, { icon });
+        else await deletePage(pageId);
+        completed += 1;
+      } catch (reason) {
+        failures.push({
+          id: pageId,
+          message: reason instanceof Error ? reason.message : '操作失败',
+        });
+      }
+    }
+    setBatchBusy(false);
+    const failedIds = new Set(failures.map((failure) => failure.id));
+    setSelectedPageIds(failedIds);
+    const label =
+      action === 'favorite'
+        ? '收藏'
+        : action === 'unfavorite'
+          ? '取消收藏'
+          : action === 'move'
+            ? '移动'
+            : action === 'icon'
+              ? '修改图标'
+              : '移入回收站';
+    setBatchMessage(
+      failures.length
+        ? `${label}完成 ${completed} 项，失败 ${failures.length} 项：${failures[0]?.message ?? '未知错误'}`
+        : `${label}完成 ${completed} 项`,
+    );
+    if (completed && structural) window.setTimeout(() => window.location.reload(), 900);
+  };
+
   const commands = [
     ...(onCreatePage
       ? [
@@ -229,6 +361,12 @@ export function DiscoveryDialog({
       run: () => setTab('updates'),
     },
     {
+      description: '浏览并批量管理工作区页面',
+      icon: <LibraryBig size={15} />,
+      label: '资料库',
+      run: () => setTab('library'),
+    },
+    {
       description: '管理当前工作区',
       icon: <Command size={15} />,
       label: '工作区设置',
@@ -255,6 +393,13 @@ export function DiscoveryDialog({
               onClick={() => setTab('updates')}
             >
               <Activity size={14} /> 更新
+            </button>
+            <button
+              className={tab === 'library' ? 'active' : ''}
+              type="button"
+              onClick={() => setTab('library')}
+            >
+              <LibraryBig size={14} /> 资料库
             </button>
             <button
               className={tab === 'favorites' ? 'active' : ''}
@@ -383,11 +528,129 @@ export function DiscoveryDialog({
             ) : null}
           </>
         ) : null}
+        {tab === 'library' ? (
+          <div className="discovery-batch-toolbar">
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(pages.length) && selectedPageIds.size === pages.length}
+                onChange={(event) =>
+                  setSelectedPageIds(
+                    event.target.checked ? new Set(pages.map((page) => page.id)) : new Set(),
+                  )
+                }
+              />
+              {selectedPageIds.size ? `已选择 ${selectedPageIds.size} 项` : `共 ${pages.length} 项`}
+            </label>
+            <select
+              value={batchParentId}
+              aria-label="批量移动目标"
+              disabled={!selectedPageIds.size || batchBusy}
+              onChange={(event) => setBatchParentId(event.target.value)}
+            >
+              <option value="">各自团队空间根目录</option>
+              {selectedSpaceIds.size === 1
+                ? pages
+                    .filter(
+                      (page) =>
+                        page.spaceId === selectedPages[0]?.spaceId &&
+                        !unavailableMoveTargets.has(page.id) &&
+                        canManagePageStructure(page),
+                    )
+                    .map((page) => (
+                      <option key={page.id} value={page.id}>
+                        移到：{page.title}
+                      </option>
+                    ))
+                : null}
+            </select>
+            <button
+              type="button"
+              disabled={!selectedPageIds.size || batchBusy || !selectedCanChangeStructure}
+              onClick={() => void runPageBatch('move')}
+            >
+              <FolderInput size={14} /> 移动
+            </button>
+            <button
+              type="button"
+              disabled={!selectedPageIds.size || batchBusy}
+              onClick={() => void runPageBatch('favorite')}
+            >
+              <Star size={14} /> 收藏
+            </button>
+            <button
+              type="button"
+              disabled={!selectedPageIds.size || batchBusy}
+              onClick={() => void runPageBatch('unfavorite')}
+            >
+              <StarOff size={14} /> 取消收藏
+            </button>
+            <button
+              type="button"
+              disabled={!selectedPageIds.size || batchBusy || !selectedCanChangeStructure}
+              onClick={() => void runPageBatch('icon')}
+            >
+              <CheckSquare size={14} /> 图标
+            </button>
+            <button
+              className="danger"
+              type="button"
+              disabled={!selectedPageIds.size || batchBusy || !selectedCanChangeStructure}
+              onClick={() => void runPageBatch('trash')}
+            >
+              <Trash2 size={14} /> 删除
+            </button>
+          </div>
+        ) : null}
+        {batchMessage ? <p className="discovery-batch-message">{batchMessage}</p> : null}
         <div className="discovery-results">
           {loading ? (
             <div className="discovery-state">
               <div className="loading-mark" /> 正在查找…
             </div>
+          ) : tab === 'library' ? (
+            pages.length ? (
+              pages.map((page) => {
+                const selected = selectedPageIds.has(page.id);
+                return (
+                  <div className="discovery-library-result" key={page.id}>
+                    <button
+                      className={selected ? 'active' : ''}
+                      type="button"
+                      aria-label={selected ? `取消选择 ${page.title}` : `选择 ${page.title}`}
+                      onClick={() =>
+                        setSelectedPageIds((current) => {
+                          const next = new Set(current);
+                          if (next.has(page.id)) next.delete(page.id);
+                          else next.add(page.id);
+                          return next;
+                        })
+                      }
+                    >
+                      {selected ? <CheckSquare size={16} /> : <Square size={16} />}
+                    </button>
+                    <a href={`/p/${encodeURIComponent(page.id)}`}>
+                      <span>{page.icon || <FileText size={15} />}</span>
+                      <span>
+                        <strong>{page.title}</strong>
+                        <small>
+                          {spacesById.get(page.spaceId)?.name ?? '团队空间'} ·{' '}
+                          {page.role === 'space_admin'
+                            ? '管理员'
+                            : page.role === 'editor'
+                              ? '可编辑'
+                              : page.role === 'commenter'
+                                ? '可评论'
+                                : '只读'}
+                        </small>
+                      </span>
+                    </a>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="discovery-state">资料库中没有可访问的页面</div>
+            )
           ) : tab === 'search' ? (
             query.trim() ? (
               searchResults.length ? (

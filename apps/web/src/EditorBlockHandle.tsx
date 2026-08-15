@@ -11,6 +11,7 @@ import {
   Heading1,
   Heading2,
   Heading3,
+  Link2,
   List,
   ListOrdered,
   MoreHorizontal,
@@ -134,9 +135,11 @@ const TRANSFORMABLE_BLOCKS = new Set([
 
 export function EditorBlockHandle({
   editor,
+  onCopyBlockLink,
   onConvertToSyncedBlock,
 }: {
   editor: Editor;
+  onCopyBlockLink: (position: number) => Promise<void>;
   onConvertToSyncedBlock: (position: number, node: ProseMirrorNode) => Promise<void>;
 }) {
   const controls = useRef<HTMLDivElement>(null);
@@ -241,6 +244,16 @@ export function EditorBlockHandle({
       window.alert(reason instanceof Error ? reason.message : '无法转换为同步块');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const copyBlockLink = async () => {
+    if (targetPosition < 0 || busy) return;
+    setMenuOpen(false);
+    try {
+      await onCopyBlockLink(targetPosition);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : '无法复制块链接');
     }
   };
 
@@ -349,6 +362,14 @@ export function EditorBlockHandle({
             </button>
             <button type="button" role="menuitem" onClick={duplicate}>
               <Copy size={14} /> 创建副本
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => void copyBlockLink()}
+            >
+              <Link2 size={14} /> 复制块链接
             </button>
             <button type="button" role="menuitem" className="danger" onClick={remove}>
               <Trash2 size={14} /> 删除
