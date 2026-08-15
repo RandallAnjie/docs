@@ -93,6 +93,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行页面外观与锁定迁移 `0016_page_appearance_and_lock.sql` 时第九次复现：6 个页面字段和封面索引均已创建，现有页面全部回填安全默认值，但第 16 条账本仍为 `(16, NULL, NULL)`。执行前 45 表完整备份位于 `/tmp/rdocs-db-backup-lScGOg/before-0016.sql`（145,279 bytes）。复验页面 schema 后，只修复第 16 条 Rdocs 账本记录；迁移列表 `0001`–`0016` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行编辑器 schema v3 迁移 `0017_editor_core_blocks.sql` 时第十次复现：84 个现有页面全部更新为 `editor_schema_version = 3`，表数仍为 45，但第 17 条账本仍为 `(17, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-AOVyng/before-0017.sql`（155,921 bytes）。复验导出中所有页面版本和业务数据后，只修复第 17 条 Rdocs 账本记录；迁移列表 `0001`–`0017` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

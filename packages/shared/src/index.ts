@@ -1,5 +1,5 @@
 export const PRODUCT_NAME = 'Rdocs';
-export const EDITOR_SCHEMA_VERSION = 2;
+export const EDITOR_SCHEMA_VERSION = 3;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
 export type ResourceGrantRole = 'none' | SpaceRole;

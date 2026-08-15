@@ -1,7 +1,9 @@
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCaret from '@tiptap/extension-collaboration-caret';
+import { Details, DetailsContent, DetailsSummary } from '@tiptap/extension-details';
 import Image from '@tiptap/extension-image';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
+import { Mathematics } from '@tiptap/extension-mathematics';
 import { TableKit } from '@tiptap/extension-table';
 import type { Editor } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
@@ -17,6 +19,8 @@ import {
   ArchiveRestore,
   ArrowDown,
   ArrowUp,
+  Bookmark,
+  Calculator,
   Check,
   ChevronDown,
   ChevronRight,
@@ -32,12 +36,14 @@ import {
   Italic,
   KeyRound,
   Link2,
+  ListTree,
   List,
   ListChecks,
   ListOrdered,
   LockKeyhole,
   LogOut,
   MessageSquare,
+  Minus,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -47,6 +53,7 @@ import {
   Search,
   Share2,
   Sparkles,
+  SquareChevronDown,
   Star,
   Table2,
   Trash2,
@@ -67,6 +74,7 @@ import {
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
+import 'katex/dist/katex.min.css';
 
 import type {
   AuthSessionResponse,
@@ -114,6 +122,7 @@ import { CommentsPanel } from './CommentsPanel';
 import { DatabaseCanvas } from './DatabaseCanvas';
 import type { LocalIdentity } from './identity';
 import { DiscoveryDialog } from './DiscoveryDialog';
+import { normalizeBookmarkUrl, normalizeEmbedUrl, rdocsEditorBlocks } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
@@ -137,6 +146,174 @@ interface ActiveCollaborator {
   id: string;
   name: string;
   color: string;
+}
+
+type SlashCommandId =
+  | 'bookmark'
+  | 'bullet-list'
+  | 'callout'
+  | 'code'
+  | 'details'
+  | 'divider'
+  | 'embed'
+  | 'heading-1'
+  | 'heading-2'
+  | 'inline-math'
+  | 'numbered-list'
+  | 'paragraph'
+  | 'quote'
+  | 'table'
+  | 'table-of-contents'
+  | 'task-list'
+  | 'block-math';
+
+interface SlashCommandDefinition {
+  description: string;
+  id: SlashCommandId;
+  keywords: string;
+  label: string;
+}
+
+interface SlashContext {
+  from: number;
+  query: string;
+  to: number;
+}
+
+interface SlashMenuState extends SlashContext {
+  left: number;
+  top: number;
+}
+
+const SLASH_COMMANDS: SlashCommandDefinition[] = [
+  { id: 'paragraph', label: '正文', description: '从普通文本开始', keywords: 'text 文本 段落' },
+  { id: 'heading-1', label: '一级标题', description: '大号章节标题', keywords: 'h1 title 标题' },
+  { id: 'heading-2', label: '二级标题', description: '中号章节标题', keywords: 'h2 subtitle 标题' },
+  {
+    id: 'bullet-list',
+    label: '无序列表',
+    description: '创建简单项目列表',
+    keywords: 'bullet list 列表',
+  },
+  {
+    id: 'numbered-list',
+    label: '有序列表',
+    description: '创建带编号的步骤',
+    keywords: 'number ordered list 编号',
+  },
+  {
+    id: 'task-list',
+    label: '待办清单',
+    description: '跟踪要完成的事项',
+    keywords: 'todo task check 待办',
+  },
+  {
+    id: 'details',
+    label: '折叠块',
+    description: '收起或展开一段内容',
+    keywords: 'toggle details 折叠',
+  },
+  {
+    id: 'callout',
+    label: 'Callout',
+    description: '突出显示提示或结论',
+    keywords: '提示 callout notice',
+  },
+  { id: 'quote', label: '引用', description: '引用一段文字', keywords: 'quote 引用' },
+  { id: 'code', label: '代码块', description: '显示带格式的代码', keywords: 'code 代码' },
+  { id: 'table', label: '简单表格', description: '插入 3 × 3 表格', keywords: 'table 表格' },
+  {
+    id: 'table-of-contents',
+    label: '目录',
+    description: '根据页面标题自动更新',
+    keywords: 'toc contents 目录',
+  },
+  {
+    id: 'bookmark',
+    label: '网页书签',
+    description: '以卡片形式保存链接',
+    keywords: 'bookmark link url 书签',
+  },
+  {
+    id: 'embed',
+    label: '嵌入',
+    description: '嵌入视频、设计稿或代码',
+    keywords: 'embed video figma loom 嵌入',
+  },
+  {
+    id: 'inline-math',
+    label: '行内公式',
+    description: '在文字中插入 LaTeX',
+    keywords: 'math latex formula 公式',
+  },
+  {
+    id: 'block-math',
+    label: '块公式',
+    description: '单独显示 LaTeX 公式',
+    keywords: 'math latex equation 公式',
+  },
+  {
+    id: 'divider',
+    label: '分割线',
+    description: '在内容之间加入分隔',
+    keywords: 'divider rule 分割线',
+  },
+];
+
+function slashContext(editor: Editor): SlashContext | null {
+  const { selection } = editor.state;
+  if (!selection.empty || !selection.$from.parent.isTextblock) return null;
+  const beforeCursor = selection.$from.parent.textBetween(
+    0,
+    selection.$from.parentOffset,
+    ' ',
+    ' ',
+  );
+  const match = beforeCursor.match(/^\/([^/]*)$/);
+  if (!match || (match[1]?.length ?? 0) > 40) return null;
+  return {
+    from: selection.from - match[0].length,
+    query: match[1] ?? '',
+    to: selection.from,
+  };
+}
+
+function slashCommandIcon(id: SlashCommandId): ReactNode {
+  switch (id) {
+    case 'heading-1':
+      return <Heading1 size={17} />;
+    case 'heading-2':
+      return <Heading2 size={17} />;
+    case 'bullet-list':
+      return <List size={17} />;
+    case 'numbered-list':
+      return <ListOrdered size={17} />;
+    case 'task-list':
+      return <ListChecks size={17} />;
+    case 'details':
+      return <SquareChevronDown size={17} />;
+    case 'callout':
+      return <span>💡</span>;
+    case 'quote':
+      return <Quote size={17} />;
+    case 'code':
+      return <Code2 size={17} />;
+    case 'table':
+      return <Table2 size={17} />;
+    case 'table-of-contents':
+      return <ListTree size={17} />;
+    case 'bookmark':
+      return <Bookmark size={17} />;
+    case 'embed':
+      return <span>▶</span>;
+    case 'inline-math':
+    case 'block-math':
+      return <Calculator size={17} />;
+    case 'divider':
+      return <Minus size={17} />;
+    default:
+      return <span className="text-tool">T</span>;
+  }
 }
 
 function currentPageId(): string | null {
@@ -2353,6 +2530,28 @@ function CollaborativeEditor({
   onReady: (editor: Editor | null) => void;
 }) {
   const [, rerender] = useState(0);
+  const editorInstance = useRef<Editor | null>(null);
+  const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  const updateSlashMenu = useCallback((currentEditor: Editor) => {
+    const context = slashContext(currentEditor);
+    if (!context) {
+      setSlashMenu(null);
+      return;
+    }
+    try {
+      const coordinates = currentEditor.view.coordsAtPos(context.to);
+      setSlashMenu({
+        ...context,
+        left: Math.min(coordinates.left, Math.max(12, window.innerWidth - 330)),
+        top: Math.min(coordinates.bottom + 7, Math.max(12, window.innerHeight - 430)),
+      });
+    } catch {
+      setSlashMenu(null);
+    }
+  }, []);
+
   const editor = useEditor({
     editable,
     extensions: [
@@ -2364,6 +2563,41 @@ function CollaborativeEditor({
       TaskItem.configure({ nested: true }),
       TableKit.configure({ table: { resizable: true } }),
       Image.configure({ allowBase64: false }),
+      Details.configure({ persist: true }),
+      DetailsSummary,
+      DetailsContent,
+      Mathematics.configure({
+        katexOptions: { throwOnError: false },
+        inlineOptions: {
+          onClick: (node, position) => {
+            const currentEditor = editorInstance.current;
+            if (!currentEditor?.isEditable) return;
+            const latex = window.prompt('编辑行内 LaTeX 公式', String(node.attrs.latex ?? ''));
+            if (latex === null || !latex.trim()) return;
+            currentEditor
+              .chain()
+              .setNodeSelection(position)
+              .updateInlineMath({ latex: latex.trim(), pos: position })
+              .focus()
+              .run();
+          },
+        },
+        blockOptions: {
+          onClick: (node, position) => {
+            const currentEditor = editorInstance.current;
+            if (!currentEditor?.isEditable) return;
+            const latex = window.prompt('编辑块 LaTeX 公式', String(node.attrs.latex ?? ''));
+            if (latex === null || !latex.trim()) return;
+            currentEditor
+              .chain()
+              .setNodeSelection(position)
+              .updateBlockMath({ latex: latex.trim(), pos: position })
+              .focus()
+              .run();
+          },
+        },
+      }),
+      ...rdocsEditorBlocks,
       Collaboration.configure({ document: collab.ydoc }),
       CollaborationCaret.configure({
         provider: collab.provider,
@@ -2408,17 +2642,195 @@ function CollaborativeEditor({
       );
       onSelectionQuote({ quotedText, anchorStart, anchorEnd });
     },
-    onTransaction: () => rerender((value) => value + 1),
+    onTransaction: ({ editor: currentEditor }) => {
+      rerender((value) => value + 1);
+      updateSlashMenu(currentEditor);
+    },
   });
 
   useEffect(() => {
+    editorInstance.current = editor;
     onReady(editor);
-    return () => onReady(null);
+    return () => {
+      editorInstance.current = null;
+      onReady(null);
+    };
   }, [editor, onReady]);
+
+  const filteredSlashCommands = useMemo(() => {
+    const query = slashMenu?.query.trim().toLocaleLowerCase() ?? '';
+    if (!query) return SLASH_COMMANDS;
+    return SLASH_COMMANDS.filter((command) =>
+      `${command.label} ${command.description} ${command.keywords}`
+        .toLocaleLowerCase()
+        .includes(query),
+    );
+  }, [slashMenu?.query]);
+
+  const runSlashCommand = useCallback(
+    (id: SlashCommandId) => {
+      if (!editor?.isEditable) return;
+      const context = slashContext(editor);
+      if (!context) return;
+
+      if (id === 'bookmark') {
+        const input = window.prompt('输入网页书签地址');
+        if (input === null) return;
+        const url = normalizeBookmarkUrl(input);
+        if (!url) {
+          window.alert('请输入有效的 HTTP(S) 地址');
+          return;
+        }
+        const suggestedTitle = new URL(url).hostname;
+        const title = window.prompt('书签标题', suggestedTitle)?.trim() || suggestedTitle;
+        editor
+          .chain()
+          .focus()
+          .deleteRange(context)
+          .insertContent({ type: 'bookmark', attrs: { title, url } })
+          .run();
+        setSlashMenu(null);
+        return;
+      }
+
+      if (id === 'embed') {
+        const input = window.prompt(
+          '输入嵌入地址（支持 YouTube、Figma、Loom、CodePen、CodeSandbox）',
+        );
+        if (input === null) return;
+        const target = normalizeEmbedUrl(input);
+        if (!target) {
+          window.alert('暂不支持这个嵌入地址，或地址不是 HTTPS');
+          return;
+        }
+        editor
+          .chain()
+          .focus()
+          .deleteRange(context)
+          .insertContent({ type: 'embed', attrs: target })
+          .run();
+        setSlashMenu(null);
+        return;
+      }
+
+      if (id === 'inline-math' || id === 'block-math') {
+        const latex = window.prompt(
+          id === 'inline-math' ? '输入行内 LaTeX 公式' : '输入块 LaTeX 公式',
+          id === 'inline-math' ? 'E = mc^2' : '\\sum_{i=1}^{n} x_i',
+        );
+        if (latex === null || !latex.trim()) return;
+        const chain = editor.chain().focus().deleteRange(context);
+        if (id === 'inline-math') chain.insertInlineMath({ latex: latex.trim() }).run();
+        else chain.insertBlockMath({ latex: latex.trim() }).run();
+        setSlashMenu(null);
+        return;
+      }
+
+      const chain = editor.chain().focus().deleteRange(context);
+      switch (id) {
+        case 'paragraph':
+          chain.setParagraph().run();
+          break;
+        case 'heading-1':
+          chain.setHeading({ level: 1 }).run();
+          break;
+        case 'heading-2':
+          chain.setHeading({ level: 2 }).run();
+          break;
+        case 'bullet-list':
+          chain.toggleBulletList().run();
+          break;
+        case 'numbered-list':
+          chain.toggleOrderedList().run();
+          break;
+        case 'task-list':
+          chain.toggleTaskList().run();
+          break;
+        case 'details':
+          chain.setDetails().run();
+          break;
+        case 'callout':
+          chain
+            .insertContent({
+              type: 'callout',
+              attrs: { icon: '💡', tone: 'gray' },
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: '输入提示内容' }] }],
+            })
+            .run();
+          break;
+        case 'quote':
+          chain.toggleBlockquote().run();
+          break;
+        case 'code':
+          chain.toggleCodeBlock().run();
+          break;
+        case 'table':
+          chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+          break;
+        case 'table-of-contents':
+          chain.insertContent({ type: 'tableOfContents' }).run();
+          break;
+        case 'divider':
+          chain.setHorizontalRule().run();
+          break;
+        default:
+          break;
+      }
+      setSlashMenu(null);
+    },
+    [editor],
+  );
+
+  useEffect(() => setSlashIndex(0), [slashMenu?.query]);
+
+  useEffect(() => {
+    if (!editor || !slashMenu) return;
+    const handleMenuKeys = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        editor.chain().focus().deleteRange(slashMenu).run();
+        setSlashMenu(null);
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (!filteredSlashCommands.length) return;
+        event.preventDefault();
+        setSlashIndex((current) => {
+          const delta = event.key === 'ArrowDown' ? 1 : -1;
+          return (current + delta + filteredSlashCommands.length) % filteredSlashCommands.length;
+        });
+        return;
+      }
+      if (event.key === 'Enter' && filteredSlashCommands.length) {
+        event.preventDefault();
+        const selected = filteredSlashCommands[slashIndex % filteredSlashCommands.length];
+        if (selected) runSlashCommand(selected.id);
+      }
+    };
+    editor.view.dom.addEventListener('keydown', handleMenuKeys);
+    return () => editor.view.dom.removeEventListener('keydown', handleMenuKeys);
+  }, [editor, filteredSlashCommands, runSlashCommand, slashIndex, slashMenu]);
 
   if (!editor) return null;
 
   const tools = [
+    {
+      label: '插入内容块（也可输入 /）',
+      icon: <Plus size={16} />,
+      action: () => {
+        const parent = editor.state.selection.$from.parent;
+        if (parent.isTextblock && parent.content.size === 0) {
+          editor.chain().focus().insertContent('/').run();
+        } else {
+          editor
+            .chain()
+            .focus()
+            .insertContent({ type: 'paragraph', content: [{ type: 'text', text: '/' }] })
+            .run();
+        }
+      },
+      active: Boolean(slashMenu),
+    },
     {
       label: '正文',
       icon: <span className="text-tool">T</span>,
@@ -2508,7 +2920,7 @@ function CollaborativeEditor({
         {tools.map((tool, index) => (
           <button
             key={tool.label}
-            className={`${tool.active ? 'active' : ''} ${[3, 5, 9].includes(index) ? 'tool-separator' : ''}`}
+            className={`${tool.active ? 'active' : ''} ${[1, 4, 6, 10].includes(index) ? 'tool-separator' : ''}`}
             onClick={tool.action}
             title={tool.label}
             type="button"
@@ -2518,6 +2930,43 @@ function CollaborativeEditor({
         ))}
       </div>
       <EditorContent editor={editor} />
+      {slashMenu ? (
+        <div
+          className="slash-menu"
+          role="listbox"
+          aria-label="插入内容块"
+          style={{ left: slashMenu.left, top: slashMenu.top }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <header>
+            <strong>基础内容块</strong>
+            <span>输入关键词筛选 · ↑↓ 选择 · Enter 插入</span>
+          </header>
+          <div>
+            {filteredSlashCommands.length ? (
+              filteredSlashCommands.map((command, index) => (
+                <button
+                  key={command.id}
+                  type="button"
+                  role="option"
+                  aria-selected={index === slashIndex}
+                  className={index === slashIndex ? 'active' : ''}
+                  onMouseEnter={() => setSlashIndex(index)}
+                  onClick={() => runSlashCommand(command.id)}
+                >
+                  <span className="slash-command-icon">{slashCommandIcon(command.id)}</span>
+                  <span>
+                    <strong>{command.label}</strong>
+                    <small>{command.description}</small>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p>没有匹配的内容块</p>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -36,4 +36,33 @@ describe('Markdown import and export', () => {
     expect(exported).not.toContain(sourceId);
     expect(exported).toContain('https://example.com/keep.png');
   });
+
+  it('round-trips Rdocs callouts, toggles, bookmarks, embeds, formulas and table of contents', () => {
+    const source = `> [!NOTE] 💡 这是一条重要提示
+
+<details>
+<summary>查看详细步骤</summary>
+
+先完成设备密钥登录
+</details>
+
+[🔖 Rdocs](https://docs.bigrandall.io/)
+
+[▶ YouTube 嵌入](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
+
+<!-- rdocs:table-of-contents -->
+
+$$
+E = mc^2
+$$`;
+    const imported = markdownToYjsSnapshot(source);
+    const exported = yjsSnapshotToMarkdown(imported.snapshot);
+
+    expect(exported).toContain('> [!NOTE] 💡 这是一条重要提示');
+    expect(exported).toContain('<summary>查看详细步骤</summary>');
+    expect(exported).toContain('[🔖 Rdocs](https://docs.bigrandall.io/)');
+    expect(exported).toContain('[▶ YouTube 嵌入](https://www.youtube.com/watch?v=dQw4w9WgXcQ)');
+    expect(exported).toContain('<!-- rdocs:table-of-contents -->');
+    expect(exported).toContain('$$\nE = mc^2\n$$');
+  });
 });
