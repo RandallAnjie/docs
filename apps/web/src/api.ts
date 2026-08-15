@@ -29,10 +29,14 @@ import type {
   OrganizationMemberSummary,
   OrganizationSummary,
   PageAccessMode,
+  PageBacklinkSummary,
   PageGrantRole,
   PageGrantSummary,
+  PageLinkPreview,
+  PageSearchSort,
   PageSearchResult,
   PageSummary,
+  PageUpdateSummary,
   PublicDatabaseFormDefinition,
   ProjectWorkspaceSummary,
   RecentPageResult,
@@ -195,9 +199,42 @@ export function listPages(spaceId?: string): Promise<ListPagesResponse> {
 export function searchPages(
   organizationId: string,
   query: string,
+  options: {
+    createdBy?: string;
+    dateFrom?: number;
+    dateTo?: number;
+    inPageId?: string;
+    sort?: PageSearchSort;
+    spaceId?: string;
+    titleOnly?: boolean;
+  } = {},
 ): Promise<{ results: PageSearchResult[] }> {
   const parameters = new URLSearchParams({ organizationId, q: query });
+  if (options.createdBy) parameters.set('createdBy', options.createdBy);
+  if (options.dateFrom) parameters.set('dateFrom', String(options.dateFrom));
+  if (options.dateTo) parameters.set('dateTo', String(options.dateTo));
+  if (options.inPageId) parameters.set('inPageId', options.inPageId);
+  if (options.sort) parameters.set('sort', options.sort);
+  if (options.spaceId) parameters.set('spaceId', options.spaceId);
+  if (options.titleOnly) parameters.set('titleOnly', '1');
   return request(`/api/search?${parameters.toString()}`);
+}
+
+export function listPageUpdates(organizationId: string): Promise<{ updates: PageUpdateSummary[] }> {
+  return request(`/api/updates?organizationId=${encodeURIComponent(organizationId)}`);
+}
+
+export function listPageBacklinks(pageId: string): Promise<{ backlinks: PageBacklinkSummary[] }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/backlinks`);
+}
+
+export function getPageLinkPreview(
+  containerPageId: string,
+  targetPageId: string,
+): Promise<{ preview: PageLinkPreview }> {
+  return request(
+    `/api/pages/${encodeURIComponent(containerPageId)}/page-links/${encodeURIComponent(targetPageId)}/preview`,
+  );
 }
 
 export function listRecentPages(organizationId: string): Promise<{ pages: RecentPageResult[] }> {

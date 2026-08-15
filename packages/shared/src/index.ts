@@ -1,5 +1,5 @@
 export const PRODUCT_NAME = 'Rdocs';
-export const EDITOR_SCHEMA_VERSION = 7;
+export const EDITOR_SCHEMA_VERSION = 8;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
 export type ResourceGrantRole = 'none' | SpaceRole;
@@ -302,6 +302,31 @@ export interface TrashedPageSummary extends PageSummary {
 export interface PageSearchResult {
   page: PageSummary;
   snippet: string;
+  createdAt: number;
+  createdBy: AuthUserSummary;
+}
+
+export type PageSearchSort =
+  'best' | 'created_asc' | 'created_desc' | 'updated_asc' | 'updated_desc';
+
+export interface PageLinkPreview {
+  page: PageSummary;
+  spaceName: string;
+  snippet: string;
+}
+
+export interface PageBacklinkSummary {
+  page: PageSummary;
+  lastSeenAt: number;
+}
+
+export interface PageUpdateSummary {
+  id: string;
+  actor: AuthUserSummary | null;
+  eventType: string;
+  page: PageSummary;
+  metadata: Record<string, unknown>;
+  createdAt: number;
 }
 
 export interface RecentPageResult {

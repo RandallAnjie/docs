@@ -21,6 +21,7 @@ import {
   startRegistration,
 } from '@simplewebauthn/browser';
 import {
+  Activity,
   Bold,
   ArchiveRestore,
   ArrowDown,
@@ -123,6 +124,7 @@ import {
   listPages,
   listOrganizations,
   listSpaces,
+  searchPages,
   logout,
   importMarkdown,
   movePage,
@@ -142,6 +144,7 @@ import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
+import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
 import {
   ancestorPageIds,
@@ -189,6 +192,7 @@ type SlashCommandId =
   | 'inline-math'
   | 'audio'
   | 'numbered-list'
+  | 'page-link'
   | 'page-button'
   | 'paragraph'
   | 'quote'
@@ -283,6 +287,12 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     label: '面包屑',
     description: '展示并跟随当前页面层级',
     keywords: 'breadcrumb path hierarchy 面包屑 层级',
+  },
+  {
+    id: 'page-link',
+    label: '关联页面',
+    description: '插入可预览并自动产生反向链接的页面',
+    keywords: 'page link mention backlink 页面 链接 引用',
   },
   {
     id: 'page-button',
@@ -390,6 +400,8 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <Bookmark size={17} />;
     case 'breadcrumb':
       return <ChevronRight size={17} />;
+    case 'page-link':
+      return <Link2 size={17} />;
     case 'page-button':
       return <Zap size={17} />;
     case 'synced-block':
@@ -814,7 +826,9 @@ function TenantHome({
   const [settingsOpen, setSettingsOpen] = useState(
     () => new URLSearchParams(window.location.search).get('settings') === '1',
   );
-  const [discoveryTab, setDiscoveryTab] = useState<'search' | 'favorites' | 'recent' | null>(null);
+  const [discoveryTab, setDiscoveryTab] = useState<
+    'favorites' | 'recent' | 'search' | 'updates' | null
+  >(null);
   const [creatingPage, setCreatingPage] = useState<
     { spaceId: string; parentId: string | null } | undefined
   >(undefined);
@@ -825,6 +839,27 @@ function TenantHome({
   const [templateSpace, setTemplateSpace] = useState<SpaceSummary | null>(null);
   const markdownInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const openCommandSearch = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        event.key.toLowerCase() === 'k' &&
+        target?.closest('input, textarea, select, [contenteditable="true"]')
+      )
+        return;
+      if (
+        selectedOrganizationId &&
+        (event.metaKey || event.ctrlKey) &&
+        ['k', 'p'].includes(event.key.toLowerCase())
+      ) {
+        event.preventDefault();
+        setDiscoveryTab('search');
+      }
+    };
+    window.addEventListener('keydown', openCommandSearch);
+    return () => window.removeEventListener('keydown', openCommandSearch);
+  }, [selectedOrganizationId]);
 
   const loadOrganizations = useCallback(async () => {
     setLoading(true);
@@ -1060,6 +1095,13 @@ function TenantHome({
             onClick={() => setDiscoveryTab('recent')}
           >
             <Clock3 size={17} /> 最近访问
+          </button>
+          <button
+            type="button"
+            disabled={!selectedOrganization}
+            onClick={() => setDiscoveryTab('updates')}
+          >
+            <Activity size={17} /> 所有更新
           </button>
           <button
             type="button"
@@ -1376,6 +1418,11 @@ function TenantHome({
           organizationId={selectedOrganization.id}
           initialTab={discoveryTab}
           onClose={() => setDiscoveryTab(null)}
+          onCreatePage={
+            spaces[0] ? () => void createAndOpenPage(spaces[0] as SpaceSummary, null) : undefined
+          }
+          pages={Object.values(pagesBySpace).flat()}
+          spaces={spaces}
         />
       ) : null}
     </main>
@@ -1698,7 +1745,9 @@ function DocumentWorkspace({
   const [moveParentId, setMoveParentId] = useState(page.parentId ?? '');
   const [pageActionBusy, setPageActionBusy] = useState(false);
   const [pageActionError, setPageActionError] = useState<string | null>(null);
-  const [discoveryTab, setDiscoveryTab] = useState<'search' | 'favorites' | 'recent' | null>(null);
+  const [discoveryTab, setDiscoveryTab] = useState<
+    'favorites' | 'recent' | 'search' | 'updates' | null
+  >(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
@@ -1770,7 +1819,13 @@ function DocumentWorkspace({
 
   useEffect(() => {
     const openSearch = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        event.key.toLowerCase() === 'k' &&
+        target?.closest('input, textarea, select, [contenteditable="true"]')
+      )
+        return;
+      if ((event.metaKey || event.ctrlKey) && ['k', 'p'].includes(event.key.toLowerCase())) {
         event.preventDefault();
         setDiscoveryTab('search');
       }
@@ -2218,6 +2273,10 @@ function DocumentWorkspace({
               <Clock3 size={16} />
               <span>最近访问</span>
             </button>
+            <button type="button" onClick={() => setDiscoveryTab('updates')}>
+              <Activity size={16} />
+              <span>所有更新</span>
+            </button>
           </div>
         </nav>
         <div className="sidebar-footer">
@@ -2396,6 +2455,7 @@ function DocumentWorkspace({
               )
             ) : null}
             <div className="document-kicker">团队知识 / 协作原型</div>
+            {!renewTicket ? <PageBacklinks pageId={page.id} /> : null}
             <input
               className="title-input"
               value={title}
@@ -2424,6 +2484,7 @@ function DocumentWorkspace({
                 onReady={handleEditorReady}
                 onRequestAttachment={requestAttachmentUpload}
                 onCreateSyncedBlock={createSyncedBlockResource}
+                organizationId={page.organizationId}
                 breadcrumbItems={breadcrumbItems}
                 pageId={page.id}
                 publicShareToken={publicShareToken}
@@ -2556,6 +2617,9 @@ function DocumentWorkspace({
           organizationId={page.organizationId}
           initialTab={discoveryTab}
           onClose={() => setDiscoveryTab(null)}
+          onCreatePage={() => void createAndOpenPage(null)}
+          pages={pages}
+          spaces={organizationSpaces}
         />
       ) : null}
       {pageActionError && !moveDialogOpen ? (
@@ -2666,6 +2730,7 @@ function CollaborativeEditor({
   onReady,
   onRequestAttachment,
   onCreateSyncedBlock,
+  organizationId,
   breadcrumbItems,
   pageId,
   publicShareToken,
@@ -2677,6 +2742,7 @@ function CollaborativeEditor({
   onReady: (editor: Editor | null) => void;
   onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
   onCreateSyncedBlock: (snapshot?: Uint8Array) => Promise<string>;
+  organizationId: string;
   breadcrumbItems: readonly { id: string; title: string }[];
   pageId: string;
   publicShareToken?: string;
@@ -2692,6 +2758,10 @@ function CollaborativeEditor({
       createRdocsEditorBlocks(
         () => breadcrumbItemsRef.current,
         () => syncedBlockContextRef.current,
+        () => ({
+          containerPageId: syncedBlockContextRef.current.pageId,
+          publicShareToken: syncedBlockContextRef.current.publicShareToken,
+        }),
       ),
     [],
   );
@@ -3028,6 +3098,40 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'page-link') {
+        const pageQuery = window.prompt('搜索要关联的页面');
+        if (!pageQuery?.trim()) return;
+        editor.chain().focus().deleteRange(context).run();
+        setSlashMenu(null);
+        void searchPages(organizationId, pageQuery, { titleOnly: true })
+          .then((result) => {
+            if (!result.results.length) throw new Error('没有找到可访问的页面');
+            let selected = result.results[0];
+            if (result.results.length > 1) {
+              const choices = result.results
+                .slice(0, 9)
+                .map((candidate, index) => `${index + 1}. ${candidate.page.title}`)
+                .join('\n');
+              const choice = window.prompt(`找到多个页面，请输入序号：\n${choices}`, '1');
+              if (choice === null) return;
+              selected = result.results[Number(choice) - 1];
+            }
+            if (!selected) throw new Error('页面序号无效');
+            editor
+              .chain()
+              .focus()
+              .insertContent({
+                type: 'pageLink',
+                attrs: { pageId: selected.page.id, title: selected.page.title },
+              })
+              .run();
+          })
+          .catch((reason) =>
+            window.alert(reason instanceof Error ? reason.message : '无法插入页面链接'),
+          );
+        return;
+      }
+
       const chain = editor.chain().focus().deleteRange(context);
       switch (id) {
         case 'paragraph':
@@ -3102,7 +3206,7 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor, onCreateSyncedBlock, onRequestAttachment],
+    [editor, onCreateSyncedBlock, onRequestAttachment, organizationId],
   );
 
   useEffect(() => setSlashIndex(0), [slashMenu?.query]);

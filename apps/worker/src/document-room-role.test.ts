@@ -4,6 +4,7 @@ import * as Y from 'yjs';
 import {
   collaborationRoleCanEdit,
   documentContainsSyncedBlock,
+  documentPageLinkIds,
   documentSyncedBlockIds,
   syncedBlockUnsyncUpdate,
   yjsUpdateChangesDocument,
@@ -134,5 +135,28 @@ describe('synced block reference projection', () => {
 
     empty.destroy();
     target.destroy();
+  });
+});
+
+describe('page link projection', () => {
+  it('collects unique valid page targets through nested blocks', () => {
+    const document = new Y.Doc();
+    const first = new Y.XmlElement('pageLink');
+    first.setAttribute('pageId', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    const column = new Y.XmlElement('column');
+    const nested = new Y.XmlElement('pageLink');
+    nested.setAttribute('pageId', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    const duplicate = new Y.XmlElement('pageLink');
+    duplicate.setAttribute('pageId', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    const invalid = new Y.XmlElement('pageLink');
+    invalid.setAttribute('pageId', 'private-page');
+    column.insert(0, [nested, duplicate, invalid]);
+    document.getXmlFragment('default').insert(0, [first, column]);
+
+    expect(documentPageLinkIds(document)).toEqual([
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    ]);
+    document.destroy();
   });
 });
