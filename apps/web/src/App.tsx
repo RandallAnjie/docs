@@ -26,6 +26,8 @@ import {
   ChevronRight,
   Clock3,
   Code2,
+  Columns2,
+  Columns3,
   Copy,
   Download,
   FilePlus2,
@@ -122,6 +124,7 @@ import { CommentsPanel } from './CommentsPanel';
 import { DatabaseCanvas } from './DatabaseCanvas';
 import type { LocalIdentity } from './identity';
 import { DiscoveryDialog } from './DiscoveryDialog';
+import { EditorBlockHandle } from './EditorBlockHandle';
 import { normalizeBookmarkUrl, normalizeEmbedUrl, rdocsEditorBlocks } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell } from './NotificationBell';
@@ -153,6 +156,8 @@ type SlashCommandId =
   | 'bullet-list'
   | 'callout'
   | 'code'
+  | 'columns-2'
+  | 'columns-3'
   | 'details'
   | 'divider'
   | 'embed'
@@ -222,6 +227,18 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { id: 'quote', label: '引用', description: '引用一段文字', keywords: 'quote 引用' },
   { id: 'code', label: '代码块', description: '显示带格式的代码', keywords: 'code 代码' },
   { id: 'table', label: '简单表格', description: '插入 3 × 3 表格', keywords: 'table 表格' },
+  {
+    id: 'columns-2',
+    label: '两栏布局',
+    description: '并排组织两组内容',
+    keywords: 'columns layout 分栏 两栏',
+  },
+  {
+    id: 'columns-3',
+    label: '三栏布局',
+    description: '并排组织三组内容',
+    keywords: 'columns layout 分栏 三栏',
+  },
   {
     id: 'table-of-contents',
     label: '目录',
@@ -300,6 +317,10 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <Code2 size={17} />;
     case 'table':
       return <Table2 size={17} />;
+    case 'columns-2':
+      return <Columns2 size={17} />;
+    case 'columns-3':
+      return <Columns3 size={17} />;
     case 'table-of-contents':
       return <ListTree size={17} />;
     case 'bookmark':
@@ -2767,6 +2788,25 @@ function CollaborativeEditor({
         case 'table':
           chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
           break;
+        case 'columns-2':
+        case 'columns-3': {
+          const columnCount = id === 'columns-2' ? 2 : 3;
+          chain
+            .insertContent({
+              type: 'columns',
+              content: Array.from({ length: columnCount }, (_, index) => ({
+                type: 'column',
+                content: [
+                  {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: `第 ${index + 1} 栏` }],
+                  },
+                ],
+              })),
+            })
+            .run();
+          break;
+        }
         case 'table-of-contents':
           chain.insertContent({ type: 'tableOfContents' }).run();
           break;
@@ -2929,6 +2969,7 @@ function CollaborativeEditor({
           </button>
         ))}
       </div>
+      {editable ? <EditorBlockHandle editor={editor} /> : null}
       <EditorContent editor={editor} />
       {slashMenu ? (
         <div

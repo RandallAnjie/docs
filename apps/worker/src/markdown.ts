@@ -63,6 +63,30 @@ export function markdownToYjsSnapshot(markdown: string): {
       index += 1;
       continue;
     }
+    if (line.trim() === '<!-- rdocs:columns:start -->') {
+      const columnBodies: string[][] = [];
+      let currentColumn: string[] | null = null;
+      index += 1;
+      while (index < lines.length && (lines[index] ?? '').trim() !== '<!-- rdocs:columns:end -->') {
+        if ((lines[index] ?? '').trim() === '<!-- rdocs:column -->') {
+          currentColumn = [];
+          columnBodies.push(currentColumn);
+        } else if (currentColumn && (lines[index] ?? '').trim()) {
+          currentColumn.push(lines[index] ?? '');
+        }
+        index += 1;
+      }
+      while (columnBodies.length < 2) columnBodies.push([]);
+      const columns = new Y.XmlElement('columns');
+      columnBodies.slice(0, 4).forEach((body) => {
+        const column = new Y.XmlElement('column');
+        column.insert(0, [element('paragraph', cleanInlineMarkdown(body.join(' ').trim()))]);
+        columns.insert(columns.length, [column]);
+      });
+      nodes.push(columns);
+      index += 1;
+      continue;
+    }
     if (line.trim() === '<details>') {
       const summaryLine = lines[index + 1] ?? '';
       const summary = summaryLine.match(/^<summary>(.*)<\/summary>$/)?.[1] ?? '折叠内容';
@@ -330,6 +354,16 @@ function renderElement(node: Y.XmlElement): string {
     }
     case 'tableOfContents':
       return '<!-- rdocs:table-of-contents -->\n\n';
+    case 'columns': {
+      const columns = node
+        .toArray()
+        .filter((child): child is Y.XmlElement => child instanceof Y.XmlElement)
+        .map((column) => `<!-- rdocs:column -->\n${renderChildren(column).trim()}`)
+        .join('\n\n');
+      return `<!-- rdocs:columns:start -->\n${columns}\n<!-- rdocs:columns:end -->\n\n`;
+    }
+    case 'column':
+      return content;
     case 'inlineMath': {
       const latex = node.getAttribute('latex') ?? '';
       return latex ? `$${latex}$` : '';

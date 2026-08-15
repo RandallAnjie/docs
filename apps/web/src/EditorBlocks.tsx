@@ -379,4 +379,37 @@ export const TableOfContentsBlock = Node.create({
   },
 });
 
-export const rdocsEditorBlocks = [CalloutBlock, BookmarkBlock, EmbedBlock, TableOfContentsBlock];
+export const ColumnBlock = Node.create({
+  name: 'column',
+  content: 'block+',
+  isolating: true,
+  parseHTML() {
+    return [{ tag: 'section[data-rdocs-column]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['section', mergeAttributes(HTMLAttributes, { 'data-rdocs-column': '' }), 0];
+  },
+});
+
+export const ColumnsBlock = Node.create({
+  name: 'columns',
+  group: 'block',
+  content: 'column{2,4}',
+  isolating: true,
+  defining: true,
+  parseHTML() {
+    return [{ tag: 'div[data-rdocs-columns]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { 'data-rdocs-columns': '' }), 0];
+  },
+});
+
+export const rdocsEditorBlocks = [
+  CalloutBlock,
+  BookmarkBlock,
+  EmbedBlock,
+  TableOfContentsBlock,
+  ColumnsBlock,
+  ColumnBlock,
+];

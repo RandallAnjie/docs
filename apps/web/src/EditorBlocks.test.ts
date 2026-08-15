@@ -1,10 +1,12 @@
 import { getSchema } from '@tiptap/core';
 import { Details, DetailsContent, DetailsSummary } from '@tiptap/extension-details';
 import { Mathematics } from '@tiptap/extension-mathematics';
+import { EditorState } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { describe, expect, it } from 'vitest';
 
 import { normalizeBookmarkUrl, normalizeEmbedUrl, rdocsEditorBlocks } from './EditorBlocks';
+import { moveTopLevelBlock, topLevelBlocks } from './editor-block-operations';
 
 describe('editor block URL normalization', () => {
   it('accepts HTTP(S) bookmarks and rejects executable protocols', () => {
@@ -76,10 +78,45 @@ describe('editor block URL normalization', () => {
             { type: 'inlineMath', attrs: { latex: 'x^2' } },
           ],
         },
+        {
+          type: 'columns',
+          content: [
+            {
+              type: 'column',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: '左栏' }] }],
+            },
+            {
+              type: 'column',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: '右栏' }] }],
+            },
+          ],
+        },
       ],
     });
 
     expect(() => document.check()).not.toThrow();
-    expect(document.toJSON().content).toHaveLength(7);
+    expect(document.toJSON().content).toHaveLength(8);
+  });
+
+  it('moves complete top-level blocks without changing their content', () => {
+    const schema = getSchema([StarterKit]);
+    const document = schema.nodeFromJSON({
+      type: 'doc',
+      content: ['A', 'B', 'C'].map((text) => ({
+        type: 'paragraph',
+        content: [{ type: 'text', text }],
+      })),
+    });
+    const state = EditorState.create({ doc: document, schema });
+    const firstPosition = topLevelBlocks(state.doc)[0]?.position ?? -1;
+    const transaction = moveTopLevelBlock(state, firstPosition, 'down');
+
+    expect(transaction).not.toBeNull();
+    const moved = transaction ? state.apply(transaction) : state;
+    expect(topLevelBlocks(moved.doc).map((block) => block.node.textContent)).toEqual([
+      'B',
+      'A',
+      'C',
+    ]);
   });
 });
