@@ -2,6 +2,7 @@ import type {
   OrganizationRole,
   PageGrantRole,
   SpaceGrantPrincipalType,
+  SpaceGrantRole,
   SpaceRole,
   SpaceVisibility,
 } from '@rdocs/shared';
@@ -46,7 +47,8 @@ interface SpaceRow {
 }
 
 interface GrantRow {
-  role: SpaceRole;
+  principal_type: SpaceGrantPrincipalType;
+  role: SpaceGrantRole;
 }
 
 interface PageGrantAccessRow {
@@ -113,6 +115,34 @@ export function effectivePageGrantRole(
   return !organization || organization.role === 'none' ? null : organization.role;
 }
 
+export function effectiveSpaceGrantRole(
+  grants: ReadonlyArray<{ principalType: SpaceGrantPrincipalType; role: SpaceGrantRole }>,
+  fallback: SpaceRole | null,
+): SpaceRole | null {
+  const direct = grants.find((grant) => grant.principalType === 'user');
+  if (direct) return direct.role === 'none' ? null : direct.role;
+
+  const groups = grants.filter((grant) => grant.principalType === 'group');
+  if (groups.some((grant) => grant.role === 'none')) return null;
+  let groupRole: SpaceRole | null = null;
+  for (const grant of groups) {
+    if (grant.role !== 'none') groupRole = higherSpaceRole(groupRole, grant.role);
+  }
+  if (groupRole) return groupRole;
+
+  const organization = grants.find((grant) => grant.principalType === 'organization');
+  if (organization) return organization.role === 'none' ? null : organization.role;
+  return fallback;
+}
+
+export function capRoleForMembership(
+  organizationRole: OrganizationRole,
+  role: SpaceRole | null,
+): SpaceRole | null {
+  if (!role) return null;
+  return organizationRole === 'guest' ? 'viewer' : role;
+}
+
 export function canManageOrganization(
   role: OrganizationRole,
   action: 'update' | 'manage_members' | 'create_space' | 'delete',
@@ -164,11 +194,11 @@ async function resolveSpaceAccessInternal(
     return { ...membership, spaceId: space.id, spaceRole: 'space_admin' };
   }
 
-  let role: SpaceRole | null =
+  const fallback: SpaceRole | null =
     space.visibility === 'organization' && membership.role !== 'guest' ? 'viewer' : null;
   const grants = (
     await env.DB.prepare(
-      `SELECT sg.role
+      `SELECT sg.principal_type, sg.role
          FROM space_grants sg
         WHERE sg.organization_id = ? AND sg.space_id = ?
           AND (
@@ -187,7 +217,13 @@ async function resolveSpaceAccessInternal(
       .bind(space.organization_id, space.id, userId, space.organization_id, membership.role, userId)
       .all<GrantRow>()
   ).results;
-  for (const grant of grants) role = higherSpaceRole(role, grant.role);
+  const role = capRoleForMembership(
+    membership.role,
+    effectiveSpaceGrantRole(
+      grants.map((grant) => ({ principalType: grant.principal_type, role: grant.role })),
+      fallback,
+    ),
+  );
   return role ? { ...membership, spaceId: space.id, spaceRole: role } : null;
 }
 
@@ -281,8 +317,11 @@ async function resolvePageAccessInternal(
       )
       .all<PageGrantAccessRow>()
   ).results;
-  const grantedRole = effectivePageGrantRole(
-    grants.map((grant) => ({ principalType: grant.principal_type, role: grant.role })),
+  const grantedRole = capRoleForMembership(
+    spaceAccess.role,
+    effectivePageGrantRole(
+      grants.map((grant) => ({ principalType: grant.principal_type, role: grant.role })),
+    ),
   );
   if (!grantedRole) return null;
   return {

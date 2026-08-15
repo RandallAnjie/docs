@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 
 import type {
   InvitationSummary,
+  OrganizationAssignableRole,
   OrganizationMemberSummary,
   OrganizationRole,
   OrganizationSummary,
@@ -24,7 +25,7 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   owner: '所有者',
   admin: '管理员',
   member: '成员',
-  guest: '访客',
+  guest: '外部只读（历史）',
 };
 
 function errorMessage(reason: unknown, fallback: string): string {
@@ -52,7 +53,7 @@ export function OrganizationSettings({
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'admin' | 'member' | 'guest'>('member');
+  const [role, setRole] = useState<OrganizationAssignableRole>('member');
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +107,7 @@ export function OrganizationSettings({
 
   const changeMember = async (
     member: OrganizationMemberSummary,
-    input: { role?: 'admin' | 'member' | 'guest'; status?: 'active' | 'suspended' },
+    input: { role?: OrganizationAssignableRole; status?: 'active' | 'suspended' },
   ) => {
     setBusyId(member.userId);
     setError(null);
@@ -173,7 +174,7 @@ export function OrganizationSettings({
       <div className="tenant-panel-heading">
         <div>
           <span>成员与设备密钥邀请</span>
-          <small>成员从邀请链接登记自己的设备密钥，无需 GitHub OAuth</small>
+          <small>正式成员从邀请链接登记设备密钥；匿名用户不能进入文档空间</small>
         </div>
         <b>
           <Users size={14} /> {members.length} 人
@@ -198,7 +199,6 @@ export function OrganizationSettings({
             <select value={role} onChange={(event) => setRole(event.target.value as typeof role)}>
               {organization.role === 'owner' ? <option value="admin">管理员</option> : null}
               <option value="member">成员</option>
-              <option value="guest">访客</option>
             </select>
           </label>
           <button className="primary-button" type="submit" disabled={Boolean(busyId)}>
@@ -266,7 +266,7 @@ export function OrganizationSettings({
                           disabled={busyId === member.userId}
                           onChange={(event) =>
                             void changeMember(member, {
-                              role: event.target.value as 'admin' | 'member' | 'guest',
+                              role: event.target.value as OrganizationAssignableRole,
                             })
                           }
                         >
@@ -274,7 +274,11 @@ export function OrganizationSettings({
                             <option value="admin">管理员</option>
                           ) : null}
                           <option value="member">成员</option>
-                          <option value="guest">访客</option>
+                          {member.role === 'guest' ? (
+                            <option value="guest" disabled>
+                              外部只读（历史）
+                            </option>
+                          ) : null}
                         </select>
                       ) : (
                         <span className="role-badge">

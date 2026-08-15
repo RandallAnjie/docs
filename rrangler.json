@@ -24,7 +24,7 @@
   },
   "vars": {
     "APP_ORIGIN": "https://docs.bigrandall.io",
-    "AUTH_MODE": "phase0",
+    "AUTH_MODE": "passkey",
     "ENVIRONMENT": "production",
     "PASSKEY_ORIGIN": "https://docs.bigrandall.io",
     "PASSKEY_RP_ID": "docs.bigrandall.io"

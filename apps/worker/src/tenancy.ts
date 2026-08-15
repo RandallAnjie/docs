@@ -4,10 +4,12 @@ import type {
   GroupSummary,
   InvitationSummary,
   OrganizationMemberSummary,
+  OrganizationAssignableRole,
   OrganizationRole,
   OrganizationSummary,
   SpaceGrantPrincipalType,
   SpaceGrantSummary,
+  SpaceGrantRole,
   SpaceRole,
   SpaceSummary,
   SpaceVisibility,
@@ -98,7 +100,7 @@ interface GrantRow {
   space_id: string;
   principal_type: SpaceGrantPrincipalType;
   principal_id: string;
-  role: SpaceRole;
+  role: SpaceGrantRole;
   created_at: number;
 }
 
@@ -162,6 +164,10 @@ function normalizedSlug(value: unknown, fallbackPrefix: string): string | null {
 
 function isEntityId(value: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{2,100}$/i.test(value);
+}
+
+function isOrganizationAssignableRole(value: unknown): value is OrganizationAssignableRole {
+  return value === 'admin' || value === 'member';
 }
 
 function organizationFromRow(row: OrganizationRow): OrganizationSummary {
@@ -261,7 +267,8 @@ export async function findRegistrationInvitation(
   const row = await env.DB.prepare(
     `SELECT id, organization_id, email
        FROM invitations
-      WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+      WHERE token_hash = ? AND organization_role <> 'guest'
+        AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
   )
     .bind(await sha256(token), Date.now())
     .first<{ id: string; organization_id: string; email: string }>();
@@ -277,7 +284,8 @@ export async function registrationInvitationStillValid(
 ): Promise<boolean> {
   const row = await env.DB.prepare(
     `SELECT 1 AS found FROM invitations
-      WHERE id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+      WHERE id = ? AND email = ? AND organization_role <> 'guest'
+        AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
   )
     .bind(invitationId, email, Date.now())
     .first<{ found: number }>();
@@ -592,7 +600,14 @@ async function createInvitation(
   const email = normalizedEmail(input?.email);
   const role = input?.role;
   if (!email) return error('请输入有效邮箱', 400);
-  if (role !== 'admin' && role !== 'member' && role !== 'guest') {
+  if (role === 'guest') {
+    return error(
+      '不再支持访客邀请；请邀请正式成员，或为页面创建只读分享链接',
+      400,
+      'guest_role_disabled',
+    );
+  }
+  if (!isOrganizationAssignableRole(role)) {
     return error('邀请角色无效', 400);
   }
   if (membership.role !== 'owner' && role === 'admin') {
@@ -700,6 +715,9 @@ async function acceptInvitation(
   if (!row || row.revoked_at !== null || Number(row.expires_at) <= Date.now()) {
     return error('邀请不存在、已撤销或已过期', 404, 'invitation_invalid');
   }
+  if (row.organization_role === 'guest') {
+    return error('访客邀请已停用，请联系组织管理员创建正式成员邀请', 400, 'guest_role_disabled');
+  }
   if (row.email !== actor.email.toLowerCase()) {
     return error('此邀请属于另一个邮箱账号', 403, 'invitation_email_mismatch');
   }
@@ -750,11 +768,15 @@ async function updateMember(
   if (target.role === 'owner') return error('请先转让组织所有权', 409, 'owner_protected');
 
   const input = await body<{ role?: unknown; status?: unknown }>(request);
-  const role = input?.role ?? target.role;
-  const status = input?.status ?? target.status;
-  if (role !== 'admin' && role !== 'member' && role !== 'guest') {
+  const requestedRole = input?.role;
+  if (requestedRole === 'guest') {
+    return error('访客角色已停用；可将历史外部只读成员升级为正式成员', 400, 'guest_role_disabled');
+  }
+  if (requestedRole !== undefined && !isOrganizationAssignableRole(requestedRole)) {
     return error('成员角色无效', 400);
   }
+  const role = (requestedRole ?? target.role) as OrganizationRole;
+  const status = input?.status ?? target.status;
   if (status !== 'active' && status !== 'suspended') return error('成员状态无效', 400);
   if (membership.role !== 'owner' && (target.role === 'admin' || role === 'admin')) {
     return error('只有组织所有者可以管理管理员', 403);
@@ -807,6 +829,16 @@ async function removeMember(
       `DELETE FROM space_grants
         WHERE organization_id = ? AND principal_type = 'user' AND principal_id = ?`,
     ).bind(organizationId, userId),
+    env.DB.prepare(
+      `DELETE FROM page_grants
+        WHERE organization_id = ? AND principal_type = 'user' AND principal_id = ?`,
+    ).bind(organizationId, userId),
+    env.DB.prepare(
+      `DELETE FROM group_members
+        WHERE user_id = ? AND group_id IN (
+          SELECT id FROM groups WHERE organization_id = ?
+        )`,
+    ).bind(userId, organizationId),
     auditStatement(env, organizationId, actor.id, 'member.removed', 'user', userId),
   ]);
   const spaces = (
@@ -831,6 +863,9 @@ async function transferOwnership(
   if (!isEntityId(userId) || userId === actor.id) return error('请选择其他有效成员', 400);
   const target = await findActiveMembership(env, organizationId, userId);
   if (!target) return error('接收人不是此组织的有效成员', 404);
+  if (target.role === 'guest') {
+    return error('历史外部只读成员不能接收组织所有权，请先升级为正式成员', 400);
+  }
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare(
@@ -1024,8 +1059,16 @@ async function setGroupMember(
     return error('无权管理用户组成员', 403);
   }
   if (!(await findGroup(env, organizationId, groupId))) return error('用户组不存在', 404);
-  if (!(await findActiveMembership(env, organizationId, userId))) {
+  const targetMembership = await findActiveMembership(env, organizationId, userId);
+  if (!targetMembership) {
     return error('用户不是此组织的有效成员', 400);
+  }
+  if (add && targetMembership.role === 'guest') {
+    return error(
+      '历史外部只读成员不能加入用户组；请先将其升级为正式成员',
+      400,
+      'guest_group_disabled',
+    );
   }
   if (add) {
     await env.DB.prepare(
@@ -1314,6 +1357,10 @@ async function listGrants(env: Env, actor: AuthUserSummary, spaceId: string): Pr
   if (!access || !canSpace(access.spaceRole, 'manage_access')) {
     return error('无权查看空间授权', 403);
   }
+  return json({ grants: await spaceGrantSnapshot(env, spaceId) });
+}
+
+async function spaceGrantSnapshot(env: Env, spaceId: string): Promise<SpaceGrantSummary[]> {
   const rows = (
     await env.DB.prepare(
       `SELECT id, organization_id, space_id, principal_type, principal_id, role, created_at
@@ -1323,7 +1370,7 @@ async function listGrants(env: Env, actor: AuthUserSummary, spaceId: string): Pr
       .bind(spaceId)
       .all<GrantRow>()
   ).results;
-  return json({ grants: rows.map(grantFromRow) });
+  return rows.map(grantFromRow);
 }
 
 async function validatePrincipal(
@@ -1412,11 +1459,23 @@ async function putGrant(
   if (!canSpace(access.spaceRole, 'manage_access')) return error('无权管理空间授权', 403);
   const input = await body<{ role?: unknown }>(request);
   const role = input?.role;
-  if (role !== 'space_admin' && role !== 'editor' && role !== 'commenter' && role !== 'viewer') {
+  if (
+    role !== 'none' &&
+    role !== 'space_admin' &&
+    role !== 'editor' &&
+    role !== 'commenter' &&
+    role !== 'viewer'
+  ) {
     return error('空间角色无效', 400);
   }
   if (!(await validatePrincipal(env, row.organization_id, principalType, principalId))) {
     return error('授权主体不属于此组织', 400, 'principal_tenant_mismatch');
+  }
+  if (principalType === 'user') {
+    const principalMembership = await findActiveMembership(env, row.organization_id, principalId);
+    if (principalMembership?.role === 'guest' && role !== 'none' && role !== 'viewer') {
+      return error('历史外部只读成员最高只能获得只读权限', 400, 'guest_read_only');
+    }
   }
   const existing = await env.DB.prepare(
     `SELECT id FROM space_grants
@@ -1441,7 +1500,7 @@ async function putGrant(
     }),
   ]);
   await bumpSpaceAcl(env, spaceId, context);
-  return listGrants(env, actor, spaceId);
+  return json({ grants: await spaceGrantSnapshot(env, spaceId) });
 }
 
 async function deleteGrant(

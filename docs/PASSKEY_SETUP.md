@@ -1,59 +1,46 @@
-# Rdocs 设备密钥启用手册
+# Rdocs 设备密钥运行手册
 
 更新时间：2026-08-15 UTC
 
 Rdocs 使用 WebAuthn 设备密钥，不走 GitHub OAuth，不保存密码，也不会获得设备的私钥或生物识别数据。正式 RP ID 固定为 `docs.bigrandall.io`，Origin 固定为 `https://docs.bigrandall.io`。
 
-## 当前发布策略
+## 当前生产状态
 
-代码和数据库迁移可以先发布，但 `rrangler.json` 必须继续保持：
+- 首位所有者已经在 `https://docs.bigrandall.io/setup/passkey` 完成真实设备密钥登记。
+- 生产和仓库配置均为 `AUTH_MODE=passkey`。
+- 服务端不再包含匿名 Phase 0 业务模式；即使误配为 `phase0` 也会保持设备密钥登录。
+- 一次性的 `PASSKEY_ENROLLMENT_SECRET` 已从 Rdocs Worker 和本机删除，不能恢复，也不影响已有设备密钥登录。
+- 未登录用户只能使用仍有效的只读页面分享链接。
 
-```json
-"AUTH_MODE": "phase0"
-```
+## 日常登录
 
-这样现网不会在首把真实设备密钥登记前被锁住。只有显式 `phase0` 会启用匿名模式；变量缺失、拼错或任何其他值都会 fail closed 到 `passkey`。
+打开 `https://docs.bigrandall.io`，选择“使用设备密钥登录”，再用系统认证器完成验证。登录采用 discoverable credential，不需要先输入用户名。验证成功后，Worker 写入 `Secure`、`HttpOnly` 的应用会话 Cookie；D1 只保存会话令牌哈希。
 
-## 首次启用
+写请求的 `Origin` 必须精确为 `https://docs.bigrandall.io`。其他域名、缺少 Origin 或没有有效会话的业务请求都会被拒绝。
 
-所有命令只操作 Rdocs Worker 或 Rdocs 自有数据库，不修改 RandallFlare 平台代码。
+## 新成员登记
 
-1. 构建并确认设备密钥、邀请登记和页面 ACL migrations 已应用：
+1. 组织所有者或管理员在成员设置中创建“成员”邀请；只有所有者可以邀请“管理员”。
+2. 管理员把 7 天有效的邀请链接安全发送给对应邮箱持有人。
+3. 被邀请人打开链接，使用邀请邮箱登记自己的设备密钥。
+4. 邀请只能被匹配邮箱接受，撤销、过期或旧访客邀请均不能登记。
 
-   ```bash
-   npm run build
-   npm run migrate:randallflare
-   ```
+不再支持新建访客账号。需要让组织外人员查看内容时，应创建可撤销、可过期的只读页面分享链接。
 
-2. 生成至少 32 字符的高熵登记码，并通过交互式输入保存为 Rdocs secret。不要把值写进 shell history、仓库、截图或聊天记录：
+## 设备丢失与恢复
 
-   ```bash
-   node /develop/bigrandall.io/rrangler/bin/rrangler.mjs secret put PASSKEY_ENROLLMENT_SECRET --worker rdocs
-   ```
+- 建议每位组织所有者至少登记两把可恢复的设备密钥，并分别保存在独立设备或安全密钥上。
+- 如果仍有一个已登录设备或可用设备密钥，应先登录，再为同一账号登记新的设备密钥，然后撤销遗失设备。
+- 如果所有设备密钥都丢失，必须由另一个组织所有者或管理员通过受控的账号恢复流程协助；不能把 `AUTH_MODE` 改回匿名模式。
+- 在设备密钥管理与撤销页面完成前，不应删除唯一可用的所有者设备密钥。
 
-3. 确认非秘密配置为：
+## 新环境首次启动
 
-   ```text
-   PASSKEY_RP_ID=docs.bigrandall.io
-   PASSKEY_ORIGIN=https://docs.bigrandall.io
-   ```
+仅全新且没有任何 credential 的 Rdocs 环境需要临时 bootstrap secret。它必须是至少 32 字符的高熵值，只通过交互式 `rrangler secret put PASSKEY_ENROLLMENT_SECRET --worker rdocs` 写入。完成首位所有者登记后立刻删除该 secret。已有生产环境不要重新创建 bootstrap secret。
 
-4. 保持 `AUTH_MODE=phase0`，打开 `https://docs.bigrandall.io/setup/passkey`，输入显示名称、邮箱和登记码，然后完成系统设备验证。首位管理员会自动接管现有 `org_phase0` 组织和文档；此阶段即使登记失败也不会锁住现网。
+## 后续安全工作
 
-5. 页面显示“首位管理员已经就绪”后，再把 Rdocs 的 `AUTH_MODE` 改为 `passkey`。登记响应已经写入安全会话 Cookie，刷新应直接进入组织工作台；随后验证退出、重新登录、组织切换、页面四档权限和非正式域名拒绝登记。把仓库中的 `AUTH_MODE` 固定为 `passkey`，避免后续 Git build 又切回技术预览。切换后等待旧协作票据最长 5 分钟的有效期结束，再把环境视为完全关闭匿名访问。
-
-6. 不再需要给未登录用户创建新账号时，删除 bootstrap 登记码以关闭入口；已有设备密钥登录不依赖这个 secret：
-
-   ```bash
-   node /develop/bigrandall.io/rrangler/bin/rrangler.mjs secret delete PASSKEY_ENROLLMENT_SECRET --worker rdocs
-   ```
-
-## 回退
-
-如果首次登记无法完成，只把 Rdocs 的 `AUTH_MODE` 恢复为 `phase0`；不要删除用户、credential 或 migration。回退不会破坏文档数据，之后可以修正 Rdocs 配置再重新启用。
-
-## 已实现与后续安全工作
-
-- 首次登记码只用于首位管理员 bootstrap，不是普通用户注册入口。新成员只能通过仍有效且邮箱匹配的组织邀请登记；已登录用户也可以为自己的账号增加设备密钥。
-- 用户应至少登记两把可恢复的设备密钥，并提供已登录状态下的设备密钥管理与撤销页。
-- 认证挑战和过期会话需要定期清理；会话撤销、设备增删和异常验证需要进入审计日志。
+- 提供已登录状态下的设备密钥列表、添加、重命名和撤销界面。
+- 为会话撤销、设备增删和异常验证补充审计事件。
+- 定期清理过期认证挑战、会话和已撤销邀请。
+- 使用两个真实测试账号持续验证邀请、权限降级和在线协作撤权。

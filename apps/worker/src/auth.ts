@@ -93,8 +93,8 @@ function error(message: string, status: number): Response {
   return json({ error: message }, { status });
 }
 
-export function authMode(env: Env): AuthMode {
-  return env.AUTH_MODE === 'phase0' ? 'phase0' : 'passkey';
+export function authMode(_env: Env): AuthMode {
+  return 'passkey';
 }
 
 function passkeyConfiguration(env: Env): PasskeyConfiguration | null {
@@ -282,7 +282,6 @@ export async function authenticateRequest(
   context?: ExecutionContext,
 ): Promise<AuthContext> {
   const mode = authMode(env);
-  if (mode === 'phase0') return { mode, user: null, sessionId: null };
   const token = parseCookies(request).get(SESSION_COOKIE);
   if (!token) return { mode, user: null, sessionId: null };
   const now = Date.now();
@@ -308,7 +307,6 @@ export async function authenticateRequest(
 }
 
 export function isTrustedMutationOrigin(request: Request, env: Env): boolean {
-  if (authMode(env) === 'phase0') return true;
   const configuration = passkeyConfiguration(env);
   return Boolean(configuration && request.headers.get('origin') === configuration.origin);
 }
@@ -687,18 +685,6 @@ export async function handleAuthApi(
   const path = new URL(request.url).pathname;
   if (path === '/api/auth/session' && request.method === 'GET') {
     return sessionResponse(request, env, context);
-  }
-  const bootstrapRegistration =
-    path === '/api/auth/passkey/registration/options' ||
-    path === '/api/auth/passkey/registration/verify';
-  if (authMode(env) !== 'passkey') {
-    if (bootstrapRegistration && request.method === 'POST') {
-      return path.endsWith('/options')
-        ? registrationOptions(request, env)
-        : verifyRegistration(request, env);
-    }
-    if (path.startsWith('/api/auth/')) return error('设备密钥登录尚未启用', 409);
-    return null;
   }
   if (path === '/api/auth/passkey/registration/options' && request.method === 'POST') {
     return registrationOptions(request, env);

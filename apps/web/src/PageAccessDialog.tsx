@@ -76,6 +76,10 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
     () => new Set(grants.map((grant) => `${grant.principalType}:${grant.principalId}`)),
     [grants],
   );
+  const selectedPrincipal = parsePrincipal(principal);
+  const selectedGuest = Boolean(
+    selectedPrincipal?.type === 'user' && memberById.get(selectedPrincipal.id)?.role === 'guest',
+  );
 
   const changeMode = async (nextMode: PageAccessMode) => {
     if (busy || nextMode === mode) return;
@@ -125,7 +129,10 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
   };
 
   const changeGrant = async (grant: PageGrantSummary, nextRole: PageGrantRole) => {
-    if (busy || nextRole === grant.role) return;
+    const member = grant.principalType === 'user' ? memberById.get(grant.principalId) : undefined;
+    const effectiveCurrentRole =
+      member?.role === 'guest' && grant.role !== 'none' ? 'viewer' : grant.role;
+    if (busy || nextRole === effectiveCurrentRole) return;
     setBusy(true);
     setError(null);
     try {
@@ -155,6 +162,7 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
         </div>
         <h2 id="page-access-title">页面访问权限</h2>
         <p>限制后，本页及子页面使用独立权限。用户权限优先于用户组和整个组织。</p>
+        <p>匿名用户不能进入文档空间；分享链接始终只读。历史外部只读成员不能获得编辑或管理权限。</p>
 
         {loading ? (
           <div className="settings-loading">
@@ -195,7 +203,14 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                   <select
                     aria-label="授权成员或用户组"
                     value={principal}
-                    onChange={(event) => setPrincipal(event.target.value)}
+                    onChange={(event) => {
+                      const nextPrincipal = event.target.value;
+                      const parsed = parsePrincipal(nextPrincipal);
+                      setPrincipal(nextPrincipal);
+                      if (parsed?.type === 'user' && memberById.get(parsed.id)?.role === 'guest') {
+                        setRole('viewer');
+                      }
+                    }}
                     required
                   >
                     <option value="">选择成员或用户组…</option>
@@ -230,8 +245,8 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                   >
                     <option value="none">无权限</option>
                     <option value="viewer">只读</option>
-                    <option value="editor">读写</option>
-                    <option value="space_admin">管理员</option>
+                    {!selectedGuest ? <option value="editor">读写</option> : null}
+                    {!selectedGuest ? <option value="space_admin">管理员</option> : null}
                   </select>
                   <button type="submit" disabled={busy}>
                     <UserPlus size={15} /> 添加
@@ -248,6 +263,9 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                           : grant.principalType === 'group'
                             ? (group?.name ?? grant.principalId)
                             : (member?.displayName ?? grant.principalId);
+                      const guestReadOnly = member?.role === 'guest';
+                      const effectiveRole =
+                        guestReadOnly && grant.role !== 'none' ? 'viewer' : grant.role;
                       return (
                         <div key={grant.id}>
                           <span>
@@ -271,7 +289,7 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                           </div>
                           <select
                             aria-label={`${label} 的页面权限`}
-                            value={grant.role}
+                            value={effectiveRole}
                             onChange={(event) =>
                               void changeGrant(grant, event.target.value as PageGrantRole)
                             }
@@ -279,9 +297,9 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                           >
                             <option value="none">无权限</option>
                             <option value="viewer">只读</option>
-                            <option value="editor">读写</option>
-                            <option value="space_admin">管理员</option>
-                            {grant.role === 'commenter' ? (
+                            {!guestReadOnly ? <option value="editor">读写</option> : null}
+                            {!guestReadOnly ? <option value="space_admin">管理员</option> : null}
+                            {!guestReadOnly && grant.role === 'commenter' ? (
                               <option value="commenter">只读（可评论）</option>
                             ) : null}
                           </select>

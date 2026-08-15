@@ -12,6 +12,7 @@ import type {
   ListPagesResponse,
   ListRevisionsResponse,
   NotificationSummary,
+  OrganizationAssignableRole,
   OrganizationMemberSummary,
   OrganizationSummary,
   PageAccessMode,
@@ -23,6 +24,7 @@ import type {
   RestoreRevisionResponse,
   ShareLinkSummary,
   SpaceGrantPrincipalType,
+  SpaceGrantRole,
   SpaceGrantSummary,
   SpaceRole,
   SpaceSummary,
@@ -555,7 +557,7 @@ export function setGroupMember(
 
 export function createInvitation(
   organizationId: string,
-  input: { email: string; role: 'admin' | 'member' | 'guest' },
+  input: { email: string; role: OrganizationAssignableRole },
 ): Promise<{ invitation: InvitationSummary; token: string; reused: boolean }> {
   return request(`/api/organizations/${encodeURIComponent(organizationId)}/invitations`, {
     method: 'POST',
@@ -596,7 +598,7 @@ export function acceptInvitation(token: string): Promise<{ organization: Organiz
 export function updateOrganizationMember(
   organizationId: string,
   userId: string,
-  input: { role?: 'admin' | 'member' | 'guest'; status?: 'active' | 'suspended' },
+  input: { role?: OrganizationAssignableRole; status?: 'active' | 'suspended' },
 ): Promise<{ members: OrganizationMemberSummary[] }> {
   return request(
     `/api/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`,
@@ -657,7 +659,7 @@ export function putSpaceGrant(
   spaceId: string,
   principalType: SpaceGrantPrincipalType,
   principalId: string,
-  role: SpaceRole,
+  role: SpaceGrantRole,
 ): Promise<{ grants: SpaceGrantSummary[] }> {
   return request(
     `/api/spaces/${encodeURIComponent(spaceId)}/grants/${principalType}/${encodeURIComponent(principalId)}`,

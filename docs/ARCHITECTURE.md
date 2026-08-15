@@ -52,7 +52,7 @@ Rdocs 不使用 GitHub OAuth，也不实现密码登录。正式登录采用 Web
 
 验证成功后，Worker 生成随机应用会话令牌。D1 `sessions` 表只保存 SHA-256 哈希，浏览器通过 `__Host-rdocs_session` Cookie 持有原令牌；Cookie 使用 `Secure`、`HttpOnly`、`SameSite=Lax` 和 `Path=/`。写请求必须同时满足请求 URL 与 `Origin` 精确等于 `https://docs.bigrandall.io`，会话过期时前端静默重新读取状态并回到设备密钥登录页。
 
-生产配置只有显式 `AUTH_MODE=phase0` 才允许匿名技术预览；变量缺失或拼写错误会 fail closed 到设备密钥模式。正式激活流程见 [设备密钥启用手册](PASSKEY_SETUP.md)。
+生产只运行设备密钥模式；旧的 `AUTH_MODE=phase0` 值也不能重新启用匿名业务 API。首位管理员登记已经完成，bootstrap secret 已删除；当前恢复流程见 [设备密钥启用手册](PASSKEY_SETUP.md)。
 
 ## 协作协议
 

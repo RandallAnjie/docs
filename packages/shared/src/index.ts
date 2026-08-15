@@ -2,8 +2,11 @@ export const PRODUCT_NAME = 'Rdocs';
 export const EDITOR_SCHEMA_VERSION = 2;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
-export type PageGrantRole = 'none' | SpaceRole;
+export type ResourceGrantRole = 'none' | SpaceRole;
+export type SpaceGrantRole = ResourceGrantRole;
+export type PageGrantRole = ResourceGrantRole;
 export type OrganizationRole = 'owner' | 'admin' | 'member' | 'guest';
+export type OrganizationAssignableRole = 'admin' | 'member';
 export type MembershipStatus = 'invited' | 'active' | 'suspended';
 export type SpaceVisibility = 'organization' | 'restricted';
 export type PageAccessMode = 'inherit' | 'restricted';
@@ -69,7 +72,7 @@ export interface SpaceGrantSummary {
   spaceId: string;
   principalType: SpaceGrantPrincipalType;
   principalId: string;
-  role: SpaceRole;
+  role: SpaceGrantRole;
   createdAt: number;
 }
 
@@ -233,7 +236,7 @@ export interface RestoreRevisionResponse {
   idempotencyKey: string;
 }
 
-export type AuthMode = 'phase0' | 'passkey';
+export type AuthMode = 'passkey';
 
 export interface AuthUserSummary {
   id: string;
