@@ -4750,7 +4750,7 @@ export default {
         : 'spa';
     try {
       let response: Response;
-      if (url.pathname.startsWith('/api/')) {
+      if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/scim/')) {
         response = await handleApi(request, env, context);
       } else {
         const collabMatch = url.pathname.match(/^\/collab\/([^/]+)$/);
