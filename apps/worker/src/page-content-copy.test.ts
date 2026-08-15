@@ -69,7 +69,11 @@ describe('page content copy', () => {
   it('copies Yjs content and attachments while rewriting private attachment ids', async () => {
     const database = new DatabaseSync(':memory:');
     database.exec(`
-      CREATE TABLE pages(id TEXT PRIMARY KEY, title TEXT NOT NULL);
+      CREATE TABLE pages(
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, icon TEXT, cover_attachment_id TEXT,
+        font_style TEXT NOT NULL DEFAULT 'sans', is_full_width INTEGER NOT NULL DEFAULT 0,
+        is_small_text INTEGER NOT NULL DEFAULT 0, updated_by TEXT, updated_at INTEGER
+      );
       CREATE TABLE page_search_projection(
         page_id TEXT PRIMARY KEY, title TEXT NOT NULL, normalized_body TEXT NOT NULL, updated_at INTEGER NOT NULL
       );
@@ -80,7 +84,9 @@ describe('page content copy', () => {
         byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL, status TEXT NOT NULL,
         created_by TEXT NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER
       );
-      INSERT INTO pages VALUES ('source-page', 'Source'), ('target-page', 'Source 副本');
+      INSERT INTO pages(id, title, icon, font_style, is_full_width, is_small_text)
+        VALUES ('source-page', 'Source', '📘', 'serif', 1, 1),
+               ('target-page', 'Source 副本', NULL, 'sans', 0, 0);
       INSERT INTO page_search_projection VALUES ('source-page', 'Source', '正文索引', 1);
       INSERT INTO page_search_projection VALUES ('target-page', 'Source 副本', '', 1);
       INSERT INTO page_search_fts VALUES ('target-page', 'Source 副本', '');
@@ -93,6 +99,9 @@ describe('page content copy', () => {
           'image/png', 3, 'abc', 'ready', 'user-1', 1, NULL)`,
       )
       .run(sourceAttachmentId, sourceKey);
+    database
+      .prepare("UPDATE pages SET cover_attachment_id = ? WHERE id = 'source-page'")
+      .run(sourceAttachmentId);
     const sourceSnapshot = markdownToYjsSnapshot(
       `# Copy me\n\n![diagram](/api/attachments/${sourceAttachmentId})`,
     ).snapshot;
@@ -152,6 +161,20 @@ describe('page content copy', () => {
       .get('target-page') as { id: string; page_id: string; r2_key: string };
     expect(copied).toMatchObject({ id: targetAttachmentId, page_id: 'target-page' });
     expect(objects.get(copied.r2_key)).toEqual(new Uint8Array([1, 2, 3]));
+    expect(
+      database
+        .prepare(
+          `SELECT icon, cover_attachment_id, font_style, is_full_width, is_small_text
+             FROM pages WHERE id = 'target-page'`,
+        )
+        .get(),
+    ).toMatchObject({
+      icon: '📘',
+      cover_attachment_id: targetAttachmentId,
+      font_style: 'serif',
+      is_full_width: 1,
+      is_small_text: 1,
+    });
     const targetSnapshot = rooms.get('document:target-page:generation:1');
     expect(targetSnapshot).toBeTruthy();
     const markdown = yjsSnapshotToMarkdown(targetSnapshot!, 'Source 副本');

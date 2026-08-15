@@ -92,6 +92,12 @@ export interface PageSummary {
   spaceId: string;
   parentId: string | null;
   title: string;
+  icon: string | null;
+  coverAttachmentId: string | null;
+  fontStyle: 'sans' | 'serif' | 'mono';
+  isFullWidth: boolean;
+  isSmallText: boolean;
+  isLocked: boolean;
   currentGeneration: number;
   editorSchemaVersion: number;
   updatedAt: number;

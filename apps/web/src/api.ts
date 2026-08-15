@@ -650,6 +650,23 @@ export function updatePageTitle(
   });
 }
 
+export function updatePageAppearance(
+  pageId: string,
+  input: {
+    icon?: string | null;
+    coverAttachmentId?: string | null;
+    fontStyle?: PageSummary['fontStyle'];
+    isFullWidth?: boolean;
+    isSmallText?: boolean;
+    isLocked?: boolean;
+  },
+): Promise<{ page: PageSummary }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
 export function movePage(
   pageId: string,
   input: { parentId: string | null; beforePageId?: string | null },

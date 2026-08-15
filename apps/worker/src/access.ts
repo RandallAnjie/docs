@@ -353,7 +353,16 @@ export async function requirePageAction(
   action: SpaceAction,
 ): Promise<SpaceAccessContext | null> {
   const access = await resolvePageAccess(env, pageId, userId);
-  return access && canSpace(access.spaceRole, action) ? access : null;
+  if (!access || !canSpace(access.spaceRole, action)) return null;
+  if (action === 'edit_content') {
+    const page = await env.DB.prepare(
+      'SELECT is_locked FROM pages WHERE id = ? AND deleted_at IS NULL',
+    )
+      .bind(pageId)
+      .first<{ is_locked: number }>();
+    if (!page || page.is_locked) return null;
+  }
+  return access;
 }
 
 export async function requireDeletedPageAction(

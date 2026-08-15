@@ -88,6 +88,7 @@ function migratedDatabase(): DatabaseSync {
     '0013_public_database_forms.sql',
     '0014_database_templates.sql',
     '0015_database_automations.sql',
+    '0016_page_appearance_and_lock.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -250,6 +251,74 @@ describe('database migrations', () => {
         )
         .get(),
     ).toMatchObject({ next_row_sequence: 2 });
+    database.close();
+  });
+
+  it('stores page appearance and makes locked pages read-only at the shared ACL boundary', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'appearance');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           icon, font_style, is_full_width, is_small_text,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_appearance', 'org_appearance', 'spc_appearance', NULL,
+                   'Appearance', '1', '📘', 'serif', 1, 1, ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(
+           page_id, collaboration_enabled, acl_version, access_mode, updated_at
+         ) VALUES ('page_appearance', 1, 1, 'inherit', ?)`,
+      )
+      .run(now);
+    const env = testEnv(database);
+    await expect(
+      requirePageAction(env, 'page_appearance', owner.id, 'edit_content'),
+    ).resolves.not.toBeNull();
+    database
+      .prepare(
+        "UPDATE pages SET font_style = 'mono', is_full_width = 0, is_locked = 1 WHERE id = 'page_appearance'",
+      )
+      .run();
+    database
+      .prepare("UPDATE page_access_state SET acl_version = 2 WHERE page_id = 'page_appearance'")
+      .run();
+    expect(
+      database
+        .prepare("SELECT acl_version FROM page_access_state WHERE page_id = 'page_appearance'")
+        .get(),
+    ).toMatchObject({ acl_version: 2 });
+    await expect(
+      requirePageAction(env, 'page_appearance', owner.id, 'view'),
+    ).resolves.not.toBeNull();
+    await expect(
+      requirePageAction(env, 'page_appearance', owner.id, 'manage_access'),
+    ).resolves.not.toBeNull();
+    await expect(
+      requirePageAction(env, 'page_appearance', owner.id, 'edit_content'),
+    ).resolves.toBeNull();
+    const treeResponse = await listPages(env, 'spc_appearance', owner.id);
+    await expect(treeResponse.json()).resolves.toMatchObject({
+      pages: [
+        expect.objectContaining({
+          id: 'page_appearance',
+          icon: '📘',
+          fontStyle: 'mono',
+          isFullWidth: false,
+          isSmallText: true,
+          isLocked: true,
+        }),
+      ],
+    });
+    database.prepare("UPDATE pages SET is_locked = 0 WHERE id = 'page_appearance'").run();
+    await expect(
+      requirePageAction(env, 'page_appearance', owner.id, 'edit_content'),
+    ).resolves.not.toBeNull();
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     database.close();
   });
 });
