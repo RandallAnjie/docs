@@ -113,6 +113,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行同步块删除撤销迁移 `0025_synced_block_delete_undo.sql` 时第十八次复现：3 个删除操作字段、2 个部分索引和 85 个页面的 `editor_schema_version = 9` 均已正确落库，外键违规为 0，但第 25 条账本仍写成 `(25, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-OyE3vB/before-0025.sql`（178,082 bytes，SHA-256 `ee7f8a51cdfebc69d1964e3654d834910da3254d514b034e821c44f181edb028`）；因该导出同时暴露 RF-10，另生成并实际重放验证了 `/tmp/rdocs-db-backup-OyE3vB/before-0025-restorable.sql`（169,545 bytes，SHA-256 `3b2265b1f80a33f2e73d722fa4352a490376899396a7c607a203888c5524d764`）。只修复第 25 条 Rdocs 账本记录后，迁移列表 `0001`–`0025` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行提醒与分组收件箱迁移 `0026_page_reminders_and_inbox_groups.sql` 时第十九次复现：提醒表、索引和允许 `reminder` 类型的通知表重建均成功，生产库由 49 张表增加到 50 张表，85 个页面保持 `editor_schema_version = 9`，旧通知与订阅数量保持为 0，17 条全文索引记录完整且外键违规为 0，但第 26 条账本仍写成 `(26, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-UAzHPC/before-0026.sql`（178,309 bytes，SHA-256 `ed253e3ab2e571c68c44e32c06eaa80fcf5df784fcecbf187258f230be29b8ae`）；因 RF-10 另生成并实际重放及演练 `0026` 的 `/tmp/rdocs-db-backup-UAzHPC/before-0026-restorable.sql`（169,772 bytes，SHA-256 `b5d65787a737c3572fa984d541ebfae1a55cbb183fb789f16f14c92824dbee2c`）。只修复第 26 条 Rdocs 账本记录后，迁移列表 `0001`–`0026` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
@@ -140,7 +142,7 @@ object name reserved for internal use: page_search_fts_config
 
 ### Rdocs 本次安全处理
 
-原始导出保持不变并记录 SHA-256。另从恢复副本中精确剔除 70 行名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入。清理后的 SQL 已在独立 Node SQLite 中完整重放；SQLite 自动重建 5 张影子表，85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后也成功演练 `0025`。
+原始导出保持不变并记录 SHA-256。另从恢复副本中精确剔除 70 行名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入。清理后的 SQL 已在独立 Node SQLite 中完整重放；SQLite 自动重建 5 张影子表，85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后也分别成功演练 `0025` 和 `0026`。
 
 这只是 Rdocs 临时备份产物处理，没有修改 RandallFlare 代码、配置或生产数据导出实现。
 
