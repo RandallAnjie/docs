@@ -44,6 +44,7 @@ import {
   Heading2,
   Italic,
   KeyRound,
+  LibraryBig,
   Link2,
   ListTree,
   List,
@@ -135,10 +136,11 @@ import {
 } from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
+import { blockAnchorFromHash, blockAnchorUrl, encodeRelativePosition } from './block-anchor';
 import { CommentsPanel } from './CommentsPanel';
 import { DatabaseCanvas } from './DatabaseCanvas';
 import type { LocalIdentity } from './identity';
-import { DiscoveryDialog } from './DiscoveryDialog';
+import { DiscoveryDialog, type DiscoveryTab } from './DiscoveryDialog';
 import { EditorBlockHandle } from './EditorBlockHandle';
 import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
@@ -450,13 +452,6 @@ function navigateToPage(pageId: string): void {
 
 function normalizedPageTitle(value: string): string {
   return value.trim() || '未命名页面';
-}
-
-function encodeRelativePosition(position: Y.RelativePosition): string {
-  const bytes = Y.encodeRelativePosition(position);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 export function App() {
@@ -826,9 +821,7 @@ function TenantHome({
   const [settingsOpen, setSettingsOpen] = useState(
     () => new URLSearchParams(window.location.search).get('settings') === '1',
   );
-  const [discoveryTab, setDiscoveryTab] = useState<
-    'favorites' | 'recent' | 'search' | 'updates' | null
-  >(null);
+  const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
   const [creatingPage, setCreatingPage] = useState<
     { spaceId: string; parentId: string | null } | undefined
   >(undefined);
@@ -1089,6 +1082,13 @@ function TenantHome({
           <a className="active" href="/">
             <FileText size={17} /> 主页
           </a>
+          <button
+            type="button"
+            disabled={!selectedOrganization}
+            onClick={() => setDiscoveryTab('library')}
+          >
+            <LibraryBig size={17} /> 资料库
+          </button>
           <button
             type="button"
             disabled={!selectedOrganization}
@@ -1745,9 +1745,7 @@ function DocumentWorkspace({
   const [moveParentId, setMoveParentId] = useState(page.parentId ?? '');
   const [pageActionBusy, setPageActionBusy] = useState(false);
   const [pageActionError, setPageActionError] = useState<string | null>(null);
-  const [discoveryTab, setDiscoveryTab] = useState<
-    'favorites' | 'recent' | 'search' | 'updates' | null
-  >(null);
+  const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
@@ -2265,6 +2263,10 @@ function DocumentWorkspace({
           {pageTree.length === 0 && <div className="page-tree-empty">还没有页面</div>}
           {treeError && <div className="page-tree-error">{treeError}</div>}
           <div className="sidebar-shortcuts">
+            <button type="button" onClick={() => setDiscoveryTab('library')}>
+              <LibraryBig size={16} />
+              <span>资料库</span>
+            </button>
             <button type="button" onClick={() => setDiscoveryTab('favorites')}>
               <Star size={16} />
               <span>收藏</span>
@@ -2969,6 +2971,78 @@ function CollaborativeEditor({
     };
   }, [editor, onReady]);
 
+  const copyBlockLink = useCallback(
+    async (position: number) => {
+      if (!editor) throw new Error('编辑器尚未就绪');
+      const syncState = ySyncPluginKey.getState(editor.state) as
+        | {
+            type: Y.XmlFragment;
+            binding: { mapping: Map<Y.AbstractType<unknown>, unknown> };
+          }
+        | undefined;
+      if (!syncState?.type || !syncState.binding?.mapping) {
+        throw new Error('协作位置尚未就绪，请稍后重试');
+      }
+      const relative = absolutePositionToRelativePosition(
+        position,
+        syncState.type,
+        syncState.binding.mapping as never,
+      );
+      const url = blockAnchorUrl(window.location.origin, pageId, encodeRelativePosition(relative));
+      await navigator.clipboard.writeText(url);
+    },
+    [editor, pageId],
+  );
+
+  useEffect(() => {
+    if (!editor) return;
+    let highlighted: HTMLElement | null = null;
+    let clearTimer: number | undefined;
+    const reveal = () => {
+      const relative = blockAnchorFromHash(window.location.hash);
+      if (!relative) return;
+      const syncState = ySyncPluginKey.getState(editor.state) as
+        | {
+            doc: Y.Doc;
+            type: Y.XmlFragment;
+            binding: { mapping: Map<Y.AbstractType<unknown>, unknown> };
+          }
+        | undefined;
+      if (!syncState?.doc || !syncState.type || !syncState.binding?.mapping) return;
+      const position = relativePositionToAbsolutePosition(
+        syncState.doc,
+        syncState.type,
+        relative,
+        syncState.binding.mapping as never,
+      );
+      if (position === null) return;
+      const dom = editor.view.nodeDOM(position);
+      const element = dom instanceof HTMLElement ? dom : dom?.parentElement;
+      if (!element) return;
+      highlighted?.classList.remove('rdocs-block-anchor-target');
+      highlighted = element;
+      element.classList.add('rdocs-block-anchor-target');
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (clearTimer !== undefined) window.clearTimeout(clearTimer);
+      clearTimer = window.setTimeout(() => {
+        element.classList.remove('rdocs-block-anchor-target');
+        if (highlighted === element) highlighted = null;
+      }, 3_500);
+    };
+    const handleSync = (synced: boolean) => {
+      if (synced) window.requestAnimationFrame(reveal);
+    };
+    window.addEventListener('hashchange', reveal);
+    collab.provider.on('sync', handleSync);
+    if (collab.provider.synced) window.requestAnimationFrame(reveal);
+    return () => {
+      window.removeEventListener('hashchange', reveal);
+      collab.provider.off('sync', handleSync);
+      if (clearTimer !== undefined) window.clearTimeout(clearTimer);
+      highlighted?.classList.remove('rdocs-block-anchor-target');
+    };
+  }, [collab.provider, editor]);
+
   const filteredSlashCommands = useMemo(() => {
     const query = slashMenu?.query.trim().toLocaleLowerCase() ?? '';
     if (!query) return SLASH_COMMANDS;
@@ -3386,7 +3460,11 @@ function CollaborativeEditor({
         ))}
       </div>
       {editable ? (
-        <EditorBlockHandle editor={editor} onConvertToSyncedBlock={convertBlockToSyncedBlock} />
+        <EditorBlockHandle
+          editor={editor}
+          onCopyBlockLink={copyBlockLink}
+          onConvertToSyncedBlock={convertBlockToSyncedBlock}
+        />
       ) : null}
       <EditorContent editor={editor} />
       {slashMenu ? (
