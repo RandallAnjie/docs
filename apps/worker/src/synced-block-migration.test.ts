@@ -34,6 +34,12 @@ describe('cross-page synced block migration', () => {
         'utf8',
       ),
     );
+    database.exec(
+      readFileSync(
+        new URL('../../../migrations/0022_synced_block_lifecycle.sql', import.meta.url),
+        'utf8',
+      ),
+    );
 
     database
       .prepare(
@@ -54,6 +60,9 @@ describe('cross-page synced block migration', () => {
       database.prepare('SELECT editor_schema_version FROM pages WHERE id = ?').get('source-page'),
     ).toEqual({ editor_schema_version: 7 });
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(
+      database.prepare("SELECT lifecycle_state FROM synced_blocks WHERE id = 'block-1'").get(),
+    ).toEqual({ lifecycle_state: 'active' });
 
     database.prepare("DELETE FROM pages WHERE id = 'source-page'").run();
     expect(database.prepare('SELECT COUNT(*) AS count FROM synced_blocks').get()).toEqual({

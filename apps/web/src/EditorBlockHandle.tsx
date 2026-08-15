@@ -17,6 +17,7 @@ import {
   Pilcrow,
   Plus,
   Quote,
+  RefreshCw,
   Trash2,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -131,11 +132,18 @@ const TRANSFORMABLE_BLOCKS = new Set([
   'taskList',
 ]);
 
-export function EditorBlockHandle({ editor }: { editor: Editor }) {
+export function EditorBlockHandle({
+  editor,
+  onConvertToSyncedBlock,
+}: {
+  editor: Editor;
+  onConvertToSyncedBlock: (position: number, node: ProseMirrorNode) => Promise<void>;
+}) {
   const controls = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [targetPosition, setTargetPosition] = useState(-1);
   const [targetNodeName, setTargetNodeName] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const handleNodeChange = useCallback(
     ({ node, pos }: { node: ProseMirrorNode | null; pos: number }) => {
@@ -222,6 +230,20 @@ export function EditorBlockHandle({ editor }: { editor: Editor }) {
     setMenuOpen(false);
   };
 
+  const convertToSyncedBlock = async () => {
+    const current = editor.state.doc.nodeAt(targetPosition);
+    if (!current || busy) return;
+    setMenuOpen(false);
+    setBusy(true);
+    try {
+      await onConvertToSyncedBlock(targetPosition, current);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : '无法转换为同步块');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const move = (direction: BlockDirection) => {
     const transaction = moveTopLevelBlock(editor.state, targetPosition, direction);
     if (transaction) editor.view.dispatch(transaction);
@@ -301,6 +323,14 @@ export function EditorBlockHandle({ editor }: { editor: Editor }) {
               </>
             ) : null}
             <label>操作</label>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy || targetNodeName === 'syncedBlock'}
+              onClick={() => void convertToSyncedBlock()}
+            >
+              <RefreshCw size={14} /> 转为同步块
+            </button>
             <button
               type="button"
               role="menuitem"

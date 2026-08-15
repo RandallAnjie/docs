@@ -45,6 +45,7 @@ import type {
   SpaceSummary,
   SpaceVisibility,
   SyncedBlockSummary,
+  SyncedBlockReferenceSummary,
   TrashedPageSummary,
   JsonValue,
 } from '@rdocs/shared';
@@ -780,8 +781,30 @@ export function getCollabTicket(
   });
 }
 
-export function createSyncedBlock(pageId: string): Promise<{ syncedBlock: SyncedBlockSummary }> {
-  return request(`/api/pages/${encodeURIComponent(pageId)}/synced-blocks`, { method: 'POST' });
+export async function createSyncedBlock(
+  pageId: string,
+  snapshot?: Uint8Array,
+): Promise<{ syncedBlock: SyncedBlockSummary }> {
+  const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/synced-blocks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: snapshot
+      ? (snapshot.buffer.slice(
+          snapshot.byteOffset,
+          snapshot.byteOffset + snapshot.byteLength,
+        ) as ArrayBuffer)
+      : undefined,
+  });
+  const body = (await response.json().catch(() => null)) as
+    { syncedBlock: SyncedBlockSummary } | { error?: string } | null;
+  if (!response.ok) throw new Error(body && 'error' in body ? body.error : '同步块创建失败');
+  return body as { syncedBlock: SyncedBlockSummary };
+}
+
+export function deleteOrphanSyncedBlock(blockId: string): Promise<{ ok: true }> {
+  return request(`/api/synced-blocks/${encodeURIComponent(blockId)}/orphan`, {
+    method: 'DELETE',
+  });
 }
 
 export function getSyncedBlockTicket(
@@ -802,6 +825,35 @@ export function getPublicSyncedBlockTicket(
 ): Promise<CollabTicketResponse & { role: 'viewer' }> {
   return request(
     `/api/public/shares/${encodeURIComponent(token)}/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/ticket`,
+    { method: 'POST' },
+  );
+}
+
+export function listSyncedBlockReferences(
+  pageId: string,
+  blockId: string,
+): Promise<{ references: SyncedBlockReferenceSummary[] }> {
+  return request(
+    `/api/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/references`,
+  );
+}
+
+export function unsyncAllSyncedBlock(
+  pageId: string,
+  blockId: string,
+): Promise<{ ok: true; mode: 'unsync'; pages: number; replacements: number }> {
+  return request(
+    `/api/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/unsync-all`,
+    { method: 'POST' },
+  );
+}
+
+export function deleteAllSyncedBlock(
+  pageId: string,
+  blockId: string,
+): Promise<{ ok: true; mode: 'delete'; pages: number; replacements: number }> {
+  return request(
+    `/api/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/delete-all`,
     { method: 'POST' },
   );
 }

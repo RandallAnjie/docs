@@ -3498,6 +3498,7 @@ button.page-icon-display:hover {
   opacity: 1;
 }
 .rdocs-synced-block {
+  position: relative;
   overflow: visible;
   margin: 1.1em 0;
   border: 1px solid #dedbd4;
@@ -3532,6 +3533,74 @@ button.page-icon-display:hover {
 }
 .rdocs-synced-block > header i.error {
   color: #b34b3c;
+}
+.rdocs-synced-block-locations-toggle {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 2px 4px;
+  color: #77736c;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.rdocs-synced-block-public-label {
+  color: #8c8880;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 500;
+}
+.rdocs-synced-block-locations-toggle:hover,
+.rdocs-synced-block-locations-toggle[aria-expanded='true'] {
+  background: #eeece7;
+  color: #37352f;
+}
+.rdocs-synced-block-locations {
+  position: absolute;
+  top: 34px;
+  left: 9px;
+  z-index: 12;
+  display: grid;
+  width: min(300px, calc(100% - 18px));
+  max-height: 250px;
+  overflow: auto;
+  gap: 3px;
+  border: 1px solid #dedbd4;
+  border-radius: 7px;
+  background: #fff;
+  padding: 7px;
+  color: #37352f;
+  font-size: 10px;
+  box-shadow: 0 10px 30px #302e2924;
+}
+.rdocs-synced-block-locations > strong {
+  padding: 4px 6px 6px;
+  color: #8b877f;
+  font-size: 9px;
+}
+.rdocs-synced-block-locations > a,
+.rdocs-synced-block-locations > span,
+.rdocs-synced-block-locations > p {
+  display: flex;
+  min-height: 29px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  border-radius: 4px;
+  padding: 5px 7px;
+  color: inherit;
+  text-decoration: none;
+}
+.rdocs-synced-block-locations > a:hover {
+  background: #f1f1ef;
+}
+.rdocs-synced-block-locations i {
+  border-radius: 999px;
+  background: #eeece7;
+  padding: 2px 5px;
+  color: #78746d;
+  font-size: 8px;
+  font-style: normal;
 }
 .rdocs-synced-block > header .rdocs-node-actions {
   opacity: 0;

@@ -12,7 +12,15 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
-import { getPublicSyncedBlockTicket, getSyncedBlockTicket } from './api';
+import type { SyncedBlockReferenceSummary } from '@rdocs/shared';
+
+import {
+  deleteAllSyncedBlock,
+  getPublicSyncedBlockTicket,
+  getSyncedBlockTicket,
+  listSyncedBlockReferences,
+  unsyncAllSyncedBlock,
+} from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
 
@@ -29,6 +37,7 @@ interface SyncedBlockOptions {
 interface SyncedBlockSession {
   generation: number;
   role: 'editor' | 'viewer';
+  sourcePageId: string;
   ticket: string;
 }
 
@@ -109,6 +118,10 @@ function SyncedBlockNodeView(props: NodeViewProps) {
   } | null>(null);
   const [state, setState] = useState<'connecting' | 'error' | 'synced'>('connecting');
   const [nestedEditor, setNestedEditor] = useState<Editor | null>(null);
+  const [locations, setLocations] = useState<SyncedBlockReferenceSummary[] | null>(null);
+  const [locationsOpen, setLocationsOpen] = useState(false);
+  const [locationsError, setLocationsError] = useState<string | null>(null);
+  const [managementBusy, setManagementBusy] = useState(false);
 
   const loadTicket = useCallback(async () => {
     if (!pageId || !blockId || !identityName) throw new Error('同步块上下文不可用');
@@ -118,6 +131,10 @@ function SyncedBlockNodeView(props: NodeViewProps) {
     return {
       generation: response.generation,
       role: response.role,
+      sourcePageId:
+        'syncedBlock' in response && response.syncedBlock
+          ? response.syncedBlock.sourcePageId
+          : pageId,
       ticket: response.ticket,
     } satisfies SyncedBlockSession;
   }, [blockId, identityName, pageId, publicShareToken]);
@@ -245,6 +262,46 @@ function SyncedBlockNodeView(props: NodeViewProps) {
       .run();
   };
 
+  const toggleLocations = () => {
+    const nextOpen = !locationsOpen;
+    setLocationsOpen(nextOpen);
+    if (!nextOpen || locations || publicShareToken) return;
+    setLocationsError(null);
+    void listSyncedBlockReferences(pageId, blockId)
+      .then((result) => setLocations(result.references))
+      .catch((reason) =>
+        setLocationsError(reason instanceof Error ? reason.message : '引用位置加载失败'),
+      );
+  };
+
+  const unsyncAll = async () => {
+    if (managementBusy) return;
+    if (!window.confirm('将所有副本转换为独立内容，并永久停止同步？')) return;
+    setManagementBusy(true);
+    try {
+      await unsyncAllSyncedBlock(pageId, blockId);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : '全部取消同步失败');
+      setManagementBusy(false);
+    }
+  };
+
+  const deleteReference = async () => {
+    if (session?.sourcePageId !== pageId || publicShareToken) {
+      props.deleteNode();
+      return;
+    }
+    if (managementBusy) return;
+    if (!window.confirm('删除原始同步块会同时删除所有页面中的同步副本。确定继续？')) return;
+    setManagementBusy(true);
+    try {
+      await deleteAllSyncedBlock(pageId, blockId);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : '删除原始同步块失败');
+      setManagementBusy(false);
+    }
+  };
+
   return (
     <NodeViewWrapper className="rdocs-synced-block" contentEditable={false}>
       <header>
@@ -253,6 +310,22 @@ function SyncedBlockNodeView(props: NodeViewProps) {
           <i className={state} aria-live="polite">
             {state === 'synced' ? '已同步' : state === 'error' ? '无法访问' : '同步中…'}
           </i>
+          {session && publicShareToken ? (
+            <em className="rdocs-synced-block-public-label">原始页面</em>
+          ) : session ? (
+            <button
+              className="rdocs-synced-block-locations-toggle"
+              type="button"
+              aria-expanded={locationsOpen}
+              onClick={toggleLocations}
+            >
+              {locations
+                ? `位于 ${locations.length} 个页面`
+                : session.sourcePageId === pageId
+                  ? '原始同步块'
+                  : '同步副本'}
+            </button>
+          ) : null}
         </span>
         {props.editor.isEditable ? (
           <span className="rdocs-node-actions">
@@ -273,17 +346,49 @@ function SyncedBlockNodeView(props: NodeViewProps) {
             >
               <Unlink size={13} />
             </button>
+            {session?.sourcePageId === pageId && !publicShareToken ? (
+              <button
+                type="button"
+                title="取消全部副本的同步"
+                aria-label="取消全部副本的同步"
+                disabled={managementBusy}
+                onClick={() => void unsyncAll()}
+              >
+                <RefreshCw size={13} />
+              </button>
+            ) : null}
             <button
               type="button"
-              title="删除当前引用"
-              aria-label="删除当前引用"
-              onClick={props.deleteNode}
+              title={session?.sourcePageId === pageId ? '删除原始块及所有同步副本' : '删除当前引用'}
+              aria-label={
+                session?.sourcePageId === pageId ? '删除原始块及所有同步副本' : '删除当前引用'
+              }
+              disabled={managementBusy}
+              onClick={() => void deleteReference()}
             >
               <Trash2 size={13} />
             </button>
           </span>
         ) : null}
       </header>
+      {locationsOpen && !publicShareToken ? (
+        <div className="rdocs-synced-block-locations" role="dialog" aria-label="同步块引用位置">
+          <strong>引用位置</strong>
+          {locationsError ? <p>{locationsError}</p> : null}
+          {!locations && !locationsError ? <p>正在加载…</p> : null}
+          {locations?.map((location) =>
+            location.pageId === pageId ? (
+              <span key={location.pageId}>
+                {location.title} {location.isSource ? <i>原始</i> : null}
+              </span>
+            ) : (
+              <a key={location.pageId} href={`/p/${encodeURIComponent(location.pageId)}`}>
+                {location.title} {location.isSource ? <i>原始</i> : null}
+              </a>
+            ),
+          )}
+        </div>
+      ) : null}
       {collab && session && collab.ticket === session.ticket ? (
         <SyncedBlockEditor
           document={collab.document}

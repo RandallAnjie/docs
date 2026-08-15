@@ -405,6 +405,13 @@ export interface SyncedBlockSummary {
   updatedAt: number;
 }
 
+export interface SyncedBlockReferenceSummary {
+  isSource: boolean;
+  pageId: string;
+  title: string;
+  updatedAt: number;
+}
+
 export interface CreatePageResponse {
   page: PageSummary;
 }

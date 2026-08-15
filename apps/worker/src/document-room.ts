@@ -169,6 +169,95 @@ export function yjsUpdateChangesDocument(document: Y.Doc, update: Uint8Array): b
   }
 }
 
+export function documentSyncedBlockIds(document: Y.Doc): string[] {
+  let fragment: Y.XmlFragment;
+  try {
+    fragment = document.getXmlFragment('default');
+  } catch {
+    return [];
+  }
+  const ids = new Set<string>();
+  const visit = (type: Y.XmlFragment | Y.XmlElement) => {
+    for (const child of type.toArray()) {
+      if (!(child instanceof Y.XmlElement)) continue;
+      if (child.nodeName === 'syncedBlock') {
+        const id = child.getAttribute('syncedBlockId') ?? '';
+        if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id)) ids.add(id);
+      }
+      visit(child);
+    }
+  };
+  visit(fragment);
+  return [...ids].sort();
+}
+
+export function documentContainsSyncedBlock(document: Y.Doc): boolean {
+  let fragment: Y.XmlFragment;
+  try {
+    fragment = document.getXmlFragment('default');
+  } catch {
+    return false;
+  }
+  const visit = (type: Y.XmlFragment | Y.XmlElement): boolean => {
+    for (const child of type.toArray()) {
+      if (!(child instanceof Y.XmlElement)) continue;
+      if (child.nodeName === 'syncedBlock' || visit(child)) return true;
+    }
+    return false;
+  };
+  return visit(fragment);
+}
+
+export function syncedBlockUnsyncUpdate(
+  target: Y.Doc,
+  blockId: string,
+  sourceSnapshot: Uint8Array,
+): { replacements: number; update: Uint8Array } {
+  const working = new Y.Doc();
+  const source = new Y.Doc();
+  try {
+    Y.applyUpdate(working, Y.encodeStateAsUpdate(target), 'unsync-working-copy');
+    Y.applyUpdate(source, sourceSnapshot, 'unsync-source');
+    const sourceChildren = source
+      .getXmlFragment('default')
+      .toArray()
+      .filter(
+        (child): child is Y.XmlElement | Y.XmlText =>
+          child instanceof Y.XmlElement || child instanceof Y.XmlText,
+      );
+    const targets: Array<{ index: number; parent: Y.XmlElement | Y.XmlFragment }> = [];
+    const visit = (parent: Y.XmlElement | Y.XmlFragment) => {
+      parent.toArray().forEach((child, index) => {
+        if (!(child instanceof Y.XmlElement)) return;
+        if (child.nodeName === 'syncedBlock' && child.getAttribute('syncedBlockId') === blockId) {
+          targets.push({ index, parent });
+          return;
+        }
+        visit(child);
+      });
+    };
+    visit(working.getXmlFragment('default'));
+    working.transact(() => {
+      for (const { parent, index } of [...targets].sort(
+        (left, right) => right.index - left.index,
+      )) {
+        parent.delete(index, 1);
+        parent.insert(
+          index,
+          sourceChildren.map((child) => child.clone()),
+        );
+      }
+    }, 'unsync-synced-block');
+    return {
+      replacements: targets.length,
+      update: Y.encodeStateAsUpdate(working, Y.encodeStateVector(target)),
+    };
+  } finally {
+    working.destroy();
+    source.destroy();
+  }
+}
+
 async function normalizeBinaryMessage(rawMessage: unknown): Promise<Uint8Array | null> {
   if (typeof rawMessage === 'string') return null;
   if (rawMessage instanceof ArrayBuffer) return new Uint8Array(rawMessage);
@@ -339,6 +428,27 @@ export class DocumentRoom {
       return syncTask;
     }
 
+    if (url.pathname === '/internal/unsync-synced-block' && request.method === 'POST') {
+      const task = this.messageQueue.then(() => this.unsyncSyncedBlock(request));
+      this.messageQueue = task.then(
+        () => undefined,
+        () => undefined,
+      );
+      return task;
+    }
+
+    if (url.pathname === '/internal/contains-synced-block' && request.method === 'POST') {
+      const blockId = request.headers.get('x-rdocs-synced-block-id') ?? '';
+      const task = this.messageQueue.then(() =>
+        Response.json({ contains: documentSyncedBlockIds(this.document).includes(blockId) }),
+      );
+      this.messageQueue = task.then(
+        () => undefined,
+        () => undefined,
+      );
+      return task;
+    }
+
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('WebSocket upgrade required', { status: 426 });
     }
@@ -444,6 +554,7 @@ export class DocumentRoom {
       if (resourceKind === 'page') {
         await this.afterDocumentChange(pageId, generation, actorId);
         await this.maybeUpdateSearchProjection(pageId, generation);
+        await this.maybeUpdateSyncedBlockReferences(pageId);
       } else {
         await this.recordSyncedBlockChange(pageId, generation, actorId);
       }
@@ -497,6 +608,43 @@ export class DocumentRoom {
         'x-rdocs-sync-seq': String(this.currentSeq),
       },
     });
+  }
+
+  private async unsyncSyncedBlock(request: Request): Promise<Response> {
+    const blockId = request.headers.get('x-rdocs-synced-block-id') ?? '';
+    const pageId = request.headers.get('x-rdocs-page-id') ?? '';
+    const generation = Number(request.headers.get('x-rdocs-generation'));
+    const actorId = request.headers.get('x-rdocs-actor-id') ?? '';
+    if (!blockId || !pageId || !actorId || !Number.isSafeInteger(generation) || generation < 1) {
+      return new Response('Invalid unsync request', { status: 400 });
+    }
+    const declaredLength = Number(request.headers.get('content-length') ?? 0);
+    if (declaredLength > MAX_REVISION_SNAPSHOT_BYTES) {
+      return new Response('Synced block snapshot too large', { status: 413 });
+    }
+    const snapshot = new Uint8Array(await request.arrayBuffer());
+    if (!snapshot.byteLength || snapshot.byteLength > MAX_REVISION_SNAPSHOT_BYTES) {
+      return new Response('Invalid synced block snapshot', { status: 400 });
+    }
+    let result: ReturnType<typeof syncedBlockUnsyncUpdate>;
+    try {
+      result = syncedBlockUnsyncUpdate(this.document, blockId, snapshot);
+    } catch {
+      return new Response('Invalid synced block content', { status: 400 });
+    }
+    if (!result.replacements || !yjsUpdateChangesDocument(this.document, result.update)) {
+      await this.maybeUpdateSyncedBlockReferences(pageId, true);
+      return Response.json({ ok: true, replacements: 0 });
+    }
+    await this.beforeDocumentChange(pageId, generation, actorId);
+    await this.persistUpdate(result.update, actorId);
+    Y.applyUpdate(this.document, result.update, 'unsync-synced-block');
+    this.broadcast(syncMessage(SYNC_UPDATE, result.update));
+    await this.maybeCreateSnapshot();
+    await this.afterDocumentChange(pageId, generation, actorId);
+    await this.maybeUpdateSearchProjection(pageId, generation);
+    await this.maybeUpdateSyncedBlockReferences(pageId, true);
+    return Response.json({ ok: true, replacements: result.replacements });
   }
 
   async webSocketMessage(socket: WebSocket, rawMessage: unknown): Promise<void> {
@@ -574,6 +722,7 @@ export class DocumentRoom {
     if (attachment.resourceKind === 'page') {
       await this.afterDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
       await this.maybeUpdateSearchProjection(attachment.pageId, attachment.generation);
+      await this.maybeUpdateSyncedBlockReferences(attachment.pageId);
     } else {
       await this.recordSyncedBlockChange(
         attachment.pageId,
@@ -643,6 +792,53 @@ export class DocumentRoom {
       key,
       String(value),
     );
+  }
+
+  private async roomMetaValue(key: string): Promise<string | null> {
+    const rows = (await this.state.storage.sql
+      .exec('SELECT value FROM room_meta WHERE key = ?', key)
+      .toArray()) as unknown as RoomMetaRow[];
+    return rows[0]?.value ?? null;
+  }
+
+  private async setRoomMetaValue(key: string, value: string): Promise<void> {
+    await this.state.storage.sql.exec(
+      `INSERT INTO room_meta(key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key,
+      value,
+    );
+  }
+
+  private async maybeUpdateSyncedBlockReferences(pageId: string, force = false): Promise<void> {
+    if (!pageId) return;
+    const ids = documentSyncedBlockIds(this.document);
+    const signature = ids.join(',');
+    if (!force && (await this.roomMetaValue('synced_block_reference_ids')) === signature) return;
+    const page = await this.env.DB.prepare(
+      'SELECT organization_id FROM pages WHERE id = ? AND deleted_at IS NULL',
+    )
+      .bind(pageId)
+      .first<{ organization_id: string }>();
+    if (!page) return;
+    const now = Date.now();
+    const statements: D1PreparedStatement[] = [
+      this.env.DB.prepare('DELETE FROM synced_block_references WHERE page_id = ?').bind(pageId),
+      ...ids.map((blockId) =>
+        this.env.DB.prepare(
+          `INSERT INTO synced_block_references(
+             synced_block_id, page_id, first_seen_at, last_seen_at
+           )
+           SELECT b.id, ?, ?, ? FROM synced_blocks b
+            WHERE b.id = ? AND b.organization_id = ? AND b.deleted_at IS NULL
+              AND b.lifecycle_state = 'active'
+           ON CONFLICT(synced_block_id, page_id)
+           DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+        ).bind(pageId, now, now, blockId, page.organization_id),
+      ),
+    ];
+    await this.env.DB.batch(statements);
+    await this.setRoomMetaValue('synced_block_reference_ids', signature);
   }
 
   private async automaticRevisionDue(now: number): Promise<{
@@ -946,6 +1142,12 @@ export class DocumentRoom {
     this.currentSeq = 0;
     this.updatesSinceSnapshot = 0;
     this.bytesSinceSnapshot = 0;
+    if (request.headers.get('x-rdocs-resource-kind') !== 'synced_block') {
+      await this.maybeUpdateSyncedBlockReferences(
+        request.headers.get('x-rdocs-page-id') ?? '',
+        true,
+      );
+    }
     return Response.json({ ok: true, idempotent: false, contentHash });
   }
 

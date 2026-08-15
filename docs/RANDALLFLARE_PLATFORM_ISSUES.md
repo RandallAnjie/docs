@@ -103,6 +103,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行跨页同步块迁移 `0021_cross_page_synced_blocks.sql` 时第十四次复现：迁移本体成功，生产库从 45 张表增加到 47 张表，84 个现有页面全部更新为 `editor_schema_version = 7`，新同步资源表初始为空且外键违规为 0，但第 21 条账本仍为 `(21, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-v9he1U/before-0021.sql`（160,096 bytes，SHA-256 `915d50e536e2f1c8e2369c8bb3373872d568d090505b9ad1ea5ff3a4fd1a8b63`）。只修复第 21 条 Rdocs 账本记录后，迁移列表 `0001`–`0021` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行同步块生命周期迁移 `0022_synced_block_lifecycle.sql` 时第十五次复现：`lifecycle_state` 列与索引成功创建，生产库仍为 47 张表、84 个页面保持 `editor_schema_version = 7`、同步资源为空且外键违规为 0，但第 22 条账本仍写成 `(22, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-9wncYy/before-0022.sql`（161,276 bytes，SHA-256 `6490897e8e1eb7cf32fe13fa0914fbf39cb2ee14e07276d2fdd9bf9259deba49`）。只修复第 22 条 Rdocs 账本记录后，迁移列表 `0001`–`0022` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
