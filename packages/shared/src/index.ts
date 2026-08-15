@@ -2,6 +2,7 @@ export const PRODUCT_NAME = 'Rdocs';
 export const EDITOR_SCHEMA_VERSION = 2;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
+export type PageGrantRole = 'none' | SpaceRole;
 export type OrganizationRole = 'owner' | 'admin' | 'member' | 'guest';
 export type MembershipStatus = 'invited' | 'active' | 'suspended';
 export type SpaceVisibility = 'organization' | 'restricted';
@@ -78,7 +79,7 @@ export interface PageGrantSummary {
   pageId: string;
   principalType: SpaceGrantPrincipalType;
   principalId: string;
-  role: SpaceRole;
+  role: PageGrantRole;
   createdAt: number;
 }
 

@@ -9,6 +9,7 @@ import type { AuthUserSummary } from '@rdocs/shared';
 import type { Env } from '../apps/worker/src/env';
 import { resolvePageAccess } from '../apps/worker/src/access';
 import { listPages } from '../apps/worker/src/page-tree';
+import { pageAccessSnapshot } from '../apps/worker/src/page-access';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
 import { handleCommentsAndNotificationsApi } from '../apps/worker/src/comments';
 
@@ -74,6 +75,7 @@ function migratedDatabase(): DatabaseSync {
     '0005_page_permissions.sql',
     '0006_notifications.sql',
     '0007_editor_blocks.sql',
+    '0008_page_acl_roles.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -320,9 +322,87 @@ describe('tenant boundary integration', () => {
     await expect(resolvePageAccess(env, 'page_restricted', member.id)).resolves.toMatchObject({
       spaceRole: 'viewer',
     });
+    database
+      .prepare(
+        `UPDATE page_grants SET role = 'space_admin'
+          WHERE page_id = 'page_restricted' AND principal_type = 'user' AND principal_id = ?`,
+      )
+      .run(member.id);
+    await expect(resolvePageAccess(env, 'page_restricted', member.id)).resolves.toMatchObject({
+      spaceRole: 'space_admin',
+    });
+    database
+      .prepare(
+        `UPDATE page_grants SET role = 'none'
+          WHERE page_id = 'page_restricted' AND principal_type = 'user' AND principal_id = ?`,
+      )
+      .run(member.id);
+    await expect(resolvePageAccess(env, 'page_restricted', member.id)).resolves.toBeNull();
     await expect(resolvePageAccess(env, 'page_restricted', owner.id)).resolves.toMatchObject({
       spaceRole: 'space_admin',
     });
+    database.close();
+  });
+
+  it('returns a successful snapshot when a page administrator demotes themself', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'self-demote-owner');
+    const administrator = seedTenant(database, 'self-demote-admin');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_self-demote-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(administrator.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_self_demote', 'org_self-demote-owner', 'spc_self-demote-owner',
+                   'user', ?, 'viewer', ?, ?)`,
+      )
+      .run(administrator.id, owner.id, now);
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, title, sort_key, created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_self_demote', 'org_self-demote-owner', 'spc_self-demote-owner',
+                   'Self demote', '1', ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+         VALUES ('page_self_demote', 1, 1, 'restricted', ?)`,
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO page_grants(
+           id, organization_id, page_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('page_grant_self_demote', 'org_self-demote-owner', 'page_self_demote',
+                   'user', ?, 'space_admin', ?, ?)`,
+      )
+      .run(administrator.id, owner.id, now);
+
+    database
+      .prepare(
+        `UPDATE page_grants SET role = 'viewer'
+          WHERE page_id = 'page_self_demote' AND principal_type = 'user' AND principal_id = ?`,
+      )
+      .run(administrator.id);
+    const env = testEnv(database);
+    const response = await pageAccessSnapshot(env, 'page_self_demote');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      mode: 'restricted',
+      grants: [{ principalId: administrator.id, role: 'viewer' }],
+    });
+    await expect(
+      resolvePageAccess(env, 'page_self_demote', administrator.id),
+    ).resolves.toMatchObject({ spaceRole: 'viewer' });
     database.close();
   });
 

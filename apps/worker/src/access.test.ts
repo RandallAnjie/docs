@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canManageOrganization, canSpace, higherSpaceRole } from './access';
+import { canManageOrganization, canSpace, effectivePageGrantRole, higherSpaceRole } from './access';
 
 describe('organization and space permissions', () => {
   it('enforces the documented space role matrix', () => {
@@ -17,6 +17,28 @@ describe('organization and space permissions', () => {
     expect(higherSpaceRole('viewer', 'editor')).toBe('editor');
     expect(higherSpaceRole('space_admin', 'viewer')).toBe('space_admin');
     expect(higherSpaceRole(null, 'commenter')).toBe('commenter');
+  });
+
+  it('uses explicit page roles with user overrides and deny support', () => {
+    expect(
+      effectivePageGrantRole([
+        { principalType: 'organization', role: 'viewer' },
+        { principalType: 'group', role: 'editor' },
+        { principalType: 'user', role: 'space_admin' },
+      ]),
+    ).toBe('space_admin');
+    expect(
+      effectivePageGrantRole([
+        { principalType: 'organization', role: 'editor' },
+        { principalType: 'user', role: 'none' },
+      ]),
+    ).toBeNull();
+    expect(
+      effectivePageGrantRole([
+        { principalType: 'organization', role: 'viewer' },
+        { principalType: 'group', role: 'none' },
+      ]),
+    ).toBeNull();
   });
 
   it('keeps organization administration separate from private-space access', () => {

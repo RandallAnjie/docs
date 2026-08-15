@@ -1,11 +1,11 @@
 import type {
   PageAccessMode,
+  PageGrantRole,
   PageSummary,
   SpaceGrantPrincipalType,
-  SpaceRole,
 } from '@rdocs/shared';
 
-import { requireSpaceAction } from './access';
+import { effectivePageGrantRole, requireSpaceAction } from './access';
 import type { Env } from './env';
 
 const MAX_PAGE_TREE_SIZE = 500;
@@ -27,7 +27,7 @@ interface PageTreeRow {
 interface ApplicablePageGrantRow {
   page_id: string;
   principal_type: SpaceGrantPrincipalType;
-  role: SpaceRole;
+  role: PageGrantRole;
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -132,12 +132,26 @@ export async function listPages(env: Env, spaceId: string, userId: string): Prom
       )
       .all<ApplicablePageGrantRow>()
   ).results;
-  const grantedBoundaries = new Set(grants.map((grant) => grant.page_id));
+  const grantsByBoundary = new Map<string, ApplicablePageGrantRow[]>();
+  for (const grant of grants) {
+    const existing = grantsByBoundary.get(grant.page_id) ?? [];
+    existing.push(grant);
+    grantsByBoundary.set(grant.page_id, existing);
+  }
   const pagesById = new Map(rows.map((row) => [row.id, row]));
   const pages = rows
     .filter((row) => {
       const boundary = restrictedBoundary(row, pagesById);
-      return boundary === null || (boundary !== undefined && grantedBoundaries.has(boundary));
+      if (boundary === null) return true;
+      if (boundary === undefined) return false;
+      return Boolean(
+        effectivePageGrantRole(
+          (grantsByBoundary.get(boundary) ?? []).map((grant) => ({
+            principalType: grant.principal_type,
+            role: grant.role,
+          })),
+        ),
+      );
     })
     .map(pageFromRow);
   return json({ pages });

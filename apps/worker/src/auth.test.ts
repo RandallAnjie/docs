@@ -78,6 +78,40 @@ describe('passkey authentication configuration', () => {
     ).toBe(true);
   });
 
+  it('allows only the passkey registration bootstrap endpoint during Phase 0', async () => {
+    const bootstrap = await handleAuthApi(
+      new Request('https://docs.example.com/api/auth/passkey/registration/options', {
+        method: 'POST',
+        headers: { origin: 'https://docs.example.com', 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+      env({ AUTH_MODE: 'phase0' }),
+      {} as ExecutionContext,
+    );
+    expect(bootstrap?.status).toBe(400);
+
+    const login = await handleAuthApi(
+      new Request('https://docs.example.com/api/auth/passkey/authentication/options', {
+        method: 'POST',
+        headers: { origin: 'https://docs.example.com' },
+      }),
+      env({ AUTH_MODE: 'phase0' }),
+      {} as ExecutionContext,
+    );
+    expect(login?.status).toBe(409);
+
+    const wrongOrigin = await handleAuthApi(
+      new Request('https://docs.example.com/api/auth/passkey/registration/options', {
+        method: 'POST',
+        headers: { origin: 'https://evil.example.com', 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+      env({ AUTH_MODE: 'phase0' }),
+      {} as ExecutionContext,
+    );
+    expect(wrongOrigin?.status).toBe(403);
+  });
+
   it('reports enrollment separately from passkey login configuration', async () => {
     const response = await handleAuthApi(
       new Request('https://docs.example.com/api/auth/session'),
