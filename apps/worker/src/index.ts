@@ -223,6 +223,14 @@ async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
   return row ? pageFromRow(row) : null;
 }
 
+async function isDatabaseRowPage(env: Env, pageId: string): Promise<boolean> {
+  return Boolean(
+    await env.DB.prepare('SELECT 1 AS found FROM database_rows WHERE page_id = ?')
+      .bind(pageId)
+      .first<{ found: number }>(),
+  );
+}
+
 async function requirePageAction(
   env: Env,
   pageId: string,
@@ -2517,6 +2525,9 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (movePageMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(movePageMatch[1]);
     if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    if (await isDatabaseRowPage(env, pageId)) {
+      return error('数据库记录必须在数据库视图中移动', 409, 'database_row_managed');
+    }
     const authorized = await requirePageAction(env, pageId, actorId, 'move');
     return authorized
       ? movePage(request, env, authorized.page, actorId)
@@ -2527,6 +2538,9 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (copyPageMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(copyPageMatch[1]);
     if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    if (await isDatabaseRowPage(env, pageId)) {
+      return error('请在数据库视图中复制记录', 409, 'database_row_managed');
+    }
     const authorized = await requirePageAction(env, pageId, actorId, 'view');
     return authorized
       ? copyPage(request, env, authorized.page, actorId)
@@ -2690,6 +2704,9 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
         : error('页面不存在或无权编辑', 404);
     }
     if (request.method === 'DELETE') {
+      if (await isDatabaseRowPage(env, pageId)) {
+        return error('请在数据库视图中归档记录', 409, 'database_row_managed');
+      }
       const authorized = await requirePageAction(env, pageId, actorId, 'delete');
       return authorized
         ? deletePage(env, authorized.page, actorId, context)
