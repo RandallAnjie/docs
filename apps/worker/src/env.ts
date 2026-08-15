@@ -14,5 +14,17 @@ export interface Env {
   XAI_API_KEY?: string;
   AI_API_KEY?: string;
   AI_API_BASE?: string;
-  MAIL_WEBHOOK_URL?: string;
+  MAIL_FROM?: string;
+  EMAIL?: {
+    send(message: {
+      bcc?: string[];
+      cc?: string[];
+      from?: string;
+      fromName?: string;
+      html?: string;
+      subject: string;
+      text?: string;
+      to: string;
+    }): Promise<{ ok: boolean; queued: number }>;
+  };
 }

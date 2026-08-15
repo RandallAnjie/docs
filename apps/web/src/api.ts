@@ -217,7 +217,7 @@ export async function exportPageZip(pageId: string): Promise<void> {
 export async function importMarkdownZip(
   spaceId: string,
   file: File,
-): Promise<{ imported: number }> {
+): Promise<{ imported: number; pages: PageSummary[] }> {
   const response = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/import/zip`, {
     method: 'POST',
     headers: { 'x-rdocs-file-name': encodeURIComponent(file.name) },
@@ -227,7 +227,7 @@ export async function importMarkdownZip(
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `导入失败（${response.status}）`);
   }
-  return (await response.json()) as { imported: number };
+  return (await response.json()) as { imported: number; pages: PageSummary[] };
 }
 
 export function listPages(spaceId?: string): Promise<ListPagesResponse> {
@@ -1571,6 +1571,55 @@ export function getAiSettings(organizationId: string) {
   return request<{ settings: import('@rdocs/shared').AiSettingsSummary }>(
     `/api/organizations/${encodeURIComponent(organizationId)}/ai`,
   );
+}
+
+export function listCalendarConnections(organizationId: string) {
+  return request<{ connections: import('@rdocs/shared').CalendarConnectionSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/calendar-connections`,
+  );
+}
+
+export function createCalendarConnection(
+  organizationId: string,
+  input: { icsUrl: string; name?: string },
+) {
+  return request<{ id: string }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/calendar-connections`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteCalendarConnection(organizationId: string, connectionId: string) {
+  return request<{ ok: true }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/calendar-connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function listCalendarEvents(organizationId: string, connectionId: string) {
+  return request<{ events: import('@rdocs/shared').CalendarEventSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/calendar-connections/${encodeURIComponent(connectionId)}/events`,
+  );
+}
+
+export async function transcribePageAudio(pageId: string, file: File): Promise<{ text: string }> {
+  const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/transcribe`, {
+    method: 'POST',
+    body: (() => {
+      const form = new FormData();
+      form.set('file', file, file.name);
+      return form;
+    })(),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    error?: string;
+    text?: string;
+  } | null;
+  if (!response.ok || !body?.text) {
+    if (response.status === 401) window.dispatchEvent(new Event('rdocs:auth-required'));
+    throw new Error(body?.error ?? `转写失败（${response.status}）`);
+  }
+  return { text: body.text };
 }
 
 export async function runWorkspaceAi(organizationId: string, input: { prompt: string }) {

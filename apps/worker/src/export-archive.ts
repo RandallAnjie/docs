@@ -94,6 +94,62 @@ export function zipStore(files: Array<{ name: string; body: string }>): Uint8Arr
   return concat([...locals, ...centrals, end]);
 }
 
+function readU16(bytes: Uint8Array, offset: number): number {
+  return bytes[offset]! | (bytes[offset + 1]! << 8);
+}
+
+function readU32(bytes: Uint8Array, offset: number): number {
+  return (
+    (bytes[offset]! |
+      (bytes[offset + 1]! << 8) |
+      (bytes[offset + 2]! << 16) |
+      (bytes[offset + 3]! << 24)) >>>
+    0
+  );
+}
+
+async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const stream = new Blob([copy]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+export async function unzipEntries(
+  bytes: Uint8Array,
+): Promise<Array<{ body: string; name: string }>> {
+  const files: Array<{ body: string; name: string }> = [];
+  let offset = 0;
+  while (offset + 30 <= bytes.byteLength && readU32(bytes, offset) === 0x04034b50) {
+    const method = readU16(bytes, offset + 8);
+    const compressed = readU32(bytes, offset + 18);
+    const nameLength = readU16(bytes, offset + 26);
+    const extraLength = readU16(bytes, offset + 28);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + nameLength + extraLength;
+    const dataEnd = dataStart + compressed;
+    if (dataEnd > bytes.byteLength) break;
+    const name = new TextDecoder().decode(bytes.slice(nameStart, nameStart + nameLength));
+    const payload = bytes.slice(dataStart, dataEnd);
+    let raw = new Uint8Array(payload.byteLength);
+    raw.set(payload);
+    if (method === 8) {
+      const inflated = await inflateRaw(payload);
+      raw = new Uint8Array(inflated.byteLength);
+      raw.set(inflated);
+    } else if (method !== 0) {
+      offset = dataEnd;
+      continue;
+    }
+    const safeName = name.replace(/\\/g, '/');
+    if (!name.endsWith('/') && !safeName.includes('..') && !safeName.startsWith('/')) {
+      files.push({ name: safeName, body: new TextDecoder().decode(raw) });
+    }
+    offset = dataEnd;
+  }
+  return files;
+}
+
 export function markdownToHtmlDocument(title: string, markdown: string): string {
   const escaped = markdown.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const body = escaped

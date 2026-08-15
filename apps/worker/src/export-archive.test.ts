@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { markdownToHtmlDocument, simplePdf, zipStore } from './export-archive';
+import { markdownToHtmlDocument, simplePdf, unzipEntries, zipStore } from './export-archive';
 
 describe('export archives', () => {
-  it('builds a zip that starts with a local file header', () => {
+  it('round-trips a stored zip entry', async () => {
     const zip = zipStore([{ name: 'page.md', body: '# Hello' }]);
     expect(String.fromCharCode(zip[0] ?? 0, zip[1] ?? 0, zip[2] ?? 0, zip[3] ?? 0)).toBe(
       'PK\u0003\u0004',
     );
+    await expect(unzipEntries(zip)).resolves.toEqual([{ name: 'page.md', body: '# Hello' }]);
   });
 
   it('emits html and pdf payloads', () => {

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { emailFromSamlResponse, samlMetadataXml, scimUserResource } from './enterprise-protocol';
+import {
+  emailFromSamlResponse,
+  samlMetadataXml,
+  scimListResponse,
+  scimUserResource,
+} from './enterprise-protocol';
 
 describe('enterprise protocols', () => {
   it('extracts an email from a SAML assertion payload', () => {
@@ -10,8 +15,9 @@ describe('enterprise protocols', () => {
 
   it('emits ACS metadata and SCIM user resources', () => {
     expect(samlMetadataXml('https://docs.bigrandall.io')).toContain('/api/saml/acs');
-    expect(scimUserResource({ id: 'u1', email: 'a@b.c', displayName: 'Ada', active: true }).userName).toBe(
-      'a@b.c',
-    );
+    expect(
+      scimUserResource({ id: 'u1', email: 'a@b.c', displayName: 'Ada', active: true }).userName,
+    ).toBe('a@b.c');
+    expect(scimListResponse([]).totalResults).toBe(0);
   });
 });

@@ -109,6 +109,7 @@ import {
 import { DatabaseDateReminder } from './DatabaseDateReminder';
 import { autofillDatabaseProperty } from './api';
 import { datePart, fromDateParts, parseDateCell } from './date-value';
+import { formFieldVisible } from './form-logic';
 import { confirmDialog, showToast } from './dialogs';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
@@ -1975,91 +1976,106 @@ function FormDatabaseView(props: DatabaseViewProps) {
             </p>
           </div>
         </header>
-        {editable.map((property) => {
-          const propertyValue = values[property.id];
-          return (
-            <label key={property.id}>
-              <span>
-                {property.name} {requiredPropertyIds.has(property.id) ? <b>*</b> : null}
-              </span>
-              {property.type === 'checkbox' ? (
-                <input
-                  type="checkbox"
-                  checked={propertyValue === true}
-                  onChange={(event) =>
-                    setValues((current) => ({ ...current, [property.id]: event.target.checked }))
-                  }
-                />
-              ) : property.type === 'select' || property.type === 'status' ? (
-                <select
-                  required={requiredPropertyIds.has(property.id)}
-                  value={typeof propertyValue === 'string' ? propertyValue : ''}
-                  onChange={(event) =>
-                    setValues((current) => ({ ...current, [property.id]: event.target.value }))
-                  }
-                >
-                  <option value="">请选择</option>
-                  {optionNames(property).map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              ) : property.type === 'multi_select' ? (
-                <div className="public-form-options">
-                  {optionNames(property).map((option) => {
-                    const selected = Array.isArray(propertyValue)
-                      ? propertyValue.filter((value): value is string => typeof value === 'string')
-                      : [];
-                    return (
-                      <label key={option}>
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(option)}
-                          onChange={(event) =>
-                            setValues((current) => ({
-                              ...current,
-                              [property.id]: event.target.checked
-                                ? [...selected, option]
-                                : selected.filter((value) => value !== option),
-                            }))
-                          }
-                        />
-                        <span>{option}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : property.type === 'text' ? (
-                <textarea
-                  required={requiredPropertyIds.has(property.id)}
-                  value={typeof propertyValue === 'string' ? propertyValue : ''}
-                  onChange={(event) =>
-                    setValues((current) => ({ ...current, [property.id]: event.target.value }))
-                  }
-                />
-              ) : (
-                <input
-                  type={
-                    property.type === 'number'
-                      ? 'number'
-                      : property.type === 'date'
-                        ? 'date'
-                        : 'text'
-                  }
-                  required={requiredPropertyIds.has(property.id)}
-                  value={toInputValue(property, propertyValue)}
-                  onChange={(event) =>
-                    setValues((current) => ({
-                      ...current,
-                      [property.id]: fromInputValue(property, event.target.value),
-                    }))
-                  }
-                />
-              )}
-            </label>
-          );
-        })}
+        {editable
+          .filter((property) =>
+            formFieldVisible(
+              {
+                config: property.config,
+                id: property.id,
+                name: property.name,
+                required: requiredPropertyIds.has(property.id),
+                type: property.type,
+              },
+              values,
+            ),
+          )
+          .map((property) => {
+            const propertyValue = values[property.id];
+            return (
+              <label key={property.id}>
+                <span>
+                  {property.name} {requiredPropertyIds.has(property.id) ? <b>*</b> : null}
+                </span>
+                {property.type === 'checkbox' ? (
+                  <input
+                    type="checkbox"
+                    checked={propertyValue === true}
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, [property.id]: event.target.checked }))
+                    }
+                  />
+                ) : property.type === 'select' || property.type === 'status' ? (
+                  <select
+                    required={requiredPropertyIds.has(property.id)}
+                    value={typeof propertyValue === 'string' ? propertyValue : ''}
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, [property.id]: event.target.value }))
+                    }
+                  >
+                    <option value="">请选择</option>
+                    {optionNames(property).map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                ) : property.type === 'multi_select' ? (
+                  <div className="public-form-options">
+                    {optionNames(property).map((option) => {
+                      const selected = Array.isArray(propertyValue)
+                        ? propertyValue.filter(
+                            (value): value is string => typeof value === 'string',
+                          )
+                        : [];
+                      return (
+                        <label key={option}>
+                          <input
+                            type="checkbox"
+                            checked={selected.includes(option)}
+                            onChange={(event) =>
+                              setValues((current) => ({
+                                ...current,
+                                [property.id]: event.target.checked
+                                  ? [...selected, option]
+                                  : selected.filter((value) => value !== option),
+                              }))
+                            }
+                          />
+                          <span>{option}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : property.type === 'text' ? (
+                  <textarea
+                    required={requiredPropertyIds.has(property.id)}
+                    value={typeof propertyValue === 'string' ? propertyValue : ''}
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, [property.id]: event.target.value }))
+                    }
+                  />
+                ) : (
+                  <input
+                    type={
+                      property.type === 'number'
+                        ? 'number'
+                        : property.type === 'date'
+                          ? 'date'
+                          : 'text'
+                    }
+                    required={requiredPropertyIds.has(property.id)}
+                    value={toInputValue(property, propertyValue)}
+                    onChange={(event) =>
+                      setValues((current) => ({
+                        ...current,
+                        [property.id]: fromInputValue(property, event.target.value),
+                      }))
+                    }
+                  />
+                )}
+              </label>
+            );
+          })}
         <button type="submit" disabled={!props.canEdit || busy}>
           {submitted ? <Check size={15} /> : null}
           {submitted
@@ -2210,6 +2226,8 @@ function ViewOptionsPanel({
   canLock,
   locked,
   canDelete,
+  databaseId,
+  onChanged,
   onUpdate,
   onToggleLock,
   onDelete,
@@ -2220,6 +2238,8 @@ function ViewOptionsPanel({
   canLock: boolean;
   locked: boolean;
   canDelete: boolean;
+  databaseId: string;
+  onChanged: () => Promise<void>;
   onUpdate: (config: Record<string, JsonValue>) => Promise<void>;
   onToggleLock: () => Promise<void>;
   onDelete: () => Promise<void>;
@@ -2608,6 +2628,91 @@ function ViewOptionsPanel({
               }
             />
           </label>
+          <strong className="database-form-required-title">条件显示</strong>
+          {properties
+            .filter((property) => FORM_PROPERTY_TYPES.has(property.type))
+            .map((property) => {
+              const raw = property.config.showIf;
+              const rule =
+                raw && typeof raw === 'object' && !Array.isArray(raw)
+                  ? (raw as { op?: string; propertyId?: string; value?: JsonValue })
+                  : {};
+              return (
+                <div key={`showif-${property.id}`} className="database-automation-grid">
+                  <span>{property.name} 仅当</span>
+                  <select
+                    disabled={!canEdit}
+                    value={typeof rule.propertyId === 'string' ? rule.propertyId : ''}
+                    onChange={(event) => {
+                      const propertyId = event.target.value;
+                      const next = { ...property.config };
+                      if (!propertyId) delete next.showIf;
+                      else {
+                        next.showIf = {
+                          op: rule.op ?? 'eq',
+                          propertyId,
+                          value: typeof rule.value === 'string' ? rule.value : '',
+                        } as JsonValue;
+                      }
+                      void updateDatabaseProperty(databaseId, property.id, { config: next }).then(
+                        () => onChanged(),
+                      );
+                    }}
+                  >
+                    <option value="">始终显示</option>
+                    {properties
+                      .filter((candidate) => candidate.id !== property.id)
+                      .map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.name}
+                        </option>
+                      ))}
+                  </select>
+                  {typeof rule.propertyId === 'string' && rule.propertyId ? (
+                    <>
+                      <select
+                        disabled={!canEdit}
+                        value={typeof rule.op === 'string' ? rule.op : 'eq'}
+                        onChange={(event) => {
+                          void updateDatabaseProperty(databaseId, property.id, {
+                            config: {
+                              ...property.config,
+                              showIf: {
+                                op: event.target.value,
+                                propertyId: rule.propertyId ?? '',
+                                value: typeof rule.value === 'string' ? rule.value : '',
+                              } as JsonValue,
+                            },
+                          }).then(() => onChanged());
+                        }}
+                      >
+                        <option value="eq">等于</option>
+                        <option value="neq">不等于</option>
+                        <option value="contains">包含</option>
+                        <option value="is_empty">为空</option>
+                        <option value="not_empty">不为空</option>
+                      </select>
+                      <input
+                        disabled={!canEdit}
+                        value={typeof rule.value === 'string' ? rule.value : ''}
+                        onBlur={(event) => {
+                          void updateDatabaseProperty(databaseId, property.id, {
+                            config: {
+                              ...property.config,
+                              showIf: {
+                                op: rule.op ?? 'eq',
+                                propertyId: rule.propertyId ?? '',
+                                value: event.target.value,
+                              } as JsonValue,
+                            },
+                          }).then(() => onChanged());
+                        }}
+                      />
+                    </>
+                  ) : null}
+                </div>
+              );
+            })}
           <strong className="database-form-required-title">必填字段</strong>
           {properties
             .filter((property) => FORM_PROPERTY_TYPES.has(property.type))
@@ -3236,6 +3341,7 @@ function DatabaseAutomationDialog({
   const [conditionPropertyId, setConditionPropertyId] = useState('');
   const [conditionOp, setConditionOp] = useState('eq');
   const [conditionValue, setConditionValue] = useState('');
+  const [cron, setCron] = useState('');
   const [manualRowId, setManualRowId] = useState(snapshot.rows[0]?.id ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3270,6 +3376,7 @@ function DatabaseAutomationDialog({
         value: conditionValue,
       };
     }
+    if (cron.trim()) triggerConfig.cron = cron.trim();
     const targetProperty = snapshot.properties.find((property) => property.id === targetPropertyId);
     let actionConfig: Record<string, JsonValue> = {};
     if (actionType === 'webhook') {
@@ -3483,6 +3590,14 @@ function DatabaseAutomationDialog({
                 </label>
               </>
             ) : null}
+            <label>
+              定时（UTC cron，可选）
+              <input
+                value={cron}
+                placeholder="0 9 * * *"
+                onChange={(event) => setCron(event.target.value)}
+              />
+            </label>
             {triggerType === 'property_changed' ? (
               <label>
                 触发属性
@@ -4292,6 +4407,8 @@ export function DatabaseCanvas({
               canLock={snapshot.database.role === 'space_admin'}
               locked={snapshot.database.isLocked}
               canDelete={editable && snapshot.views.length > 1}
+              databaseId={snapshot.database.id}
+              onChanged={refresh}
               onUpdate={updateViewConfig}
               onToggleLock={toggleLock}
               onDelete={removeActiveView}

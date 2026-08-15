@@ -24,6 +24,7 @@ import {
 } from './access';
 import { invalidateCollaborationPage } from './collaboration-access-cache';
 import type { Env } from './env';
+import { appOrigin, invitationEmailBodies, queueOutboundEmail } from './email';
 import { bumpSyncedBlocksForSpace } from './synced-block-acl';
 
 const MAX_NAME_LENGTH = 100;
@@ -293,6 +294,10 @@ export async function registrationInvitationStillValid(
   return Boolean(row);
 }
 
+export async function signInvitationToken(env: Env, invitationId: string): Promise<string | null> {
+  return invitationToken(env, invitationId);
+}
+
 async function invitationToken(env: Env, invitationId: string): Promise<string | null> {
   if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) return null;
   const key = await crypto.subtle.importKey(
@@ -311,6 +316,30 @@ async function invitationToken(env: Env, invitationId: string): Promise<string |
       ),
     ),
   );
+}
+
+async function sendInvitationEmail(
+  env: Env,
+  request: Request,
+  organizationId: string,
+  email: string,
+  token: string,
+): Promise<void> {
+  const organization = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?')
+    .bind(organizationId)
+    .first<{ name: string }>();
+  const acceptUrl = `${appOrigin(env, request)}/invite/${encodeURIComponent(token)}`;
+  const bodies = invitationEmailBodies({
+    acceptUrl,
+    organizationName: organization?.name ?? 'Rdocs',
+  });
+  await queueOutboundEmail(env, {
+    bodyHtml: bodies.html,
+    bodyText: bodies.text,
+    organizationId,
+    recipientEmail: email,
+    subject: `邀请你加入 ${organization?.name ?? 'Rdocs'}`,
+  });
 }
 
 function auditStatement(
@@ -690,6 +719,7 @@ async function createInvitation(
   if (existing) {
     const token = await invitationToken(env, existing.id);
     if (!token) return error('邀请服务尚未配置', 503);
+    await sendInvitationEmail(env, request, organizationId, email, token);
     return json({ invitation: invitationFromRow(existing), token, reused: true });
   }
 
@@ -707,6 +737,7 @@ async function createInvitation(
     ).bind(id, organizationId, email, role, await sha256(token), expiresAt, actor.id, now),
     auditStatement(env, organizationId, actor.id, 'invitation.created', 'invitation', id, { role }),
   ]);
+  await sendInvitationEmail(env, request, organizationId, email, token);
   return json(
     {
       invitation: invitationFromRow({

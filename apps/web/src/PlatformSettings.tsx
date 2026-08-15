@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import type {
   ApiTokenScope,
   ApiTokenSummary,
+  CalendarConnectionSummary,
+  CalendarEventSummary,
   CreatedApiToken,
   EnterpriseSettingsSummary,
   ExportJobSummary,
@@ -11,11 +13,15 @@ import type {
 
 import {
   createApiToken,
+  createCalendarConnection,
   createExportJob,
   createScimToken,
+  deleteCalendarConnection,
   getAiSettings,
   getEnterpriseSettings,
   listApiTokens,
+  listCalendarConnections,
+  listCalendarEvents,
   listExportJobs,
   revokeApiToken,
   updateEnterpriseSettings,
@@ -41,7 +47,12 @@ export function PlatformSettings({
   organizationId: string;
   canManage: boolean;
 }) {
-  const [tab, setTab] = useState<'tokens' | 'exports' | 'ai' | 'enterprise'>('tokens');
+  const [tab, setTab] = useState<'tokens' | 'exports' | 'ai' | 'calendar' | 'enterprise'>('tokens');
+  const [calendars, setCalendars] = useState<CalendarConnectionSummary[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEventSummary[]>([]);
+  const [calendarName, setCalendarName] = useState('工作日历');
+  const [icsUrl, setIcsUrl] = useState('');
+  const [activeCalendarId, setActiveCalendarId] = useState<string | null>(null);
   const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
   const [created, setCreated] = useState<CreatedApiToken | null>(null);
   const [tokenName, setTokenName] = useState('本地集成');
@@ -58,16 +69,19 @@ export function PlatformSettings({
     if (!canManage) return;
     setError(null);
     try {
-      const [tokenResult, exportResult, enterpriseResult, aiResult] = await Promise.all([
-        listApiTokens(organizationId),
-        listExportJobs(organizationId),
-        getEnterpriseSettings(organizationId),
-        getAiSettings(organizationId),
-      ]);
+      const [tokenResult, exportResult, enterpriseResult, aiResult, calendarResult] =
+        await Promise.all([
+          listApiTokens(organizationId),
+          listExportJobs(organizationId),
+          getEnterpriseSettings(organizationId),
+          getAiSettings(organizationId),
+          listCalendarConnections(organizationId),
+        ]);
       setTokens(tokenResult.tokens);
       setJobs(exportResult.jobs);
       setEnterprise(enterpriseResult.settings);
       setAiConfigured(aiResult.settings.configured);
+      setCalendars(calendarResult.connections);
     } catch (reason) {
       setError(failure(reason, '无法加载平台设置'));
     }
@@ -108,6 +122,7 @@ export function PlatformSettings({
             ['tokens', 'API 令牌'],
             ['exports', '导出'],
             ['ai', 'AI'],
+            ['calendar', '日历'],
             ['enterprise', '企业'],
           ] as const
         ).map(([id, label]) => (
@@ -339,6 +354,108 @@ export function PlatformSettings({
           </div>
           {scimToken ? <code>{scimToken}</code> : null}
         </form>
+      ) : null}
+
+      {tab === 'calendar' ? (
+        <div>
+          <form
+            className="member-invite-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setBusy(true);
+              void createCalendarConnection(organizationId, { icsUrl, name: calendarName })
+                .then(() => {
+                  setIcsUrl('');
+                  return load();
+                })
+                .catch((reason) => setError(failure(reason, '无法添加日历')))
+                .finally(() => setBusy(false));
+            }}
+          >
+            <label>
+              <span>名称</span>
+              <input
+                value={calendarName}
+                maxLength={80}
+                onChange={(event) => setCalendarName(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>ICS 地址</span>
+              <input
+                value={icsUrl}
+                required
+                placeholder="https://…"
+                onChange={(event) => setIcsUrl(event.target.value)}
+              />
+            </label>
+            <button className="primary-button" type="submit" disabled={busy}>
+              添加 ICS 日历
+            </button>
+          </form>
+          <div className="database-calendar-list">
+            {calendars.map((calendar) => (
+              <article key={calendar.id}>
+                <strong>{calendar.name}</strong>
+                <small>
+                  {calendar.status === 'error' ? calendar.errorMessage || '读取失败' : '已配置'}
+                </small>
+                <div className="dialog-actions">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      setActiveCalendarId(calendar.id);
+                      void listCalendarEvents(organizationId, calendar.id)
+                        .then((result) => setCalendarEvents(result.events))
+                        .catch((reason) => setError(failure(reason, '无法读取日程')))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    查看日程
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      void deleteCalendarConnection(organizationId, calendar.id)
+                        .then(() => {
+                          if (activeCalendarId === calendar.id) {
+                            setActiveCalendarId(null);
+                            setCalendarEvents([]);
+                          }
+                          return load();
+                        })
+                        .catch((reason) => setError(failure(reason, '无法删除日历')))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    删除
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+          {activeCalendarId ? (
+            <div className="database-calendar-list">
+              {calendarEvents.length ? (
+                calendarEvents.map((event) => (
+                  <article key={event.uid}>
+                    <strong>{event.title}</strong>
+                    <time>
+                      {event.startsAt ? new Date(event.startsAt).toLocaleString() : '未安排'}
+                      {event.location ? ` · ${event.location}` : ''}
+                    </time>
+                  </article>
+                ))
+              ) : (
+                <p>这个日历暂时没有可显示的日程。</p>
+              )}
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       {error ? (

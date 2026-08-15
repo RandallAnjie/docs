@@ -111,6 +111,7 @@ const MIGRATIONS = [
   '0028_sites.sql',
   '0029_notion_parity_platform.sql',
   '0030_notion_completion.sql',
+  '0031_rf_email_inbound.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {

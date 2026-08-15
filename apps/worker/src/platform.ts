@@ -8,6 +8,7 @@ import {
   type ApiTokenSummary,
   type AuthUserSummary,
   type CalendarConnectionSummary,
+  type CalendarEventSummary,
   type CreatedApiToken,
   type DatabasePropertyGrantRole,
   type DatabasePropertyGrantSummary,
@@ -1272,6 +1273,109 @@ async function handleSessionPlatformApi(
     }
   }
 
+  const calendarItemMatch = url.pathname.match(
+    /^\/api\/organizations\/([^/]+)\/calendar-connections\/([^/]+)(?:\/(events))?$/,
+  );
+  if (calendarItemMatch?.[1] && calendarItemMatch[2]) {
+    const organizationId = decodeURIComponent(calendarItemMatch[1]);
+    const connectionId = decodeURIComponent(calendarItemMatch[2]);
+    const membership = await findActiveMembership(env, organizationId, actor.id);
+    if (!membership) return error('组织不存在', 404);
+    const connection = await env.DB.prepare(
+      `SELECT id, organization_id, provider, name, ics_url, status, error_message, created_at, updated_at
+         FROM calendar_connections WHERE id = ? AND organization_id = ? AND user_id = ?`,
+    )
+      .bind(connectionId, organizationId, actor.id)
+      .first<{
+        created_at: number;
+        error_message: string | null;
+        ics_url: string | null;
+        id: string;
+        name: string;
+        organization_id: string;
+        provider: CalendarConnectionSummary['provider'];
+        status: CalendarConnectionSummary['status'];
+        updated_at: number;
+      }>();
+    if (!connection) return error('日历连接不存在', 404);
+    if (request.method === 'DELETE' && !calendarItemMatch[3]) {
+      await env.DB.prepare(
+        'DELETE FROM calendar_connections WHERE id = ? AND organization_id = ? AND user_id = ?',
+      )
+        .bind(connectionId, organizationId, actor.id)
+        .run();
+      return json({ ok: true });
+    }
+    if (calendarItemMatch[3] === 'events' && request.method === 'GET') {
+      if (!connection.ics_url) return error('此日历没有 ICS 地址', 400);
+      try {
+        const response = await fetch(connection.ics_url, {
+          headers: { accept: 'text/calendar, text/plain;q=0.9' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!response.ok) throw new Error(`ICS 返回 ${response.status}`);
+        const ics = await response.text();
+        const events = parseIcsEvents(ics).slice(0, 100);
+        await env.DB.prepare(
+          `UPDATE calendar_connections
+              SET status = 'configured', error_message = NULL, updated_at = ?
+            WHERE id = ?`,
+        )
+          .bind(Date.now(), connection.id)
+          .run();
+        return json({ events });
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : '无法读取 ICS';
+        await env.DB.prepare(
+          `UPDATE calendar_connections SET status = 'error', error_message = ?, updated_at = ? WHERE id = ?`,
+        )
+          .bind(message.slice(0, 300), Date.now(), connection.id)
+          .run();
+        return error(message, 502);
+      }
+    }
+  }
+
+  const transcribeMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/transcribe$/);
+  if (transcribeMatch?.[1] && request.method === 'POST') {
+    const pageId = decodeURIComponent(transcribeMatch[1]);
+    if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    const authorized = await authorizePage(env, pageId, actor.id, 'edit_content');
+    if (!authorized) return error('页面不存在或无权写入会议纪要', 404);
+    const settings = await loadAiSettings(env, authorized.organizationId);
+    if (!settings.enabled) return error('组织已关闭 AI', 403, 'ai_disabled');
+    const apiKey = aiApiKey(env);
+    const apiBase = aiApiBase(env);
+    if (!apiKey) return error('未配置模型密钥，无法转写录音', 503, 'ai_unconfigured');
+    const form = await request.formData().catch(() => null);
+    const file = form?.get('file');
+    if (!(file instanceof File) || !file.size) return error('请上传音频文件', 400);
+    if (file.size > 80 * 1024 * 1024) return error('录音超过 80 MB', 413);
+    const upstream = new FormData();
+    upstream.set('file', file, file.name || 'meeting.webm');
+    upstream.set('model', 'whisper-1');
+    try {
+      const response = await fetch(`${apiBase}/audio/transcriptions`, {
+        body: upstream,
+        headers: { authorization: `Bearer ${apiKey}` },
+        method: 'POST',
+        signal: AbortSignal.timeout(60_000),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: { message?: string };
+        text?: string;
+      } | null;
+      if (!response.ok) {
+        return error(payload?.error?.message ?? `转写失败（${response.status}）`, 502);
+      }
+      const text = payload?.text?.trim() ?? '';
+      if (!text) return error('转写没有返回文本', 502);
+      return json({ text: `# 会议纪要\n\n${text}` });
+    } catch (reason) {
+      return error(reason instanceof Error ? reason.message : '转写请求失败', 502);
+    }
+  }
+
   const propertyGrantsMatch = url.pathname.match(
     /^\/api\/databases\/([^/]+)\/properties\/([^/]+)\/grants$/,
   );
@@ -1770,39 +1874,59 @@ self.addEventListener('fetch', (event) => {
   });
 }
 
-export function parseSimpleCron(expression: string, from: number): number | null {
-  const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const [minutePart, hourPart] = parts;
-  const minute = minutePart === '*' ? 0 : Number(minutePart);
-  const hour = hourPart === '*' ? 0 : Number(hourPart);
-  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-  const date = new Date(from);
-  date.setUTCSeconds(0, 0);
-  date.setUTCMinutes(minute);
-  date.setUTCHours(hour);
-  if (date.getTime() <= from) date.setUTCDate(date.getUTCDate() + 1);
-  return date.getTime();
+export { automationConditionMatches, parseSimpleCron } from './cron';
+
+export function parseIcsEvents(ics: string): CalendarEventSummary[] {
+  const unfolded = ics.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+  const blocks = unfolded.split(/BEGIN:VEVENT/i).slice(1);
+  const events: CalendarEventSummary[] = [];
+  for (const block of blocks) {
+    const body = block.split(/END:VEVENT/i)[0] ?? '';
+    const field = (name: string): string => {
+      const match = body.match(new RegExp(`^${name}[^:]*:(.*)$`, 'im'));
+      return (match?.[1] ?? '').trim();
+    };
+    const title = unescapeIcs(field('SUMMARY')) || '未命名日程';
+    const uid = field('UID') || `${title}:${field('DTSTART')}`;
+    const startRaw = field('DTSTART');
+    const endRaw = field('DTEND');
+    const allDay = /VALUE=DATE/i.test(body) && !/T\d{6}/.test(startRaw);
+    events.push({
+      allDay,
+      endsAt: parseIcsDate(endRaw),
+      location: unescapeIcs(field('LOCATION')) || null,
+      startsAt: parseIcsDate(startRaw),
+      title,
+      uid,
+    });
+  }
+  return events
+    .filter((event) => event.startsAt !== null)
+    .sort((left, right) => (left.startsAt ?? 0) - (right.startsAt ?? 0));
 }
 
-export function automationConditionMatches(
-  values: Record<string, JsonValue>,
-  condition: Record<string, JsonValue> | null,
-): boolean {
-  if (!condition || typeof condition.propertyId !== 'string') return true;
-  const current = values[condition.propertyId];
-  const op = condition.op;
-  if (op === 'is_empty')
-    return current === null || current === undefined || current === '' || current === false;
-  if (op === 'not_empty')
-    return !(current === null || current === undefined || current === '' || current === false);
-  if (op === 'eq') return JSON.stringify(current) === JSON.stringify(condition.value ?? null);
-  if (op === 'neq') return JSON.stringify(current) !== JSON.stringify(condition.value ?? null);
-  if (op === 'contains') {
-    return typeof current === 'string' && typeof condition.value === 'string'
-      ? current.includes(condition.value)
-      : Array.isArray(current) && current.includes(condition.value as never);
-  }
-  return true;
+function unescapeIcs(value: string): string {
+  return value
+    .replace(/\\n/gi, '\n')
+    .replace(/\\,/g, ',')
+    .replace(/\\;/g, ';')
+    .replace(/\\\\/g, '\\');
+}
+
+function parseIcsDate(value: string): number | null {
+  const compact = value.trim();
+  if (!compact) return null;
+  const match = compact.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const hour = Number(match[4] ?? 0);
+  const minute = Number(match[5] ?? 0);
+  const second = Number(match[6] ?? 0);
+  const utc = Boolean(match[7]) || !match[4];
+  const date = utc
+    ? Date.UTC(year, month, day, hour, minute, second)
+    : new Date(year, month, day, hour, minute, second).getTime();
+  return Number.isFinite(date) ? date : null;
 }

@@ -12,4 +12,5 @@ await build({
   loader: {
     '.html': 'text',
   },
+  external: ['/_edge/email.js'],
 });
