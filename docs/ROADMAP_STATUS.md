@@ -78,7 +78,7 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 ## 已知非阻塞差异
 
 - RandallFlare 已修复此前的平台阻塞；历史见 [平台修复清单](RANDALLFLARE_PLATFORM_ISSUES.md)。
-- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0023` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
+- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0024` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
 - 重复运行生产产品 smoke 时，三个不同写端点间歇出现过 `502 upstream peer unreachable`；完整重跑可以通过，已作为 RF-8 记录并保留 request ID，不能视为 Rdocs 业务层已消除的平台可靠性风险。
 - Rdocs 当前没有 browser→R2 直传所需的项目级短期签名配置，因此附件走鉴权 Worker，单文件限制 25 MB。功能、权限和数据保留闭环不受影响，大附件成本路径尚未达到设计推荐值。
 - 本机随附的 `workerd 2026-08-14` 当前只接受到 `2026-07-08` 的 compatibility date，导致本地完整 Worker 浏览器验收无法启动；生产 RandallFlare 不受该本地工具版本限制。
