@@ -39,6 +39,7 @@ import {
   setPageFavorite,
   updatePageAppearance,
 } from './api';
+import { navigateHome } from './navigation';
 import {
   canManagePageStructure,
   selectedPageRootIds,
@@ -341,7 +342,7 @@ export function DiscoveryDialog({
       description: '返回工作区主页',
       icon: <FileText size={15} />,
       label: '打开主页',
-      run: () => window.location.assign('/'),
+      run: () => navigateHome(),
     },
     {
       description: '查看最近访问的页面',

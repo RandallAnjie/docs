@@ -43,6 +43,7 @@ import {
   updatePageReminder,
   type NotificationView,
 } from './api';
+import { navigateToPage } from './navigation';
 
 const PAGE_NOTIFICATION_OPTIONS: ReadonlyArray<{
   mode: PageNotificationMode;
@@ -117,10 +118,9 @@ export function NotificationBell({ organizationId }: { organizationId: string })
       await updateNotification(notification.id, { read: true }).catch(() => undefined);
     }
     if (notification.pageId) {
-      const threadHash = notification.threadId
-        ? `#comment=${encodeURIComponent(notification.threadId)}`
-        : '';
-      window.location.assign(`/p/${encodeURIComponent(notification.pageId)}${threadHash}`);
+      navigateToPage(notification.pageId, {
+        hash: notification.threadId ? `#comment=${encodeURIComponent(notification.threadId)}` : '',
+      });
       return;
     }
     await load();
