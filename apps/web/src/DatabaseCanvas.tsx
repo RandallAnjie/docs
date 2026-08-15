@@ -106,6 +106,7 @@ import {
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
+import { DatabaseDateReminder } from './DatabaseDateReminder';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   title: '标题',
@@ -620,6 +621,8 @@ function DatabaseCell({
   organizationId,
   rowPageId,
   onButton,
+  actorId,
+  reminderSourceId,
 }: {
   property: DatabasePropertySummary;
   value: JsonValue | undefined;
@@ -629,6 +632,8 @@ function DatabaseCell({
   organizationId?: string;
   rowPageId?: string;
   onButton?: () => Promise<void>;
+  actorId?: string;
+  reminderSourceId?: string;
 }) {
   const [draft, setDraft] = useState(() => toInputValue(property, value));
   const [saving, setSaving] = useState(false);
@@ -775,6 +780,16 @@ function DatabaseCell({
           <ExternalLink size={13} />
         </a>
       ) : null}
+      {property.type === 'date' && rowPageId && actorId && reminderSourceId ? (
+        <DatabaseDateReminder
+          actorId={actorId}
+          canEdit={!disabled}
+          dateValue={draft}
+          pageId={rowPageId}
+          propertyName={property.name}
+          sourceId={reminderSourceId}
+        />
+      ) : null}
     </div>
   );
 }
@@ -796,6 +811,7 @@ function EmptyDatabase({ onCreate, disabled }: { onCreate: () => void; disabled:
 
 function TableDatabaseView({
   organizationId,
+  actorId,
   rows,
   properties,
   canEdit,
@@ -895,6 +911,8 @@ function TableDatabaseView({
                           rowPageId={row.pageId}
                           onSave={(value) => saveCell(row, property, value)}
                           onButton={() => executeButton(row, property)}
+                          actorId={actorId}
+                          reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
                         />
                       </td>
                     ))}
@@ -955,6 +973,7 @@ function TableDatabaseView({
 
 interface DatabaseViewProps {
   organizationId: string;
+  actorId: string;
   rows: DatabaseRowSummary[];
   properties: DatabasePropertySummary[];
   allProperties: DatabasePropertySummary[];
@@ -3668,9 +3687,11 @@ function DatabaseTrashDialog({
 export function DatabaseCanvas({
   initialSnapshot,
   canEdit,
+  actorId,
 }: {
   initialSnapshot: DatabaseSnapshot;
   canEdit: boolean;
+  actorId: string;
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [activeViewId, setActiveViewId] = useState(initialSnapshot.views[0]?.id ?? '');
@@ -3952,6 +3973,7 @@ export function DatabaseCanvas({
     return <ViewRequirement icon={<Table2 size={24} />} text="数据库没有可用视图。" />;
   const viewProps: DatabaseViewProps = {
     organizationId: snapshot.database.organizationId,
+    actorId,
     rows: filteredRows,
     properties: viewProperties,
     allProperties: snapshot.properties,

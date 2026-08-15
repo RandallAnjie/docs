@@ -475,6 +475,13 @@ function renderElement(node: Y.XmlElement): string {
       const latex = node.getAttribute('latex') ?? '';
       return latex ? `$${latex}$` : '';
     }
+    case 'inlineReminder': {
+      const dueAt = Number(node.getAttribute('dueAt') ?? 0);
+      const recipient = node.getAttribute('recipientName') ?? '';
+      const message = node.getAttribute('message') ?? '查看这里';
+      const due = Number.isFinite(dueAt) && dueAt > 0 ? new Date(dueAt).toISOString() : '未设置';
+      return `@提醒(${due}${recipient ? ` · ${recipient}` : ''} · ${message})`;
+    }
     case 'blockMath': {
       const latex = node.getAttribute('latex') ?? '';
       return latex ? `$$\n${latex}\n$$\n\n` : '';

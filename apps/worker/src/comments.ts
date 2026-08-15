@@ -7,6 +7,7 @@ import type {
   NotificationType,
   PageNotificationMode,
   PageNotificationSettings,
+  PageReminderSourceType,
   PageReminderStatus,
   PageReminderSummary,
 } from '@rdocs/shared';
@@ -83,6 +84,8 @@ interface PageReminderRow {
   due_at: number;
   remind_at: number;
   timezone: string;
+  source_type: PageReminderSourceType;
+  source_id: string | null;
   status: PageReminderStatus;
   delivered_at: number | null;
   cancelled_at: number | null;
@@ -96,6 +99,8 @@ interface ReminderInput {
   dueAt: number;
   remindAt: number;
   timezone: string;
+  sourceType: PageReminderSourceType;
+  sourceId: string | null;
 }
 
 const PAGE_NOTIFICATION_MODES = new Set<PageNotificationMode>([
@@ -105,6 +110,7 @@ const PAGE_NOTIFICATION_MODES = new Set<PageNotificationMode>([
 ]);
 
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
+const REMINDER_SOURCE_TYPES = new Set<PageReminderSourceType>(['page', 'inline', 'database_date']);
 
 function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
@@ -226,6 +232,8 @@ function normalizedReminderInput(
     dueAt?: unknown;
     remindAt?: unknown;
     timezone?: unknown;
+    sourceType?: unknown;
+    sourceId?: unknown;
   } | null,
   now = Date.now(),
 ): ReminderInput | null {
@@ -234,6 +242,12 @@ function normalizedReminderInput(
   const dueAt = Number(value?.dueAt);
   const remindAt = Number(value?.remindAt);
   const timezone = typeof value?.timezone === 'string' ? value.timezone.trim() : '';
+  const sourceType =
+    typeof value?.sourceType === 'string' &&
+    REMINDER_SOURCE_TYPES.has(value.sourceType as PageReminderSourceType)
+      ? (value.sourceType as PageReminderSourceType)
+      : 'page';
+  const sourceId = typeof value?.sourceId === 'string' ? value.sourceId.trim() : null;
   if (
     !recipientId ||
     !message ||
@@ -244,11 +258,13 @@ function normalizedReminderInput(
     dueAt > now + MAX_REMINDER_FUTURE_MS ||
     remindAt > dueAt ||
     remindAt < now - 60_000 ||
-    !validTimezone(timezone)
+    !validTimezone(timezone) ||
+    (sourceType === 'page' && sourceId !== null) ||
+    (sourceType !== 'page' && (!sourceId || sourceId.length > 200))
   ) {
     return null;
   }
-  return { recipientId, message, dueAt, remindAt, timezone };
+  return { recipientId, message, dueAt, remindAt, timezone, sourceType, sourceId };
 }
 
 function reminderFromRow(row: PageReminderRow): PageReminderSummary {
@@ -267,6 +283,8 @@ function reminderFromRow(row: PageReminderRow): PageReminderSummary {
     dueAt: Number(row.due_at),
     remindAt: Number(row.remind_at),
     timezone: row.timezone,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
     status: row.status,
     deliveredAt: row.delivered_at === null ? null : Number(row.delivered_at),
     cancelledAt: row.cancelled_at === null ? null : Number(row.cancelled_at),
@@ -370,7 +388,8 @@ export async function deliverDueReminders(
       `SELECT r.id, r.organization_id, r.page_id, r.created_by, r.recipient_id,
               u.email AS recipient_email, u.display_name AS recipient_display_name,
               u.avatar_url AS recipient_avatar_url, r.message, r.due_at, r.remind_at,
-              r.timezone, r.status, r.delivered_at, r.cancelled_at,
+              r.timezone, r.source_type, r.source_id, r.status,
+              r.delivered_at, r.cancelled_at,
               r.created_at, r.updated_at
          FROM page_reminders r
          JOIN users u ON u.id = r.recipient_id
@@ -415,6 +434,8 @@ export async function deliverDueReminders(
           dueAt: Number(reminder.due_at),
           remindAt: Number(reminder.remind_at),
           timezone: reminder.timezone,
+          sourceType: reminder.source_type,
+          sourceId: reminder.source_id,
         },
         `reminder:${reminder.id}`,
       ),
@@ -444,7 +465,8 @@ async function listPageReminders(
       `SELECT r.id, r.organization_id, r.page_id, r.created_by, r.recipient_id,
               u.email AS recipient_email, u.display_name AS recipient_display_name,
               u.avatar_url AS recipient_avatar_url, r.message, r.due_at, r.remind_at,
-              r.timezone, r.status, r.delivered_at, r.cancelled_at,
+              r.timezone, r.source_type, r.source_id, r.status,
+              r.delivered_at, r.cancelled_at,
               r.created_at, r.updated_at
          FROM page_reminders r
          JOIN users u ON u.id = r.recipient_id
@@ -501,11 +523,22 @@ async function createPageReminder(
       dueAt?: unknown;
       remindAt?: unknown;
       timezone?: unknown;
+      sourceType?: unknown;
+      sourceId?: unknown;
     }>(request),
   );
   if (!input) return error('提醒的对象、内容、日期、提前量或时区无效', 400);
   if (!(await reminderRecipient(env, access.organizationId, pageId, input.recipientId))) {
     return error('提醒对象不是有权查看此页面的正式成员', 400);
+  }
+  if (input.sourceId) {
+    const duplicate = await env.DB.prepare(
+      `SELECT id FROM page_reminders
+        WHERE created_by = ? AND source_type = ? AND source_id = ? AND status = 'scheduled'`,
+    )
+      .bind(actor.id, input.sourceType, input.sourceId)
+      .first<{ id: string }>();
+    if (duplicate) return error('这个位置已经有待触发提醒', 409);
   }
   const existing = await env.DB.prepare(
     `SELECT COUNT(*) AS count FROM page_reminders
@@ -521,9 +554,9 @@ async function createPageReminder(
   await env.DB.prepare(
     `INSERT INTO page_reminders(
        id, organization_id, page_id, created_by, recipient_id, message,
-       due_at, remind_at, timezone, status, delivered_at, cancelled_at,
-       created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', NULL, NULL, ?, ?)`,
+       due_at, remind_at, timezone, source_type, source_id, status,
+       delivered_at, cancelled_at, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', NULL, NULL, ?, ?)`,
   )
     .bind(
       id,
@@ -535,6 +568,8 @@ async function createPageReminder(
       input.dueAt,
       input.remindAt,
       input.timezone,
+      input.sourceType,
+      input.sourceId,
       now,
       now,
     )
@@ -568,7 +603,8 @@ async function findPageReminder(env: Env, reminderId: string): Promise<PageRemin
     `SELECT r.id, r.organization_id, r.page_id, r.created_by, r.recipient_id,
             u.email AS recipient_email, u.display_name AS recipient_display_name,
             u.avatar_url AS recipient_avatar_url, r.message, r.due_at, r.remind_at,
-            r.timezone, r.status, r.delivered_at, r.cancelled_at,
+            r.timezone, r.source_type, r.source_id, r.status,
+            r.delivered_at, r.cancelled_at,
             r.created_at, r.updated_at
        FROM page_reminders r
        JOIN users u ON u.id = r.recipient_id
@@ -603,6 +639,35 @@ async function cancelPageReminder(
   return json({ ok: true });
 }
 
+async function cancelPageReminderSource(
+  env: Env,
+  actor: AuthUserSummary,
+  pageId: string,
+  url: URL,
+): Promise<Response> {
+  const access = await requirePageAction(env, pageId, actor.id, 'edit_content');
+  if (!access) return error('页面不存在或无权取消提醒', 404);
+  const sourceType = url.searchParams.get('sourceType');
+  const sourceId = url.searchParams.get('sourceId')?.trim() ?? '';
+  if (
+    (sourceType !== 'inline' && sourceType !== 'database_date') ||
+    !sourceId ||
+    sourceId.length > 200
+  ) {
+    return error('提醒来源无效', 400);
+  }
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE page_reminders
+        SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+      WHERE organization_id = ? AND page_id = ? AND source_type = ? AND source_id = ?
+        AND status = 'scheduled'`,
+  )
+    .bind(now, now, access.organizationId, pageId, sourceType, sourceId)
+    .run();
+  return json({ ok: true });
+}
+
 async function updatePageReminder(
   request: Request,
   env: Env,
@@ -623,19 +688,34 @@ async function updatePageReminder(
       dueAt?: unknown;
       remindAt?: unknown;
       timezone?: unknown;
+      sourceType?: unknown;
+      sourceId?: unknown;
     }>(request),
   );
   if (!input) return error('提醒的对象、内容、日期、提前量或时区无效', 400);
+  if (input.sourceType !== reminder.source_type || input.sourceId !== reminder.source_id) {
+    return error('提醒来源不能修改', 400);
+  }
   if (
     !(await reminderRecipient(env, reminder.organization_id, reminder.page_id, input.recipientId))
   ) {
     return error('提醒对象不是有权查看此页面的正式成员', 400);
   }
+  if (input.sourceId) {
+    const duplicate = await env.DB.prepare(
+      `SELECT id FROM page_reminders
+        WHERE created_by = ? AND source_type = ? AND source_id = ?
+          AND status = 'scheduled' AND id <> ?`,
+    )
+      .bind(actor.id, input.sourceType, input.sourceId, reminderId)
+      .first<{ id: string }>();
+    if (duplicate) return error('这个位置已经有待触发提醒', 409);
+  }
   const now = Date.now();
   const updated = await env.DB.prepare(
     `UPDATE page_reminders
         SET recipient_id = ?, message = ?, due_at = ?, remind_at = ?,
-            timezone = ?, updated_at = ?
+            timezone = ?, source_type = ?, source_id = ?, updated_at = ?
       WHERE id = ? AND created_by = ? AND status = 'scheduled'`,
   )
     .bind(
@@ -644,6 +724,8 @@ async function updatePageReminder(
       input.dueAt,
       input.remindAt,
       input.timezone,
+      input.sourceType,
+      input.sourceId,
       now,
       reminderId,
       actor.id,
@@ -1273,6 +1355,16 @@ export async function handleCommentsAndNotificationsApi(
     const pageId = decodeURIComponent(pageRemindersMatch[1]);
     if (request.method === 'GET') return listPageReminders(env, actor, pageId);
     if (request.method === 'POST') return createPageReminder(request, env, actor, pageId);
+  }
+
+  const pageReminderSourceMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/reminders\/source$/);
+  if (pageReminderSourceMatch?.[1] && request.method === 'DELETE') {
+    return cancelPageReminderSource(
+      env,
+      actor,
+      decodeURIComponent(pageReminderSourceMatch[1]),
+      url,
+    );
   }
 
   const reminderMatch = url.pathname.match(/^\/api\/reminders\/([^/]+)$/);

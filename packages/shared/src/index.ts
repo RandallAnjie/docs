@@ -1,5 +1,5 @@
 export const PRODUCT_NAME = 'Rdocs';
-export const EDITOR_SCHEMA_VERSION = 9;
+export const EDITOR_SCHEMA_VERSION = 10;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
 export type ResourceGrantRole = 'none' | SpaceRole;
@@ -420,6 +420,7 @@ export interface NotificationGroupSummary {
 }
 
 export type PageReminderStatus = 'scheduled' | 'delivered' | 'cancelled';
+export type PageReminderSourceType = 'page' | 'inline' | 'database_date';
 
 export interface PageReminderSummary {
   id: string;
@@ -431,6 +432,8 @@ export interface PageReminderSummary {
   dueAt: number;
   remindAt: number;
   timezone: string;
+  sourceType: PageReminderSourceType;
+  sourceId: string | null;
   status: PageReminderStatus;
   deliveredAt: number | null;
   cancelledAt: number | null;

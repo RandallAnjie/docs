@@ -101,6 +101,7 @@ const MIGRATIONS = [
   '0024_page_notifications_and_inbox.sql',
   '0025_synced_block_delete_undo.sql',
   '0026_page_reminders_and_inbox_groups.sql',
+  '0027_reminder_sources.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -464,6 +465,18 @@ describe('structured database integration', () => {
     const numberProperty = (await numberResponse?.json()) as { property: { id: string } };
     expect(numberResponse?.status).toBe(201);
 
+    const dateResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '截止日期', type: 'date' }),
+      }),
+      env,
+      owner,
+    );
+    const dateProperty = (await dateResponse?.json()) as { property: { id: string } };
+    expect(dateResponse?.status).toBe(201);
+
     const formulaResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
         method: 'POST',
@@ -497,7 +510,11 @@ describe('structured database integration', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          values: { [titlePropertyId!]: '发布 Rdocs', [numberProperty.property.id]: 3 },
+          values: {
+            [titlePropertyId!]: '发布 Rdocs',
+            [numberProperty.property.id]: 3,
+            [dateProperty.property.id]: new Date(now + 7 * 24 * 60 * 60_000).toISOString(),
+          },
         }),
       }),
       env,
@@ -512,6 +529,41 @@ describe('structured database integration', () => {
     expect(
       database.prepare('SELECT title, parent_id FROM pages WHERE id = ?').get(rowResult.row.pageId),
     ).toMatchObject({ title: '发布 Rdocs', parent_id: pageId });
+
+    const databaseReminderSource = `${databaseId}:${rowResult.row.id}:${dateProperty.property.id}`;
+    const databaseReminderResponse = await handleCommentsAndNotificationsApi(
+      new Request(`https://docs.test/api/pages/${rowResult.row.pageId}/reminders`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          recipientId: owner.id,
+          message: '截止日期提醒',
+          dueAt: now + 7 * 24 * 60 * 60_000,
+          remindAt: now + 6 * 24 * 60 * 60_000,
+          timezone: 'UTC',
+          sourceType: 'database_date',
+          sourceId: databaseReminderSource,
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(databaseReminderResponse?.status).toBe(200);
+    const clearDateResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [dateProperty.property.id]: null } }),
+      }),
+      env,
+      owner,
+    );
+    expect(clearDateResponse?.status).toBe(200);
+    expect(
+      database
+        .prepare('SELECT status FROM page_reminders WHERE source_id = ?')
+        .get(databaseReminderSource),
+    ).toEqual({ status: 'cancelled' });
 
     const automationResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/automations`, {
@@ -2082,6 +2134,71 @@ describe('tenant boundary integration', () => {
         .prepare('SELECT COUNT(*) AS count FROM notifications WHERE event_key = ?')
         .get(`reminder:${reminderId}`),
     ).toEqual({ count: 1 });
+
+    const sourceInput = {
+      recipientId: owner.id,
+      message: 'Review this paragraph',
+      dueAt: now + 3 * 60 * 60_000,
+      remindAt: now + 2 * 60 * 60_000,
+      timezone: 'UTC',
+      sourceType: 'inline',
+      sourceId: 'inline-node-1',
+    };
+    const sourceCreated = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_reminder/reminders', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(sourceInput),
+      }),
+      env,
+      owner,
+    );
+    const sourceBody = (await sourceCreated?.json()) as {
+      reminders: Array<{ id: string; sourceType: string; sourceId: string | null }>;
+    };
+    const sourceReminder = sourceBody.reminders.find(
+      (reminder) => reminder.sourceId === 'inline-node-1',
+    );
+    expect(sourceReminder).toMatchObject({ sourceType: 'inline', sourceId: 'inline-node-1' });
+
+    const duplicateSource = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_reminder/reminders', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(sourceInput),
+      }),
+      env,
+      owner,
+    );
+    expect(duplicateSource?.status).toBe(409);
+
+    const changedSource = await handleCommentsAndNotificationsApi(
+      new Request(`https://docs.test/api/reminders/${sourceReminder?.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...sourceInput,
+          sourceType: 'database_date',
+          sourceId: 'database:row:date',
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(changedSource?.status).toBe(400);
+
+    const cancelledSource = await handleCommentsAndNotificationsApi(
+      new Request(
+        'https://docs.test/api/pages/page_reminder/reminders/source?sourceType=inline&sourceId=inline-node-1',
+        { method: 'DELETE' },
+      ),
+      env,
+      owner,
+    );
+    expect(cancelledSource?.status).toBe(200);
+    expect(
+      database.prepare('SELECT status FROM page_reminders WHERE id = ?').get(sourceReminder?.id),
+    ).toEqual({ status: 'cancelled' });
     database.close();
   });
 

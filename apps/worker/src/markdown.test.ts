@@ -134,4 +134,22 @@ $$`;
     );
     document.destroy();
   });
+
+  it('exports inline reminders as readable Markdown text', () => {
+    const document = new Y.Doc();
+    const paragraph = new Y.XmlElement('paragraph');
+    const prefix = new Y.XmlText();
+    prefix.insert(0, '发布前 ');
+    const reminder = new Y.XmlElement('inlineReminder');
+    reminder.setAttribute('dueAt', '1787097600000');
+    reminder.setAttribute('recipientName', 'Randall');
+    reminder.setAttribute('message', '检查发布清单');
+    paragraph.insert(0, [prefix, reminder]);
+    document.getXmlFragment('default').insert(0, [paragraph]);
+
+    expect(yjsSnapshotToMarkdown(Y.encodeStateAsUpdate(document))).toContain(
+      '发布前 @提醒(2026-08-19T00:00:00.000Z · Randall · 检查发布清单)',
+    );
+    document.destroy();
+  });
 });

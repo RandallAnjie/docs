@@ -115,6 +115,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行提醒与分组收件箱迁移 `0026_page_reminders_and_inbox_groups.sql` 时第十九次复现：提醒表、索引和允许 `reminder` 类型的通知表重建均成功，生产库由 49 张表增加到 50 张表，85 个页面保持 `editor_schema_version = 9`，旧通知与订阅数量保持为 0，17 条全文索引记录完整且外键违规为 0，但第 26 条账本仍写成 `(26, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-UAzHPC/before-0026.sql`（178,309 bytes，SHA-256 `ed253e3ab2e571c68c44e32c06eaa80fcf5df784fcecbf187258f230be29b8ae`）；因 RF-10 另生成并实际重放及演练 `0026` 的 `/tmp/rdocs-db-backup-UAzHPC/before-0026-restorable.sql`（169,772 bytes，SHA-256 `b5d65787a737c3572fa984d541ebfae1a55cbb183fb789f16f14c92824dbee2c`）。只修复第 26 条 Rdocs 账本记录后，迁移列表 `0001`–`0026` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行提醒来源迁移 `0027_reminder_sources.sql` 时第二十次复现：`source_type`/`source_id`、活动来源唯一索引、来源查询索引和 85 个页面的 `editor_schema_version = 10` 均已正确落库，生产库保持 50 张平台计数表、17 条全文索引、0 条提醒和 0 个外键违规，但第 27 条账本仍写成 `(27, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-x1koXW/before-0027.sql`（179,346 bytes，SHA-256 `21a0fb8b94b6fa5c3109f86bc16fc8ecc17c15c2debd93e05b7e7e14cd513b65`）；因 RF-10 另生成 `/tmp/rdocs-db-backup-x1koXW/before-0027-restorable.sql`，剔除错误 FTS 影子数据、从生产库只读 `sqlite_master` 补回 41 个迁移前显式索引，并实际重放及演练 `0027`（174,988 bytes，SHA-256 `01af7c9d554e8500cfd70405faea69b273ee22b91f0c6addf63817f928c621d6`）。只修复第 27 条 Rdocs 账本记录后，迁移列表 `0001`–`0027` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
@@ -130,7 +132,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 - `CREATE VIRTUAL TABLE page_search_fts USING fts5(...)` 与 17 条逻辑搜索记录；
 - FTS5 自动创建的 `page_search_fts_config/content/data/docsize/idx` 五张影子表的 `CREATE TABLE` 和 `INSERT`；
-- 影子表 BLOB 被序列化成文本 `'[object Object]'`。
+- 影子表 BLOB 被序列化成文本 `'[object Object]'`；
+- 所有 `sql IS NOT NULL` 的显式索引定义均未导出；当前 Rdocs 生产库迁移后共有 43 个此类索引，原始导出重放后为 0 个。
 
 在空白 SQLite 中直接重放原始文件会在 `page_search_fts_config` 处失败：
 
@@ -142,7 +145,7 @@ object name reserved for internal use: page_search_fts_config
 
 ### Rdocs 本次安全处理
 
-原始导出保持不变并记录 SHA-256。另从恢复副本中精确剔除 70 行名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入。清理后的 SQL 已在独立 Node SQLite 中完整重放；SQLite 自动重建 5 张影子表，85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后也分别成功演练 `0025` 和 `0026`。
+原始导出保持不变并记录 SHA-256。恢复副本精确剔除名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入；同时通过只读查询 `sqlite_master` 取回全部显式索引 DDL。`0027` 前副本补回 41 个索引并在独立 Node SQLite 中完整重放，SQLite 自动重建 5 张影子表；85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后成功演练 `0027` 并得到迁移后的 43 个显式索引。
 
 这只是 Rdocs 临时备份产物处理，没有修改 RandallFlare 代码、配置或生产数据导出实现。
 
@@ -150,6 +153,7 @@ object name reserved for internal use: page_search_fts_config
 
 - D1 导出应跳过 FTS5/RTREE 等虚拟表的内部影子表，只导出虚拟表 DDL 和逻辑行。
 - 如果平台选择导出 BLOB，必须使用可逆的 SQLite blob literal（例如 `X'...'`），不能走 JavaScript 默认字符串化。
+- 导出必须包含 `sqlite_master.sql IS NOT NULL` 的显式索引 DDL，并在数据写入完成后重建索引。
 - 导出命令返回成功前，应在空白 SQLite 中自动重放并运行 `PRAGMA integrity_check` 与 `PRAGMA foreign_key_check`。
 - 增加包含 Unicode 文本、空索引、删除后段合并和多 segment 的 FTS5 恢复测试。
 
