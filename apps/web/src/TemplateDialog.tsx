@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { SpaceSummary } from '@rdocs/shared';
 
 import { createProjectWorkspace, importMarkdown } from './api';
+import { navigateToPage } from './navigation';
 
 const TEMPLATES = [
   {
@@ -50,7 +51,7 @@ export function TemplateDialog({ space, onClose }: { space: SpaceSummary; onClos
     try {
       const file = new File([template.markdown], `${template.name}.md`, { type: 'text/markdown' });
       const { page } = await importMarkdown(space.id, file);
-      window.location.assign(`/p/${encodeURIComponent(page.id)}`);
+      navigateToPage(page.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法从模板创建页面');
       setCreatingId(null);
@@ -63,7 +64,7 @@ export function TemplateDialog({ space, onClose }: { space: SpaceSummary; onClos
     setError(null);
     try {
       const { workspace } = await createProjectWorkspace(space.id);
-      window.location.assign(`/p/${encodeURIComponent(workspace.projectsPageId)}`);
+      navigateToPage(workspace.projectsPageId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法创建项目工作区');
       setCreatingId(null);

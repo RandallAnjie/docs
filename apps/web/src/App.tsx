@@ -170,6 +170,14 @@ import { RevisionPanel } from './RevisionPanel';
 import { SpaceAccessDialog } from './SpaceAccessDialog';
 import { SpaceTrashDialog } from './SpaceTrashDialog';
 import { TemplateDialog } from './TemplateDialog';
+import {
+  commentThreadIdFromHash,
+  installInAppNavigation,
+  navigateHome,
+  navigateToPage,
+  pageIdFromPath,
+  useAppLocation,
+} from './navigation';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
 
@@ -445,11 +453,6 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
   }
 }
 
-function currentPageId(): string | null {
-  const match = window.location.pathname.match(/^\/p\/([^/]+)\/?$/);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
-}
-
 function currentInvitationToken(): string | null {
   const match = window.location.pathname.match(/^\/invite\/([^/]+)\/?$/);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
@@ -488,22 +491,36 @@ function publicSiteSessionId(): string {
   }
 }
 
-function navigateToPage(pageId: string): void {
-  window.location.assign(`/p/${encodeURIComponent(pageId)}`);
-}
-
 function normalizedPageTitle(value: string): string {
   return value.trim() || '未命名页面';
 }
 
+function mergePageIntoList(pages: PageSummary[], page: PageSummary): PageSummary[] {
+  return pages.some((candidate) => candidate.id === page.id)
+    ? pages.map((candidate) => (candidate.id === page.id ? page : candidate))
+    : [...pages, page];
+}
+
+async function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
+  await Promise.race([
+    work.catch(() => undefined),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    }),
+  ]);
+}
+
 export function App() {
-  const pageId = currentPageId();
+  const location = useAppLocation();
+  const pageId = pageIdFromPath(location.pathname);
   const invitationToken = currentInvitationToken();
   const shareToken = currentShareToken();
   const formToken = currentFormToken();
   const siteRoute = currentSiteRoute();
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
+
+  useEffect(() => installInAppNavigation(), []);
 
   const refreshSession = useCallback(async () => {
     setSessionError(null);
@@ -569,7 +586,14 @@ export function App() {
   if (!pageId) {
     return <TenantHome identity={identity} user={session.user} onLogout={signOut} />;
   }
-  return <Workspace pageId={pageId} identity={identity} onLogout={signOut} />;
+  return (
+    <Workspace
+      pageId={pageId}
+      locationHash={location.hash}
+      identity={identity}
+      onLogout={signOut}
+    />
+  );
 }
 
 function PublishedSite({ siteSlug, pageSlug }: { siteSlug: string; pageSlug: string | null }) {
@@ -945,6 +969,10 @@ function TenantHome({
   const [templateSpace, setTemplateSpace] = useState<SpaceSummary | null>(null);
   const markdownInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    document.title = 'Rdocs';
+  }, []);
 
   useEffect(() => {
     const openCommandSearch = (event: KeyboardEvent) => {
@@ -1544,10 +1572,12 @@ function TenantHome({
 
 function Workspace({
   pageId,
+  locationHash,
   identity,
   onLogout,
 }: {
   pageId: string;
+  locationHash: string;
   identity: LocalIdentity;
   onLogout?: () => Promise<void>;
 }) {
@@ -1561,7 +1591,10 @@ function Workspace({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (bootstrap) return;
     let active = true;
+    setLoading(true);
+    setError(null);
     getPage(pageId)
       .then(async ({ page }) => {
         const [{ ticket }, { pages }, database] = await Promise.all([
@@ -1587,13 +1620,15 @@ function Workspace({
     return () => {
       active = false;
     };
-  }, [identity, pageId]);
+  }, [bootstrap, identity, pageId]);
 
-  if (loading) return <LoadingScreen />;
+  if (loading) return <WorkspaceOpeningShell identity={identity} />;
   if (!bootstrap || error) return <NotFound message={error ?? '页面不存在'} />;
 
   return (
     <DocumentWorkspace
+      requestedPageId={pageId}
+      locationHash={locationHash}
       initialPage={bootstrap.page}
       initialPages={bootstrap.pages}
       initialTicket={bootstrap.ticket}
@@ -1816,6 +1851,8 @@ function PageAppearanceDialog({
 }
 
 function DocumentWorkspace({
+  requestedPageId: requestedPageIdProp,
+  locationHash = '',
   initialPage,
   initialPages,
   initialTicket,
@@ -1827,6 +1864,8 @@ function DocumentWorkspace({
   publicSiteSessionId,
   initialDatabase,
 }: {
+  requestedPageId?: string;
+  locationHash?: string;
   initialPage: PageSummary;
   initialPages: PageSummary[];
   initialTicket: string;
@@ -1838,9 +1877,14 @@ function DocumentWorkspace({
   publicSiteSessionId?: string;
   initialDatabase?: DatabaseSnapshot | null;
 }) {
-  const initialCommentThreadId = new URLSearchParams(window.location.hash.slice(1)).get('comment');
+  const requestedPageId = requestedPageIdProp ?? initialPage.id;
   const [page, setPage] = useState(initialPage);
   const [pages, setPages] = useState(initialPages);
+  const [ticket, setTicket] = useState(initialTicket);
+  const [pageSwitching, setPageSwitching] = useState(false);
+  const [focusedCommentThreadId, setFocusedCommentThreadId] = useState(() =>
+    commentThreadIdFromHash(locationHash),
+  );
   const [title, setTitle] = useState(page.title);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [offlineReady, setOfflineReady] = useState(false);
@@ -1865,7 +1909,9 @@ function DocumentWorkspace({
   const [pageActionError, setPageActionError] = useState<string | null>(null);
   const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [contextPanelOpen, setContextPanelOpen] = useState(Boolean(initialCommentThreadId));
+  const [contextPanelOpen, setContextPanelOpen] = useState(() =>
+    Boolean(commentThreadIdFromHash(locationHash)),
+  );
   const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
   const [siteSearchOpen, setSiteSearchOpen] = useState(false);
   const titleTimer = useRef<number | undefined>(undefined);
@@ -1876,11 +1922,27 @@ function DocumentWorkspace({
   const httpTransportRef = useRef<HttpCollaborationTransport | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const attachmentPanelRef = useRef<AttachmentPanelHandle>(null);
+  const pageRef = useRef(page);
+  const pagesRef = useRef(pages);
+  const pageSwitchGeneration = useRef(0);
+  const flushTitleRef = useRef<() => Promise<void>>(async () => undefined);
+  const flushDocumentRef = useRef<() => Promise<void>>(async () => undefined);
+  pageRef.current = page;
+  pagesRef.current = pages;
+  const isSwitching = pageSwitching || requestedPageId !== page.id;
+  const previewPage =
+    requestedPageId === page.id
+      ? page
+      : (pages.find((candidate) => candidate.id === requestedPageId) ?? page);
+  const headerPage = isSwitching ? previewPage : page;
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
-  const breadcrumbItems = useMemo(() => pageBreadcrumbItems(page.id, pages), [page.id, pages]);
+  const breadcrumbItems = useMemo(
+    () => pageBreadcrumbItems(headerPage.id, pages),
+    [headerPage.id, pages],
+  );
   const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
   const canManagePage = page.role === 'space_admin';
-  const canEdit = canEditStructure && !page.isLocked;
+  const canEdit = canEditStructure && !page.isLocked && !isSwitching;
   const createSyncedBlockResource = useCallback(
     async (snapshot?: Uint8Array) => {
       const result = await createSyncedBlock(page.id, snapshot);
@@ -1932,7 +1994,7 @@ function DocumentWorkspace({
     } else if (activeBounds.bottom > navigationBounds.bottom) {
       navigation.scrollTop += activeBounds.bottom - navigationBounds.bottom;
     }
-  }, [page.id, pages.length]);
+  }, [pages.length, requestedPageId]);
 
   useEffect(() => {
     const openSearch = (event: KeyboardEvent) => {
@@ -1952,12 +2014,22 @@ function DocumentWorkspace({
   }, []);
 
   useEffect(() => {
-    const ancestors = ancestorPageIds(page.id, pages);
+    const ancestors = ancestorPageIds(requestedPageId, pages);
     setCollapsedPageIds((current) => {
       const next = new Set([...current].filter((id) => !ancestors.has(id)));
       return next.size === current.size ? current : next;
     });
-  }, [page.id, pages]);
+  }, [pages, requestedPageId]);
+
+  useEffect(() => {
+    document.title = `${normalizedPageTitle(isSwitching ? headerPage.title : title)} · Rdocs`;
+  }, [headerPage.title, isSwitching, title]);
+
+  useEffect(() => {
+    const threadId = commentThreadIdFromHash(locationHash);
+    setFocusedCommentThreadId(threadId);
+    if (threadId) setContextPanelOpen(true);
+  }, [locationHash, requestedPageId]);
 
   useEffect(() => {
     let disposed = false;
@@ -1979,7 +2051,7 @@ function DocumentWorkspace({
       page.id,
       ydoc,
       {
-        params: { ticket: initialTicket },
+        params: { ticket },
         maxBackoffTime: 2_000,
       },
     );
@@ -2026,7 +2098,7 @@ function DocumentWorkspace({
       pageId: page.id,
       document: ydoc,
       awareness: provider.awareness,
-      ticket: initialTicket,
+      ticket,
       renewTicket: async () => {
         const ticket = renewTicket
           ? await renewTicket()
@@ -2071,7 +2143,15 @@ function DocumentWorkspace({
       offlinePersistence?.destroy();
       ydoc.destroy();
     };
-  }, [identity, initialTicket, page.currentGeneration, page.id, renewTicket]);
+  }, [
+    identity.color,
+    identity.id,
+    identity.name,
+    page.currentGeneration,
+    page.id,
+    renewTicket,
+    ticket,
+  ]);
 
   const flushDocument = useCallback(async () => {
     await httpTransportRef.current?.flushNow();
@@ -2125,6 +2205,73 @@ function DocumentWorkspace({
     };
   }, [page.id]);
 
+  flushTitleRef.current = flushTitle;
+  flushDocumentRef.current = flushDocument;
+
+  useEffect(() => {
+    if (requestedPageId === pageRef.current.id) return;
+    let cancelled = false;
+    const generation = ++pageSwitchGeneration.current;
+    setPageSwitching(true);
+    setCollab(null);
+    setConnection('connecting');
+    setTreeError(null);
+    setPageActionError(null);
+    setPageActionBusy(false);
+    setPageMenuOpen(false);
+    setAppearanceDialogOpen(false);
+    setMoveDialogOpen(false);
+    setAccessDialogOpen(false);
+    setCommentSelection(null);
+    setDiscoveryTab(null);
+    setCopied(false);
+    setCreatingUnder(undefined);
+
+    void (async () => {
+      await settleWithin(Promise.all([flushTitleRef.current(), flushDocumentRef.current()]), 800);
+      if (cancelled || pageSwitchGeneration.current !== generation) return;
+      try {
+        const [{ page: nextPage }, ticketResult, nextDatabase] = await Promise.all([
+          getPage(requestedPageId),
+          renewTicket
+            ? renewTicket().then((nextTicket) => ({ ticket: nextTicket }))
+            : getCollabTicket(requestedPageId, identity),
+          getPageDatabase(requestedPageId).catch(() => null),
+        ]);
+        let nextPages = pagesRef.current;
+        if (nextPage.spaceId !== pageRef.current.spaceId) {
+          try {
+            nextPages = (await listPages(nextPage.spaceId)).pages;
+          } catch {
+            nextPages = [nextPage];
+          }
+        }
+        nextPages = mergePageIntoList(nextPages, nextPage);
+        if (cancelled || pageSwitchGeneration.current !== generation) return;
+        setPage(nextPage);
+        setPages(nextPages);
+        setTicket(ticketResult.ticket);
+        setDatabase(nextDatabase);
+        setTitle(nextPage.title);
+        latestTitle.current = nextPage.title;
+        savedTitle.current = nextPage.title;
+        setMoveParentId(nextPage.parentId ?? '');
+      } catch (reason) {
+        if (cancelled || pageSwitchGeneration.current !== generation) return;
+        setPageActionError(reason instanceof Error ? reason.message : '页面加载失败');
+        navigateToPage(pageRef.current.id, { replace: true });
+      } finally {
+        if (!cancelled && pageSwitchGeneration.current === generation) {
+          setPageSwitching(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [identity.id, identity.name, renewTicket, requestedPageId]);
+
   const share = async () => {
     await navigator.clipboard.writeText(window.location.href);
     setCopied(true);
@@ -2137,7 +2284,9 @@ function DocumentWorkspace({
     setTreeError(null);
     try {
       const { page: created } = await createPage('未命名页面', parentId, page.spaceId);
+      setPages((current) => mergePageIntoList(current, created));
       navigateToPage(created.id);
+      setCreatingUnder(undefined);
     } catch (reason) {
       setTreeError(reason instanceof Error ? reason.message : '无法创建页面');
       setCreatingUnder(undefined);
@@ -2199,7 +2348,7 @@ function DocumentWorkspace({
     try {
       await flushDocument();
       await deletePage(page.id);
-      window.location.assign('/');
+      navigateHome();
     } catch (reason) {
       setPageActionError(reason instanceof Error ? reason.message : '无法删除页面');
       setPageActionBusy(false);
@@ -2214,7 +2363,9 @@ function DocumentWorkspace({
     try {
       await flushDocument();
       const { page: copied } = await copyPage(page.id);
+      setPages((current) => mergePageIntoList(current, copied));
       navigateToPage(copied.id);
+      setPageActionBusy(false);
     } catch (reason) {
       setPageActionError(reason instanceof Error ? reason.message : '无法复制页面');
       setPageActionBusy(false);
@@ -2325,10 +2476,10 @@ function DocumentWorkspace({
               identity={identity}
               collapsed={sidebarCollapsed}
               onSelect={(organizationId) => {
-                if (organizationId !== page.organizationId) window.location.assign('/');
+                if (organizationId !== page.organizationId) navigateHome();
               }}
-              onCreated={() => window.location.assign('/')}
-              onJoined={() => window.location.assign('/')}
+              onCreated={() => navigateHome()}
+              onJoined={() => navigateHome()}
               onOpenSettings={() => window.location.assign('/?settings=1')}
               onLogout={onLogout}
             />
@@ -2372,7 +2523,7 @@ function DocumentWorkspace({
           </div>
           <PageTree
             nodes={pageTree}
-            activePageId={page.id}
+            activePageId={requestedPageId}
             collapsedPageIds={collapsedPageIds}
             creatingUnder={creatingUnder}
             onToggle={togglePage}
@@ -2422,11 +2573,11 @@ function DocumentWorkspace({
         </div>
       </aside>
 
-      <main className="document-area">
+      <main className="document-area" aria-busy={isSwitching}>
         {publicSite ? (
           <PublicSiteHeader
             site={publicSite}
-            currentPageId={page.id}
+            currentPageId={headerPage.id}
             onSearch={() => setSiteSearchOpen(true)}
           />
         ) : null}
@@ -2440,8 +2591,8 @@ function DocumentWorkspace({
                 <span>/</span>
               </>
             ) : null}
-            <span>{page.title}</span>
-            {page.isLocked ? <LockKeyhole size={13} aria-label="页面已锁定" /> : null}
+            <span>{headerPage.title}</span>
+            {headerPage.isLocked ? <LockKeyhole size={13} aria-label="页面已锁定" /> : null}
           </div>
           <div className="header-actions">
             {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
@@ -2572,37 +2723,37 @@ function DocumentWorkspace({
 
         <div className="document-scroll">
           <article
-            className={`document-sheet font-${page.fontStyle} ${page.isFullWidth ? 'page-full-width' : ''} ${page.isSmallText ? 'page-small-text' : ''} ${page.coverAttachmentId ? 'has-cover' : ''}`}
+            className={`document-sheet font-${headerPage.fontStyle} ${headerPage.isFullWidth ? 'page-full-width' : ''} ${headerPage.isSmallText ? 'page-small-text' : ''} ${headerPage.coverAttachmentId ? 'has-cover' : ''}`}
           >
-            {page.coverAttachmentId ? (
+            {headerPage.coverAttachmentId ? (
               <div className="page-cover">
-                <img src={attachmentDownloadUrl(page.coverAttachmentId)} alt="" />
+                <img src={attachmentDownloadUrl(headerPage.coverAttachmentId)} alt="" />
               </div>
             ) : null}
-            {page.icon ? (
-              canEditStructure && !renewTicket ? (
+            {headerPage.icon ? (
+              canEditStructure && !renewTicket && !isSwitching ? (
                 <button
                   className="page-icon-display"
                   type="button"
                   aria-label="修改页面图标"
                   onClick={() => setAppearanceDialogOpen(true)}
                 >
-                  {page.icon}
+                  {headerPage.icon}
                 </button>
               ) : (
-                <span className="page-icon-display static">{page.icon}</span>
+                <span className="page-icon-display static">{headerPage.icon}</span>
               )
             ) : null}
             {publicSite ? (
-              <PublicSiteBreadcrumbs site={publicSite} currentPageId={page.id} />
+              <PublicSiteBreadcrumbs site={publicSite} currentPageId={headerPage.id} />
             ) : (
               <div className="document-kicker">团队知识 / 协作原型</div>
             )}
-            {!renewTicket ? <PageBacklinks pageId={page.id} /> : null}
+            {!renewTicket && !isSwitching ? <PageBacklinks pageId={page.id} /> : null}
             <input
               className="title-input"
-              value={title}
-              readOnly={!canEdit}
+              value={isSwitching ? headerPage.title : title}
+              readOnly={!canEdit || isSwitching}
               onChange={(event) => {
                 const nextTitle = event.target.value;
                 setTitle(nextTitle);
@@ -2611,15 +2762,26 @@ function DocumentWorkspace({
               onBlur={() => void flushTitle()}
               aria-label="页面标题"
             />
-            {page.isLocked ? (
+            {page.isLocked && !isSwitching ? (
               <div className="page-lock-notice">
                 <LockKeyhole size={15} /> 页面已锁定，当前为只读模式
               </div>
             ) : null}
-            {database ? (
-              <DatabaseCanvas initialSnapshot={database} canEdit={canEdit} actorId={identity.id} />
+            {isSwitching ? (
+              <div className="editor-loading" aria-live="polite">
+                <div className="loading-mark" />
+                <span>正在打开页面…</span>
+              </div>
+            ) : database ? (
+              <DatabaseCanvas
+                key={page.id}
+                initialSnapshot={database}
+                canEdit={canEdit}
+                actorId={identity.id}
+              />
             ) : collab ? (
               <CollaborativeEditor
+                key={page.id}
                 collab={collab}
                 identity={identity}
                 onSelectionQuote={setCommentSelection}
@@ -2680,7 +2842,7 @@ function DocumentWorkspace({
             <CommentsPanel
               pageId={page.id}
               canComment={page.role !== 'viewer'}
-              focusedThreadId={initialCommentThreadId}
+              focusedThreadId={focusedCommentThreadId}
               selection={commentSelection}
               clearQuote={() => setCommentSelection(null)}
             />
@@ -3836,6 +3998,39 @@ function LoadingScreen({ message = '正在打开文档空间…' }: { message?: 
       <Brand />
       <div className="loading-mark" />
       <p>{message}</p>
+    </div>
+  );
+}
+
+function WorkspaceOpeningShell({ identity }: { identity: LocalIdentity }) {
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-top">
+          <Brand compact />
+        </div>
+        <div className="sidebar-nav">
+          <div className="page-tree-empty">正在加载页面…</div>
+        </div>
+        <div className="sidebar-footer">
+          <IdentityBubble identity={identity} compact />
+          <span>
+            <strong>{identity.name}</strong>
+            <small>Rdocs</small>
+          </span>
+        </div>
+      </aside>
+      <main className="document-area">
+        <header className="document-header" />
+        <div className="document-scroll">
+          <article className="document-sheet">
+            <div className="editor-loading" aria-live="polite">
+              <div className="loading-mark" />
+              <span>正在打开页面…</span>
+            </div>
+          </article>
+        </div>
+      </main>
     </div>
   );
 }
