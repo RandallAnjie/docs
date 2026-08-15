@@ -36,7 +36,11 @@ import {
   type SpaceAction,
 } from './access';
 import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
-import { deliverPageUpdateNotifications, handleCommentsAndNotificationsApi } from './comments';
+import {
+  deliverDueReminders,
+  deliverPageUpdateNotifications,
+  handleCommentsAndNotificationsApi,
+} from './comments';
 import { handleDatabasesApi, handlePublicDatabaseFormsApi } from './databases';
 import {
   cacheCollaborationPage,
@@ -4352,5 +4356,32 @@ export default {
       response.headers.set('x-request-id', requestId);
       return response;
     }
+  },
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    context: ExecutionContext,
+  ): Promise<void> {
+    context.waitUntil(
+      deliverDueReminders(env, null, 500)
+        .then((delivered) => {
+          console.log(
+            JSON.stringify({
+              level: 'info',
+              event: 'scheduled_reminders_delivered',
+              delivered,
+            }),
+          );
+        })
+        .catch((reason) => {
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              event: 'scheduled_reminder_delivery_failed',
+              message: reason instanceof Error ? reason.message : String(reason),
+            }),
+          );
+        }),
+    );
   },
 };

@@ -1,6 +1,7 @@
 import type {
   AuditEventSummary,
   AuthSessionResponse,
+  AuthUserSummary,
   AttachmentSummary,
   CollabTicketResponse,
   CommentThreadSummary,
@@ -24,6 +25,7 @@ import type {
   InvitationSummary,
   ListPagesResponse,
   ListRevisionsResponse,
+  NotificationGroupSummary,
   NotificationSummary,
   OrganizationAssignableRole,
   OrganizationMemberSummary,
@@ -35,6 +37,7 @@ import type {
   PageLinkPreview,
   PageNotificationMode,
   PageNotificationSettings,
+  PageReminderSummary,
   PageSearchSort,
   PageSearchResult,
   PageSummary,
@@ -637,12 +640,23 @@ export function listNotificationsView(
   view: NotificationView,
 ): Promise<{
   notifications: NotificationSummary[];
+  groups: NotificationGroupSummary[];
   unreadCount: number;
   resultCapReached: boolean;
 }> {
   const query = new URLSearchParams({ view });
   if (organizationId) query.set('organizationId', organizationId);
   return request(`/api/notifications?${query.toString()}`);
+}
+
+export function updateNotifications(
+  ids: string[],
+  input: { read?: boolean; archived?: boolean },
+): Promise<{ ok: true }> {
+  return request('/api/notifications', {
+    method: 'PATCH',
+    body: JSON.stringify({ ids, ...input }),
+  });
 }
 
 export function updateNotification(
@@ -691,6 +705,48 @@ export function setPageNotificationSettings(
     method: 'PUT',
     body: JSON.stringify({ mode }),
   });
+}
+
+export function listPageReminders(
+  pageId: string,
+): Promise<{ reminders: PageReminderSummary[]; recipients: AuthUserSummary[] }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/reminders`);
+}
+
+export function createPageReminder(
+  pageId: string,
+  input: {
+    recipientId: string;
+    message: string;
+    dueAt: number;
+    remindAt: number;
+    timezone: string;
+  },
+): Promise<{ reminders: PageReminderSummary[]; recipients: AuthUserSummary[] }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/reminders`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updatePageReminder(
+  reminderId: string,
+  input: {
+    recipientId: string;
+    message: string;
+    dueAt: number;
+    remindAt: number;
+    timezone: string;
+  },
+): Promise<{ reminders: PageReminderSummary[]; recipients: AuthUserSummary[] }> {
+  return request(`/api/reminders/${encodeURIComponent(reminderId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function cancelPageReminder(reminderId: string): Promise<{ ok: true }> {
+  return request(`/api/reminders/${encodeURIComponent(reminderId)}`, { method: 'DELETE' });
 }
 
 export async function uploadAttachment(

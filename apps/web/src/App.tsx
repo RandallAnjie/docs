@@ -144,7 +144,7 @@ import { DiscoveryDialog, type DiscoveryTab } from './DiscoveryDialog';
 import { EditorBlockHandle } from './EditorBlockHandle';
 import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
-import { NotificationBell, PageNotificationControl } from './NotificationBell';
+import { NotificationBell, PageNotificationControl, PageReminderControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
 import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
@@ -1721,6 +1721,7 @@ function DocumentWorkspace({
   publicShareToken?: string;
   initialDatabase?: DatabaseSnapshot | null;
 }) {
+  const initialCommentThreadId = new URLSearchParams(window.location.hash.slice(1)).get('comment');
   const [page, setPage] = useState(initialPage);
   const [pages, setPages] = useState(initialPages);
   const [title, setTitle] = useState(page.title);
@@ -1747,7 +1748,7 @@ function DocumentWorkspace({
   const [pageActionError, setPageActionError] = useState<string | null>(null);
   const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [contextPanelOpen, setContextPanelOpen] = useState(false);
+  const [contextPanelOpen, setContextPanelOpen] = useState(Boolean(initialCommentThreadId));
   const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
   const titleTimer = useRef<number | undefined>(undefined);
   const latestTitle = useRef(page.title);
@@ -2324,6 +2325,14 @@ function DocumentWorkspace({
             {onLogout && !renewTicket ? (
               <PageNotificationControl key={page.id} pageId={page.id} />
             ) : null}
+            {onLogout && !renewTicket ? (
+              <PageReminderControl
+                key={`reminders:${page.id}`}
+                pageId={page.id}
+                actorId={identity.id}
+                canCreate={canEdit}
+              />
+            ) : null}
             {!renewTicket ? (
               <button
                 className={`icon-button subtle header-comment-button ${contextPanelOpen ? 'active' : ''}`}
@@ -2533,6 +2542,7 @@ function DocumentWorkspace({
             <CommentsPanel
               pageId={page.id}
               canComment={page.role !== 'viewer'}
+              focusedThreadId={initialCommentThreadId}
               selection={commentSelection}
               clearQuote={() => setCommentSelection(null)}
             />

@@ -26,6 +26,7 @@
 | RF-8  | P1        | 待修复         | 低并发顺序请求间歇返回边缘 502/503                         |
 | RF-9  | P1        | 待平台确认     | 自定义域名转发后的 Worker `request.url` 不是公开 Origin    |
 | RF-10 | P1        | 待修复         | `d1 export` 产生无法直接恢复的 FTS5 影子表 SQL             |
+| RF-11 | P1 能力   | 缺少配置入口   | 应用无法声明或创建 cron schedule，后台提醒不能定时触发     |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
 
@@ -112,6 +113,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行同步块删除撤销迁移 `0025_synced_block_delete_undo.sql` 时第十八次复现：3 个删除操作字段、2 个部分索引和 85 个页面的 `editor_schema_version = 9` 均已正确落库，外键违规为 0，但第 25 条账本仍写成 `(25, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-OyE3vB/before-0025.sql`（178,082 bytes，SHA-256 `ee7f8a51cdfebc69d1964e3654d834910da3254d514b034e821c44f181edb028`）；因该导出同时暴露 RF-10，另生成并实际重放验证了 `/tmp/rdocs-db-backup-OyE3vB/before-0025-restorable.sql`（169,545 bytes，SHA-256 `3b2265b1f80a33f2e73d722fa4352a490376899396a7c607a203888c5524d764`）。只修复第 25 条 Rdocs 账本记录后，迁移列表 `0001`–`0025` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行提醒与分组收件箱迁移 `0026_page_reminders_and_inbox_groups.sql` 时第十九次复现：提醒表、索引和允许 `reminder` 类型的通知表重建均成功，生产库由 49 张表增加到 50 张表，85 个页面保持 `editor_schema_version = 9`，旧通知与订阅数量保持为 0，17 条全文索引记录完整且外键违规为 0，但第 26 条账本仍写成 `(26, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-UAzHPC/before-0026.sql`（178,309 bytes，SHA-256 `ed253e3ab2e571c68c44e32c06eaa80fcf5df784fcecbf187258f230be29b8ae`）；因 RF-10 另生成并实际重放及演练 `0026` 的 `/tmp/rdocs-db-backup-UAzHPC/before-0026-restorable.sql`（169,772 bytes，SHA-256 `b5d65787a737c3572fa984d541ebfae1a55cbb183fb789f16f14c92824dbee2c`）。只修复第 26 条 Rdocs 账本记录后，迁移列表 `0001`–`0026` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
@@ -139,7 +142,7 @@ object name reserved for internal use: page_search_fts_config
 
 ### Rdocs 本次安全处理
 
-原始导出保持不变并记录 SHA-256。另从恢复副本中精确剔除 70 行名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入。清理后的 SQL 已在独立 Node SQLite 中完整重放；SQLite 自动重建 5 张影子表，85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后也成功演练 `0025`。
+原始导出保持不变并记录 SHA-256。另从恢复副本中精确剔除 70 行名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入。清理后的 SQL 已在独立 Node SQLite 中完整重放；SQLite 自动重建 5 张影子表，85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后也分别成功演练 `0025` 和 `0026`。
 
 这只是 Rdocs 临时备份产物处理，没有修改 RandallFlare 代码、配置或生产数据导出实现。
 
@@ -149,6 +152,30 @@ object name reserved for internal use: page_search_fts_config
 - 如果平台选择导出 BLOB，必须使用可逆的 SQLite blob literal（例如 `X'...'`），不能走 JavaScript 默认字符串化。
 - 导出命令返回成功前，应在空白 SQLite 中自动重放并运行 `PRAGMA integrity_check` 与 `PRAGMA foreign_key_check`。
 - 增加包含 Unicode 文本、空索引、删除后段合并和多 segment 的 FTS5 恢复测试。
+
+## RF-11：缺少应用 cron schedule 的配置入口
+
+### 现象与影响
+
+Rdocs 已实现标准 Worker `scheduled()` 处理器，可批量扫描到期页面提醒、重新校验正式成员关系和页面 ACL，并使用唯一事件键幂等写入收件箱。当前只读检查：
+
+```text
+rrangler worker cron rdocs --limit 20
+→ 空列表
+```
+
+`rrangler worker cron --help` 只提供 schedule 列表和既有事件 replay，没有创建、更新或删除 schedule 的命令；项目 `rrangler.json` 也没有可声明 schedule 的字段。因此 Rdocs 无法在不修改 RandallFlare 平台的前提下，把后台处理器绑定到定时触发器。
+
+应用内已提供安全退化路径：每次读取收件箱时补投当前用户的到期提醒，打开页面期间前端约每 30 秒刷新一次，所以活跃用户仍可无感收到提醒。但用户完全离线且无人打开 Rdocs 时，没有事件触发 Worker，无法承诺准点进入收件箱；邮件、移动推送发送器则是另一个尚未接入的外部能力，不与本项混为一谈。
+
+### 所需能力与验收
+
+- 提供应用级 declarative schedule，或 `rrangler worker cron set/list/delete`，并让 Git build 可随确切 commit 原子激活配置。
+- schedule 必须可查看下一次执行时间、最近执行结果、重试次数和关联 request/event ID。
+- 至少支持分钟级 UTC cron；重复或重试投递时不得破坏 Worker 自身的幂等键语义。
+- 测试覆盖新增、修改、删除、回滚、同 commit 重建以及边缘版本尚未激活时的状态显示。
+
+Rdocs 没有修改 RandallFlare 代码或配置。平台提供上述入口后，只需为现有 `scheduled()` 处理器声明 schedule，无需放宽权限或恢复匿名身份。
 
 ## RF-9：自定义域名转发后的 Worker URL 与公开 Origin 不一致
 

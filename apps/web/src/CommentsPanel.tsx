@@ -13,11 +13,13 @@ import {
 export function CommentsPanel({
   pageId,
   canComment,
+  focusedThreadId,
   selection,
   clearQuote,
 }: {
   pageId: string;
   canComment: boolean;
+  focusedThreadId?: string | null;
   selection: { quotedText: string; anchorStart: string; anchorEnd: string } | null;
   clearQuote: () => void;
 }) {
@@ -49,6 +51,16 @@ export function CommentsPanel({
     const timer = window.setInterval(() => void load(true), 5_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!focusedThreadId || !threads.some((thread) => thread.id === focusedThreadId)) return;
+    const frame = window.requestAnimationFrame(() => {
+      document
+        .getElementById(`comment-thread-${focusedThreadId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusedThreadId, threads]);
 
   const create = async (event: FormEvent) => {
     event.preventDefault();
@@ -145,7 +157,11 @@ export function CommentsPanel({
       ) : threads.length ? (
         <div className="comment-threads">
           {threads.map((thread) => (
-            <article className={thread.status === 'resolved' ? 'resolved' : ''} key={thread.id}>
+            <article
+              id={`comment-thread-${thread.id}`}
+              className={`${thread.status === 'resolved' ? 'resolved' : ''} ${thread.id === focusedThreadId ? 'focused' : ''}`}
+              key={thread.id}
+            >
               {thread.quotedText ? (
                 <blockquote>
                   <Quote size={11} /> {thread.quotedText}
