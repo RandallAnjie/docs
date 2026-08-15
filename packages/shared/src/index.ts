@@ -393,6 +393,66 @@ export interface CalendarEventSummary {
   uid: string;
 }
 
+export interface SessionSummary {
+  createdAt: number;
+  current: boolean;
+  expiresAt: number;
+  id: string;
+  lastSeenAt: number;
+}
+
+export interface DeviceSummary {
+  backedUp: boolean;
+  createdAt: number;
+  credentialId: string;
+  deviceType: 'singleDevice' | 'multiDevice';
+  label: string;
+  lastUsedAt: number | null;
+}
+
+export interface WorkspaceTemplateSummary {
+  createdAt: number;
+  createdBy: string;
+  description: string;
+  id: string;
+  name: string;
+  pageId: string;
+  spaceId: string;
+}
+
+export interface WorkspaceSkillSummary {
+  createdAt: number;
+  createdBy: string;
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+export interface NotificationPreferences {
+  digestHour: number;
+  emailDigest: boolean;
+  emailMentions: boolean;
+  emailReminders: boolean;
+}
+
+export interface OAuthAppSummary {
+  clientId: string;
+  createdAt: number;
+  id: string;
+  name: string;
+  redirectUris: string[];
+  revokedAt: number | null;
+  scopes: string[];
+}
+
+export interface DirectoryPerson {
+  avatarUrl: string | null;
+  displayName: string;
+  email: string;
+  role: OrganizationRole;
+  userId: string;
+}
+
 export interface DatabaseAutomationRunSummary {
   id: string;
   databaseId: string;

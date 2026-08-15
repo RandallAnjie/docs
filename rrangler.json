@@ -17,7 +17,7 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "DocumentRoom",
+        "name": "DOCUMENTROOM",
         "class_name": "DocumentRoom"
       }
     ]
@@ -29,7 +29,7 @@
     "PASSKEY_ORIGIN": "https://docs.bigrandall.io",
     "PASSKEY_RP_ID": "docs.bigrandall.io",
     "AI_API_BASE": "https://token.bigrandall.io/v1",
-    "MAIL_FROM": "noreply@docs.bigrandall.io"
+    "MAIL_FROM": "noreply@rf.bigrandall.io"
   },
   "send_email": [{ "name": "EMAIL" }],
   "triggers": { "crons": ["* * * * *"] },

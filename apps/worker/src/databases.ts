@@ -276,6 +276,30 @@ function jsonObject(value: unknown): Record<string, JsonValue> | null {
   }
 }
 
+function splitCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === ',' && !quoted) {
+      cells.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
 function parsedObject(value: string): Record<string, JsonValue> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -4295,6 +4319,61 @@ export async function handleDatabasesApi(
     return authorization
       ? duplicateRow(env, authorization, rowId, actor)
       : error('数据库不存在或无权编辑', 404);
+  }
+
+  const csvImportMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/import\/csv$/);
+  if (csvImportMatch?.[1] && request.method === 'POST') {
+    const databaseId = decodeURIComponent(csvImportMatch[1]);
+    if (!isPageId(databaseId)) return error('数据库 ID 无效', 400);
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+    if (!authorization) return error('数据库不存在或无权导入', 404);
+    const text = await request.text();
+    if (!text.trim() || text.length > 1_000_000) return error('CSV 为空或超过 1 MB', 400);
+    const lines = text
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const header = lines.shift();
+    if (!header) return error('CSV 没有表头', 400);
+    const names = splitCsvLine(header);
+    const properties = (await snapshot(env, authorization, actor.id)).properties;
+    const columns = names.map((name) =>
+      properties.find((property) => property.name === name || property.id === name),
+    );
+    if (!columns.some(Boolean)) return error('CSV 表头没有匹配的属性', 400);
+    let imported = 0;
+    for (const line of lines.slice(0, 200)) {
+      const cells = splitCsvLine(line);
+      const values: Record<string, JsonValue> = {};
+      for (const [index, property] of columns.entries()) {
+        if (!property) continue;
+        const raw = cells[index] ?? '';
+        values[property.id] =
+          property.type === 'number'
+            ? Number(raw) || 0
+            : property.type === 'checkbox'
+              ? ['true', '1', 'yes', '是'].includes(raw.toLowerCase())
+              : property.type === 'multi_select'
+                ? raw
+                    .split(',')
+                    .map((item) => item.trim())
+                    .filter(Boolean)
+                : raw;
+      }
+      const created = await createRow(
+        new Request('https://rdocs.internal/api/database-import', {
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+          body: JSON.stringify({ values }),
+        }),
+        env,
+        authorization,
+        actor,
+      );
+      if (created.ok) imported += 1;
+    }
+    return json({ imported }, { status: imported ? 201 : 400 });
   }
 
   const rowsMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/rows$/);

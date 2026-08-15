@@ -1673,6 +1673,147 @@ export async function runPageAi(
   throw new Error(body?.error ?? `AI 请求失败（${response.status}）`);
 }
 
+export function listSessions() {
+  return request<{ sessions: import('@rdocs/shared').SessionSummary[] }>('/api/me/sessions');
+}
+
+export function revokeSession(sessionId: string) {
+  return request<{ ok: true }>(`/api/me/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listDevices() {
+  return request<{ devices: import('@rdocs/shared').DeviceSummary[] }>('/api/me/devices');
+}
+
+export function revokeDevice(credentialId: string) {
+  return request<{ ok: true }>(`/api/me/devices/${encodeURIComponent(credentialId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listWorkspaceTemplates(organizationId: string) {
+  return request<{ templates: import('@rdocs/shared').WorkspaceTemplateSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/templates`,
+  );
+}
+
+export function publishWorkspaceTemplate(
+  organizationId: string,
+  input: { description?: string; name: string; pageId: string },
+) {
+  return request<{ id: string }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/templates`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function instantiateWorkspaceTemplate(templateId: string) {
+  return request<{ sourcePageId: string; spaceId: string; title: string }>(
+    `/api/templates/${encodeURIComponent(templateId)}/instantiate`,
+    { method: 'POST' },
+  );
+}
+
+export function listWorkspaceSkills(organizationId: string) {
+  return request<{ skills: import('@rdocs/shared').WorkspaceSkillSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/skills`,
+  );
+}
+
+export function createWorkspaceSkill(
+  organizationId: string,
+  input: { name: string; prompt: string },
+) {
+  return request<{ id: string }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/skills`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function deleteWorkspaceSkill(organizationId: string, skillId: string) {
+  return request<{ ok: true }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/skills/${encodeURIComponent(skillId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function getNotificationPreferences(organizationId: string) {
+  return request<{ preferences: import('@rdocs/shared').NotificationPreferences }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/notification-preferences`,
+  );
+}
+
+export function updateNotificationPreferences(
+  organizationId: string,
+  input: Partial<import('@rdocs/shared').NotificationPreferences>,
+) {
+  return request<{ preferences: import('@rdocs/shared').NotificationPreferences }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/notification-preferences`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function listDirectory(organizationId: string, query = '') {
+  const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
+  return request<{ people: import('@rdocs/shared').DirectoryPerson[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/directory${suffix}`,
+  );
+}
+
+export function listOAuthApps(organizationId: string) {
+  return request<{ apps: import('@rdocs/shared').OAuthAppSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/oauth-apps`,
+  );
+}
+
+export function createOAuthApp(
+  organizationId: string,
+  input: { name: string; redirectUri: string },
+) {
+  return request<{ clientId: string; clientSecret: string; id: string }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/oauth-apps`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function getLinkedDatabase(pageId: string) {
+  return request<{ databaseId: string | null }>(
+    `/api/pages/${encodeURIComponent(pageId)}/linked-database`,
+  );
+}
+
+export function setLinkedDatabase(pageId: string, databaseId: string) {
+  return request<{ databaseId: string }>(
+    `/api/pages/${encodeURIComponent(pageId)}/linked-database`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ databaseId }),
+    },
+  );
+}
+
+export async function importDatabaseCsv(
+  databaseId: string,
+  file: File,
+): Promise<{ imported: number }> {
+  const response = await fetch(`/api/databases/${encodeURIComponent(databaseId)}/import/csv`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/csv; charset=utf-8' },
+    body: await file.text(),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    error?: string;
+    imported?: number;
+  } | null;
+  if (!response.ok) throw new Error(body?.error ?? `导入失败（${response.status}）`);
+  return { imported: body?.imported ?? 0 };
+}
+
 export function listOfflinePins(organizationId: string) {
   return request<{ pins: import('@rdocs/shared').OfflinePinSummary[] }>(
     `/api/offline-pins?organizationId=${encodeURIComponent(organizationId)}`,

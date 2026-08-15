@@ -112,6 +112,7 @@ const MIGRATIONS = [
   '0029_notion_parity_platform.sql',
   '0030_notion_completion.sql',
   '0031_rf_email_inbound.sql',
+  '0032_workspace_extras.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -217,7 +218,7 @@ describe('database migrations', () => {
           "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
         )
         .get(),
-    ).toMatchObject({ total: 13 });
+    ).toMatchObject({ total: 14 });
     const rolloutOwner = seedTenant(database, 'rollout-guard');
     const seed = {
       id: 'page_rollout_parent',

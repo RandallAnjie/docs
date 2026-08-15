@@ -130,6 +130,8 @@ import {
   searchPages,
   getAuthSession,
   getCollabTicket,
+  getDatabase,
+  getLinkedDatabase,
   getPageDatabase,
   getPage,
   getPublicSite,
@@ -140,6 +142,9 @@ import {
   logout,
   importMarkdown,
   importMarkdownZip,
+  listOrganizationDatabases,
+  publishWorkspaceTemplate,
+  setLinkedDatabase,
   transcribePageAudio,
   movePage,
   recordPublicSiteEvent,
@@ -1694,7 +1699,11 @@ function Workspace({
         const [{ ticket }, { pages }, database] = await Promise.all([
           getCollabTicket(pageId, identity),
           listPages(page.spaceId),
-          getPageDatabase(pageId),
+          getPageDatabase(pageId).then(async (owned) => {
+            if (owned) return owned;
+            const linked = await getLinkedDatabase(pageId).catch(() => ({ databaseId: null }));
+            return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
+          }),
         ]);
         if (active) {
           setBootstrap({
@@ -2376,7 +2385,15 @@ function DocumentWorkspace({
           renewTicket
             ? renewTicket().then((nextTicket) => ({ ticket: nextTicket }))
             : getCollabTicket(requestedPageId, identity),
-          getPageDatabase(requestedPageId).catch(() => null),
+          getPageDatabase(requestedPageId)
+            .catch(() => null)
+            .then(async (owned) => {
+              if (owned) return owned;
+              const linked = await getLinkedDatabase(requestedPageId).catch(() => ({
+                databaseId: null,
+              }));
+              return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
+            }),
         ]);
         let nextPages = pagesRef.current;
         if (nextPage.spaceId !== pageRef.current.spaceId) {
@@ -2885,6 +2902,67 @@ function DocumentWorkspace({
                   }}
                 >
                   <Music2 size={15} /> 上传会议录音
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    void promptDialog({
+                      title: '发布为模板',
+                      message: '这个页面会进入组织模板目录，其他成员可以复制使用。',
+                      label: '模板名称',
+                      defaultValue: page.title,
+                    }).then((name) => {
+                      if (!name) return;
+                      setPageActionBusy(true);
+                      void publishWorkspaceTemplate(page.organizationId, {
+                        name,
+                        pageId: page.id,
+                      })
+                        .catch((reason: unknown) =>
+                          setPageActionError(
+                            reason instanceof Error ? reason.message : '无法发布模板',
+                          ),
+                        )
+                        .finally(() => setPageActionBusy(false));
+                    });
+                  }}
+                >
+                  <FileText size={15} /> 发布为模板
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    void listOrganizationDatabases(page.organizationId).then(async (result) => {
+                      const names = result.databases
+                        .map((item) => `${item.title} (${item.id.slice(0, 8)})`)
+                        .join('\n');
+                      const picked = await promptDialog({
+                        title: '链接已有数据库',
+                        message: names || '当前组织还没有数据库。',
+                        label: '数据库 ID',
+                      });
+                      if (!picked) return;
+                      const match =
+                        result.databases.find((item) => item.id === picked.trim()) ??
+                        result.databases.find((item) => item.id.startsWith(picked.trim()));
+                      if (!match) {
+                        setPageActionError('找不到这个数据库');
+                        return;
+                      }
+                      setPageActionBusy(true);
+                      void setLinkedDatabase(page.id, match.id)
+                        .catch((reason: unknown) =>
+                          setPageActionError(
+                            reason instanceof Error ? reason.message : '无法链接数据库',
+                          ),
+                        )
+                        .finally(() => setPageActionBusy(false));
+                    });
+                  }}
+                >
+                  <Table2 size={15} /> 链接数据库
                 </button>
                 <button
                   type="button"

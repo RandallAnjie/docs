@@ -15,6 +15,7 @@ import type {
 import { findActiveMembership, requirePageAction, resolvePageAccess } from './access';
 import { appOrigin, emailUsers, notificationEmailBodies, queueOutboundEmail } from './email';
 import type { Env } from './env';
+import { notificationPreferences } from './workspace-extras';
 
 const MAX_COMMENT_LENGTH = 5_000;
 const MAX_QUOTE_LENGTH = 500;
@@ -448,6 +449,12 @@ export async function deliverDueReminders(
     ]);
     if (result[1]?.meta.changes) {
       delivered += 1;
+      const prefs = await notificationPreferences(
+        env,
+        reminder.organization_id,
+        reminder.recipient_id,
+      );
+      if (!prefs.emailReminders) continue;
       const page = await env.DB.prepare('SELECT title FROM pages WHERE id = ?')
         .bind(reminder.page_id)
         .first<{ title: string }>();
@@ -863,6 +870,8 @@ async function emailNotificationRecipients(
   for (const userId of mentionIds) {
     const user = users.get(userId);
     if (!user) continue;
+    const prefs = await notificationPreferences(env, input.organizationId, userId);
+    if (!prefs.emailMentions) continue;
     const bodies = notificationEmailBodies({
       actorName: input.actorName,
       kind: 'mention',

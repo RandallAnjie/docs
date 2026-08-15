@@ -1,3 +1,4 @@
+import { durableRooms } from './durable-rooms';
 import type { Env } from './env';
 
 interface SyncedBlockRoomRow {
@@ -6,10 +7,9 @@ interface SyncedBlockRoomRow {
 }
 
 function room(env: Env, block: SyncedBlockRoomRow): DurableObjectStub {
-  return env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(
-      `synced-block:${block.id}:generation:${Number(block.current_generation)}`,
-    ),
+  const rooms = durableRooms(env);
+  return rooms.get(
+    rooms.idFromName(`synced-block:${block.id}:generation:${Number(block.current_generation)}`),
   );
 }
 

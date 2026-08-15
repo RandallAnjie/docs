@@ -22,6 +22,7 @@ import { confirmDialog } from './dialogs';
 import { GroupSettings } from './GroupSettings';
 import { OrganizationActivity } from './OrganizationActivity';
 import { PlatformSettings } from './PlatformSettings';
+import { WorkspaceExtras } from './WorkspaceExtras';
 
 const ROLE_LABELS: Record<OrganizationRole, string> = {
   owner: '所有者',
@@ -390,6 +391,7 @@ export function OrganizationSettings({
         canManage={canManage}
       />
       {canManage ? <OrganizationActivity organizationId={organization.id} /> : null}
+      <WorkspaceExtras organizationId={organization.id} canManage={canManage} />
       <PlatformSettings organizationId={organization.id} canManage={canManage} />
 
       {error ? (
