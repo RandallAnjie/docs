@@ -100,6 +100,106 @@ export interface PageSummary {
   role?: SpaceRole;
 }
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export type DatabasePropertyType =
+  | 'title'
+  | 'text'
+  | 'number'
+  | 'select'
+  | 'status'
+  | 'multi_select'
+  | 'date'
+  | 'formula'
+  | 'relation'
+  | 'rollup'
+  | 'person'
+  | 'files'
+  | 'checkbox'
+  | 'url'
+  | 'email'
+  | 'phone'
+  | 'created_time'
+  | 'created_by'
+  | 'last_edited_time'
+  | 'last_edited_by'
+  | 'button'
+  | 'unique_id'
+  | 'place';
+
+export type DatabaseViewType =
+  | 'table'
+  | 'board'
+  | 'timeline'
+  | 'calendar'
+  | 'list'
+  | 'gallery'
+  | 'chart'
+  | 'dashboard'
+  | 'form'
+  | 'feed'
+  | 'map';
+
+export interface DatabasePropertySummary {
+  id: string;
+  databaseId: string;
+  name: string;
+  type: DatabasePropertyType;
+  config: Record<string, JsonValue>;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DatabaseViewSummary {
+  id: string;
+  databaseId: string;
+  name: string;
+  type: DatabaseViewType;
+  config: Record<string, JsonValue>;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DatabaseRowSummary {
+  id: string;
+  databaseId: string;
+  pageId: string;
+  sortKey: string;
+  values: Record<string, JsonValue>;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt: number | null;
+}
+
+export interface DatabaseSummary {
+  id: string;
+  organizationId: string;
+  pageId: string;
+  title: string;
+  isLocked: boolean;
+  role: SpaceRole;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DatabaseSnapshot {
+  database: DatabaseSummary;
+  properties: DatabasePropertySummary[];
+  views: DatabaseViewSummary[];
+  rows: DatabaseRowSummary[];
+}
+
+export interface CreateDatabaseResponse extends DatabaseSnapshot {
+  page: PageSummary;
+}
+
 export interface TrashedPageSummary extends PageSummary {
   deletedAt: number;
 }

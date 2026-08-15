@@ -79,6 +79,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 发布完整权限系统时，`0009_complete_permissions.sql` 再次复现相同行为：CLI 报告 migration 已应用，schema 和数据变更也已生效，但生产导出显示第 9 行仍为 `(9, NULL, NULL)`。Rdocs 在迁移前保存了完整 33 表备份，只把 `rdocs-db.d1_migrations` 第 9 行修复为实际文件名；随后 `migrations list` 显示 `0001`–`0009` 全部已应用，Owner、真实设备密钥和页面均保留，系统账号组织成员关系已删除，`pragma_foreign_key_check` 为 0。
 
+同日执行数据库内核迁移 `0010_databases.sql` 时，即使 RandallFlare 已反馈修复，问题仍第三次复现：CLI 报告成功、生产导出从 33 张表增加到 39 张表，但账本新增 `(10, NULL, NULL)`，`migrations list` 继续显示 `0010` 未应用。Rdocs 已在执行前完整导出 33 张表到 `/tmp/rdocs-db-backup-e8P3J3/before-0010.sql`，确认新表和外键正常后，仅把第 10 行更新为 `0010_databases.sql`；随后迁移列表 `0001`–`0010` 全部为已应用。没有修改 RandallFlare 平台代码。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

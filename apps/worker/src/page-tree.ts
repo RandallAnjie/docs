@@ -80,16 +80,26 @@ export async function listPages(env: Env, spaceId: string, userId: string): Prom
 
   const rows = (
     await env.DB.prepare(
-      `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+      `WITH RECURSIVE database_row_subtree(id) AS (
+         SELECT r.page_id
+           FROM database_rows r
+          WHERE r.organization_id = ? AND r.archived_at IS NULL
+         UNION ALL
+         SELECT child.id
+           FROM pages child JOIN database_row_subtree parent ON child.parent_id = parent.id
+          WHERE child.deleted_at IS NULL
+       )
+       SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version, a.access_mode
          FROM pages p
          JOIN page_access_state a ON a.page_id = p.id
         WHERE p.organization_id = ? AND p.space_id = ? AND p.deleted_at IS NULL
+          AND p.id NOT IN (SELECT id FROM database_row_subtree)
         ORDER BY p.sort_key ASC, p.id ASC
         LIMIT ?`,
     )
-      .bind(access.organizationId, spaceId, MAX_PAGE_TREE_SIZE)
+      .bind(access.organizationId, access.organizationId, spaceId, MAX_PAGE_TREE_SIZE)
       .all<PageTreeRow>()
   ).results;
 

@@ -6,6 +6,13 @@ import type {
   CommentThreadSummary,
   CreatePageResponse,
   CreateRevisionResponse,
+  DatabasePropertySummary,
+  DatabasePropertyType,
+  DatabaseRowSummary,
+  DatabaseSnapshot,
+  DatabaseSummary,
+  DatabaseViewSummary,
+  DatabaseViewType,
   FavoritePageResult,
   GroupSummary,
   InvitationSummary,
@@ -30,6 +37,7 @@ import type {
   SpaceSummary,
   SpaceVisibility,
   TrashedPageSummary,
+  JsonValue,
 } from '@rdocs/shared';
 import type {
   AuthenticationResponseJSON,
@@ -220,6 +228,139 @@ export function revokeShareLink(shareLinkId: string): Promise<{ ok: true; revoke
 
 export function getPage(pageId: string): Promise<{ page: PageSummary }> {
   return request(`/api/pages/${encodeURIComponent(pageId)}`);
+}
+
+export async function getPageDatabase(pageId: string): Promise<DatabaseSnapshot | null> {
+  const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/database`);
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event('rdocs:auth-required'));
+    const responseBody = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(responseBody?.error ?? `数据库加载失败（${response.status}）`);
+  }
+  return (await response.json()) as DatabaseSnapshot;
+}
+
+export function createPageDatabase(
+  pageId: string,
+  titlePropertyName = '名称',
+): Promise<DatabaseSnapshot> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/database`, {
+    method: 'POST',
+    body: JSON.stringify({ titlePropertyName }),
+  });
+}
+
+export function getDatabase(databaseId: string): Promise<DatabaseSnapshot> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}`);
+}
+
+export function updateDatabase(
+  databaseId: string,
+  input: { title?: string; isLocked?: boolean },
+): Promise<{ database: DatabaseSummary }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function createDatabaseProperty(
+  databaseId: string,
+  input: {
+    name: string;
+    type: DatabasePropertyType;
+    config?: Record<string, JsonValue>;
+  },
+): Promise<{ property: DatabasePropertySummary }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/properties`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateDatabaseProperty(
+  databaseId: string,
+  propertyId: string,
+  input: { name?: string; config?: Record<string, JsonValue> },
+): Promise<{ property: DatabasePropertySummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/properties/${encodeURIComponent(propertyId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteDatabaseProperty(
+  databaseId: string,
+  propertyId: string,
+): Promise<{ ok: true }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/properties/${encodeURIComponent(propertyId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function createDatabaseView(
+  databaseId: string,
+  input: { name: string; type: DatabaseViewType; config?: Record<string, JsonValue> },
+): Promise<{ view: DatabaseViewSummary }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/views`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateDatabaseView(
+  databaseId: string,
+  viewId: string,
+  input: {
+    name?: string;
+    type?: DatabaseViewType;
+    config?: Record<string, JsonValue>;
+  },
+): Promise<{ view: DatabaseViewSummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/views/${encodeURIComponent(viewId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteDatabaseView(databaseId: string, viewId: string): Promise<{ ok: true }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/views/${encodeURIComponent(viewId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function createDatabaseRow(
+  databaseId: string,
+  values: Record<string, JsonValue>,
+): Promise<{ row: DatabaseRowSummary }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/rows`, {
+    method: 'POST',
+    body: JSON.stringify({ values }),
+  });
+}
+
+export function updateDatabaseRow(
+  databaseId: string,
+  rowId: string,
+  input: { values?: Record<string, JsonValue>; archived?: boolean },
+): Promise<{ row?: DatabaseRowSummary; ok?: true; archived?: boolean }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteDatabaseRow(
+  databaseId: string,
+  rowId: string,
+): Promise<{ ok: true; archived: true }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}`,
+    { method: 'DELETE' },
+  );
 }
 
 export function listAttachments(pageId: string): Promise<{ attachments: AttachmentSummary[] }> {

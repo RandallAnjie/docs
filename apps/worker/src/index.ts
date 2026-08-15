@@ -30,6 +30,7 @@ import {
 } from './access';
 import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
 import { handleCommentsAndNotificationsApi } from './comments';
+import { handleDatabasesApi } from './databases';
 import {
   cacheCollaborationPage,
   getCachedCollaborationPage,
@@ -2455,6 +2456,8 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (tenancyResponse) return tenancyResponse;
   const commentsResponse = await handleCommentsAndNotificationsApi(request, env, actor);
   if (commentsResponse) return commentsResponse;
+  const databasesResponse = await handleDatabasesApi(request, env, actor);
+  if (databasesResponse) return databasesResponse;
 
   if (url.pathname === '/api/search' && request.method === 'GET') {
     const organizationId = url.searchParams.get('organizationId') ?? '';
