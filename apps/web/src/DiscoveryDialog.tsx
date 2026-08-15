@@ -60,6 +60,7 @@ function updateText(update: PageUpdateSummary): string {
     'page.restored': '恢复了页面',
     'synced_block.created': '创建了同步块',
     'synced_block.deleted_all': '删除了原始同步块及副本',
+    'synced_block.restored_all': '撤销了同步块级联删除',
     'synced_block.unsynced_all': '取消了全部同步',
   };
   return `${actor} ${labels[update.eventType] ?? '更新了页面'}`;

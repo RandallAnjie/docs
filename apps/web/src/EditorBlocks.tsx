@@ -10,7 +10,7 @@ import {
   type BreadcrumbItem,
   type PageLinkContext,
 } from './PageUtilityBlocks';
-import { syncedBlockExtension, type SyncedBlockContext } from './SyncedBlock';
+import { syncedBlockExtensions, type SyncedBlockContext } from './SyncedBlock';
 
 export interface EmbedTarget {
   originalUrl: string;
@@ -427,7 +427,7 @@ export function createRdocsEditorBlocks(
     ColumnBlock,
     ...attachmentEditorBlocks,
     ...pageUtilityEditorBlocks(getBreadcrumbItems, getPageLinkContext),
-    syncedBlockExtension(getSyncedBlockContext),
+    ...syncedBlockExtensions(getSyncedBlockContext),
   ];
 }
 

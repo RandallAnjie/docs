@@ -192,6 +192,57 @@ export function documentSyncedBlockIds(document: Y.Doc): string[] {
   return [...ids].sort();
 }
 
+export function documentSyncedBlockResourceIds(document: Y.Doc): string[] {
+  let fragment: Y.XmlFragment;
+  try {
+    fragment = document.getXmlFragment('default');
+  } catch {
+    return [];
+  }
+  const ids = new Set<string>();
+  const visit = (type: Y.XmlFragment | Y.XmlElement) => {
+    for (const child of type.toArray()) {
+      if (!(child instanceof Y.XmlElement)) continue;
+      if (child.nodeName === 'syncedBlock' || child.nodeName === 'deletedSyncedBlock') {
+        const id = child.getAttribute('syncedBlockId') ?? '';
+        if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id)) ids.add(id);
+      }
+      visit(child);
+    }
+  };
+  visit(fragment);
+  return [...ids].sort();
+}
+
+export function documentDeletedSyncedBlockCount(
+  document: Y.Doc,
+  blockId: string,
+  operationId: string,
+): number {
+  let fragment: Y.XmlFragment;
+  try {
+    fragment = document.getXmlFragment('default');
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  const visit = (type: Y.XmlFragment | Y.XmlElement) => {
+    for (const child of type.toArray()) {
+      if (!(child instanceof Y.XmlElement)) continue;
+      if (
+        child.nodeName === 'deletedSyncedBlock' &&
+        child.getAttribute('syncedBlockId') === blockId &&
+        child.getAttribute('deletionOperationId') === operationId
+      ) {
+        count += 1;
+      }
+      visit(child);
+    }
+  };
+  visit(fragment);
+  return count;
+}
+
 export function documentPageLinkIds(document: Y.Doc): string[] {
   let fragment: Y.XmlFragment;
   try {
@@ -224,7 +275,12 @@ export function documentContainsSyncedBlock(document: Y.Doc): boolean {
   const visit = (type: Y.XmlFragment | Y.XmlElement): boolean => {
     for (const child of type.toArray()) {
       if (!(child instanceof Y.XmlElement)) continue;
-      if (child.nodeName === 'syncedBlock' || visit(child)) return true;
+      if (
+        child.nodeName === 'syncedBlock' ||
+        child.nodeName === 'deletedSyncedBlock' ||
+        visit(child)
+      )
+        return true;
     }
     return false;
   };
@@ -279,6 +335,75 @@ export function syncedBlockUnsyncUpdate(
     working.destroy();
     source.destroy();
   }
+}
+
+function syncedBlockPlaceholderUpdate(
+  target: Y.Doc,
+  blockId: string,
+  operationId: string,
+  direction: 'delete' | 'restore',
+): { replacements: number; remaining: number; update: Uint8Array } {
+  const working = new Y.Doc();
+  try {
+    Y.applyUpdate(working, Y.encodeStateAsUpdate(target), 'synced-block-placeholder-working-copy');
+    const sourceName = direction === 'delete' ? 'syncedBlock' : 'deletedSyncedBlock';
+    const targetName = direction === 'delete' ? 'deletedSyncedBlock' : 'syncedBlock';
+    const targets: Array<{ index: number; parent: Y.XmlElement | Y.XmlFragment }> = [];
+    const visit = (parent: Y.XmlElement | Y.XmlFragment) => {
+      parent.toArray().forEach((child, index) => {
+        if (!(child instanceof Y.XmlElement)) return;
+        if (
+          child.nodeName === sourceName &&
+          child.getAttribute('syncedBlockId') === blockId &&
+          (direction === 'delete' || child.getAttribute('deletionOperationId') === operationId)
+        ) {
+          targets.push({ index, parent });
+          return;
+        }
+        visit(child);
+      });
+    };
+    visit(working.getXmlFragment('default'));
+    working.transact(() => {
+      for (const { parent, index } of [...targets].sort(
+        (left, right) => right.index - left.index,
+      )) {
+        const replacement = new Y.XmlElement(targetName);
+        replacement.setAttribute('syncedBlockId', blockId);
+        if (direction === 'delete') {
+          replacement.setAttribute('deletionOperationId', operationId);
+        }
+        parent.delete(index, 1);
+        parent.insert(index, [replacement]);
+      }
+    }, `synced-block-${direction}`);
+    return {
+      replacements: targets.length,
+      remaining:
+        direction === 'delete'
+          ? documentSyncedBlockIds(working).filter((id) => id === blockId).length
+          : documentDeletedSyncedBlockCount(working, blockId, operationId),
+      update: Y.encodeStateAsUpdate(working, Y.encodeStateVector(target)),
+    };
+  } finally {
+    working.destroy();
+  }
+}
+
+export function syncedBlockDeleteUpdate(
+  target: Y.Doc,
+  blockId: string,
+  operationId: string,
+): { replacements: number; remaining: number; update: Uint8Array } {
+  return syncedBlockPlaceholderUpdate(target, blockId, operationId, 'delete');
+}
+
+export function syncedBlockRestoreUpdate(
+  target: Y.Doc,
+  blockId: string,
+  operationId: string,
+): { replacements: number; remaining: number; update: Uint8Array } {
+  return syncedBlockPlaceholderUpdate(target, blockId, operationId, 'restore');
 }
 
 async function normalizeBinaryMessage(rawMessage: unknown): Promise<Uint8Array | null> {
@@ -460,6 +585,28 @@ export class DocumentRoom {
       return task;
     }
 
+    if (url.pathname === '/internal/delete-synced-block' && request.method === 'POST') {
+      const task = this.messageQueue.then(() =>
+        this.mutateSyncedBlockPlaceholder(request, 'delete'),
+      );
+      this.messageQueue = task.then(
+        () => undefined,
+        () => undefined,
+      );
+      return task;
+    }
+
+    if (url.pathname === '/internal/restore-synced-block' && request.method === 'POST') {
+      const task = this.messageQueue.then(() =>
+        this.mutateSyncedBlockPlaceholder(request, 'restore'),
+      );
+      this.messageQueue = task.then(
+        () => undefined,
+        () => undefined,
+      );
+      return task;
+    }
+
     if (url.pathname === '/internal/contains-synced-block' && request.method === 'POST') {
       const blockId = request.headers.get('x-rdocs-synced-block-id') ?? '';
       const task = this.messageQueue.then(() =>
@@ -573,6 +720,9 @@ export class DocumentRoom {
       await this.persistUpdate(clientUpdate, actorId);
       Y.applyUpdate(this.document, clientUpdate, 'http-sync');
       this.broadcast(syncMessage(SYNC_UPDATE, clientUpdate));
+      if (resourceKind === 'page') {
+        await this.enforceSyncedBlockDeletionFences(pageId, actorId);
+      }
       await this.maybeCreateSnapshot();
       if (resourceKind === 'page') {
         await this.afterDocumentChange(pageId, generation, actorId);
@@ -673,6 +823,54 @@ export class DocumentRoom {
     return Response.json({ ok: true, replacements: result.replacements });
   }
 
+  private async mutateSyncedBlockPlaceholder(
+    request: Request,
+    direction: 'delete' | 'restore',
+  ): Promise<Response> {
+    const blockId = request.headers.get('x-rdocs-synced-block-id') ?? '';
+    const operationId = request.headers.get('x-rdocs-deletion-operation-id') ?? '';
+    const pageId = request.headers.get('x-rdocs-page-id') ?? '';
+    const generation = Number(request.headers.get('x-rdocs-generation'));
+    const actorId = request.headers.get('x-rdocs-actor-id') ?? '';
+    if (
+      !blockId ||
+      !operationId ||
+      !pageId ||
+      !actorId ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1
+    ) {
+      return new Response('Invalid synced block placeholder request', { status: 400 });
+    }
+    const result =
+      direction === 'delete'
+        ? syncedBlockDeleteUpdate(this.document, blockId, operationId)
+        : syncedBlockRestoreUpdate(this.document, blockId, operationId);
+    if (!result.replacements || !yjsUpdateChangesDocument(this.document, result.update)) {
+      await this.maybeUpdateSyncedBlockReferences(pageId, true);
+      await this.maybeUpdatePageLinks(pageId, true);
+      return Response.json({
+        ok: true,
+        replacements: 0,
+        remaining: result.remaining,
+      });
+    }
+    await this.beforeDocumentChange(pageId, generation, actorId);
+    await this.persistUpdate(result.update, actorId);
+    Y.applyUpdate(this.document, result.update, `synced-block-${direction}`);
+    this.broadcast(syncMessage(SYNC_UPDATE, result.update));
+    await this.maybeCreateSnapshot();
+    await this.afterDocumentChange(pageId, generation, actorId);
+    await this.maybeUpdateSearchProjection(pageId, generation);
+    await this.maybeUpdateSyncedBlockReferences(pageId, true);
+    await this.maybeUpdatePageLinks(pageId, true);
+    return Response.json({
+      ok: true,
+      replacements: result.replacements,
+      remaining: result.remaining,
+    });
+  }
+
   async webSocketMessage(socket: WebSocket, rawMessage: unknown): Promise<void> {
     await this.ready;
     const message = await normalizeBinaryMessage(rawMessage);
@@ -744,6 +942,9 @@ export class DocumentRoom {
     await this.persistUpdate(update, attachment.actorId);
     Y.applyUpdate(this.document, update, socket);
     this.broadcast(syncMessage(SYNC_UPDATE, update), socket);
+    if (attachment.resourceKind === 'page') {
+      await this.enforceSyncedBlockDeletionFences(attachment.pageId, attachment.actorId);
+    }
     await this.maybeCreateSnapshot();
     if (attachment.resourceKind === 'page') {
       await this.afterDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
@@ -839,7 +1040,7 @@ export class DocumentRoom {
 
   private async maybeUpdateSyncedBlockReferences(pageId: string, force = false): Promise<void> {
     if (!pageId) return;
-    const ids = documentSyncedBlockIds(this.document);
+    const ids = documentSyncedBlockResourceIds(this.document);
     const signature = ids.join(',');
     if (!force && (await this.roomMetaValue('synced_block_reference_ids')) === signature) return;
     const page = await this.env.DB.prepare(
@@ -857,8 +1058,11 @@ export class DocumentRoom {
              synced_block_id, page_id, first_seen_at, last_seen_at
            )
            SELECT b.id, ?, ?, ? FROM synced_blocks b
-            WHERE b.id = ? AND b.organization_id = ? AND b.deleted_at IS NULL
-              AND b.lifecycle_state = 'active'
+            WHERE b.id = ? AND b.organization_id = ?
+              AND (
+                (b.deleted_at IS NULL AND b.lifecycle_state IN ('active', 'unsyncing'))
+                OR (b.deleted_at IS NOT NULL AND b.deletion_operation_id IS NOT NULL)
+              )
            ON CONFLICT(synced_block_id, page_id)
            DO UPDATE SET last_seen_at = excluded.last_seen_at`,
         ).bind(pageId, now, now, blockId, page.organization_id),
@@ -866,6 +1070,45 @@ export class DocumentRoom {
     ];
     await this.env.DB.batch(statements);
     await this.setRoomMetaValue('synced_block_reference_ids', signature);
+  }
+
+  private async enforceSyncedBlockDeletionFences(pageId: string, actorId: string): Promise<void> {
+    const blockIds = documentSyncedBlockIds(this.document);
+    if (!pageId || blockIds.length === 0) return;
+    const fenced: Array<{ deletion_operation_id: string; id: string }> = [];
+    for (let start = 0; start < blockIds.length; start += 50) {
+      const chunk = blockIds.slice(start, start + 50);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const rows = await this.env.DB.prepare(
+        `SELECT id, deletion_operation_id
+           FROM synced_blocks
+          WHERE id IN (${placeholders})
+            AND deletion_operation_id IS NOT NULL
+            AND deletion_restore_lease_at IS NULL`,
+      )
+        .bind(...chunk)
+        .all<{ deletion_operation_id: string; id: string }>();
+      fenced.push(...rows.results);
+    }
+    let replacements = 0;
+    for (const row of fenced) {
+      const result = syncedBlockDeleteUpdate(this.document, row.id, row.deletion_operation_id);
+      if (!result.replacements || !yjsUpdateChangesDocument(this.document, result.update)) continue;
+      await this.persistUpdate(result.update, actorId);
+      Y.applyUpdate(this.document, result.update, 'synced-block-deletion-fence');
+      this.broadcast(syncMessage(SYNC_UPDATE, result.update));
+      replacements += result.replacements;
+    }
+    if (replacements > 0) {
+      console.info(
+        JSON.stringify({
+          level: 'info',
+          event: 'synced_block_deletion_fence_applied',
+          pageId,
+          replacements,
+        }),
+      );
+    }
   }
 
   private async maybeUpdatePageLinks(pageId: string, force = false): Promise<void> {

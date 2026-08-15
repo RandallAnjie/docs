@@ -6,7 +6,7 @@ import { mergeAttributes, Node, type Editor } from '@tiptap/core';
 import type { NodeViewProps } from '@tiptap/react';
 import { EditorContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { Copy, RefreshCw, Trash2, Unlink } from 'lucide-react';
+import { Copy, RefreshCw, RotateCcw, Trash2, Unlink } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
@@ -19,6 +19,7 @@ import {
   getPublicSyncedBlockTicket,
   getSyncedBlockTicket,
   listSyncedBlockReferences,
+  restoreDeletedSyncedBlock,
   unsyncAllSyncedBlock,
 } from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
@@ -122,6 +123,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
   const [locationsOpen, setLocationsOpen] = useState(false);
   const [locationsError, setLocationsError] = useState<string | null>(null);
   const [managementBusy, setManagementBusy] = useState(false);
+  const [ticketRetry, setTicketRetry] = useState(0);
 
   const loadTicket = useCallback(async () => {
     if (!pageId || !blockId || !identityName) throw new Error('同步块上下文不可用');
@@ -162,7 +164,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
     return () => {
       active = false;
     };
-  }, [loadTicket]);
+  }, [loadTicket, ticketRetry]);
 
   useEffect(() => {
     if (!session || !identityId || !identityName || !identityColor) return;
@@ -398,7 +400,18 @@ function SyncedBlockNodeView(props: NodeViewProps) {
           onReady={setNestedEditor}
         />
       ) : state === 'error' ? (
-        <p className="rdocs-synced-block-state">需要同时具有原始页面和当前页面的访问权限。</p>
+        <p className="rdocs-synced-block-state">
+          需要同时具有原始页面和当前页面的访问权限。
+          <button
+            type="button"
+            onClick={() => {
+              setState('connecting');
+              setTicketRetry((value) => value + 1);
+            }}
+          >
+            重试
+          </button>
+        </p>
       ) : (
         <p className="rdocs-synced-block-state">正在打开同步内容…</p>
       )}
@@ -443,6 +456,96 @@ export const SyncedBlock = Node.create<SyncedBlockOptions>({
   },
 });
 
-export function syncedBlockExtension(getContext: () => SyncedBlockContext | null) {
-  return SyncedBlock.configure({ getContext });
+function DeletedSyncedBlockNodeView(props: NodeViewProps) {
+  const options = props.extension.options as SyncedBlockOptions;
+  const context = options.getContext();
+  const operationId = String(props.node.attrs.deletionOperationId ?? '');
+  const [state, setState] = useState<'error' | 'idle' | 'restored' | 'restoring'>('idle');
+  const [message, setMessage] = useState('');
+
+  const restore = async () => {
+    if (!operationId || state === 'restoring') return;
+    if (!window.confirm('恢复原始同步块以及所有仍保留的同步引用？')) return;
+    setState('restoring');
+    setMessage('');
+    try {
+      await restoreDeletedSyncedBlock(operationId);
+      setState('restored');
+      setMessage('恢复完成，正在重新连接同步内容…');
+    } catch (reason) {
+      setState('error');
+      setMessage(reason instanceof Error ? reason.message : '同步块恢复失败');
+    }
+  };
+
+  const canRestore = props.editor.isEditable && !context?.publicShareToken;
+  return (
+    <NodeViewWrapper className="rdocs-deleted-synced-block" contentEditable={false}>
+      <span>
+        <Trash2 size={14} />
+        <span>
+          <strong>同步块已从所有引用页面删除</strong>
+          <small role={state === 'error' ? 'alert' : undefined}>
+            {message || '可在 30 天内整体撤销，不会覆盖删除后的其他编辑。'}
+          </small>
+        </span>
+      </span>
+      {canRestore ? (
+        <button
+          type="button"
+          disabled={state === 'restoring' || state === 'restored'}
+          onClick={() => void restore()}
+        >
+          <RotateCcw size={14} />
+          {state === 'restoring' ? '正在恢复…' : state === 'restored' ? '已恢复' : '撤销全部删除'}
+        </button>
+      ) : null}
+    </NodeViewWrapper>
+  );
+}
+
+export const DeletedSyncedBlock = Node.create<SyncedBlockOptions>({
+  name: 'deletedSyncedBlock',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  draggable: true,
+  addOptions() {
+    return { getContext: () => null };
+  },
+  addAttributes() {
+    return {
+      syncedBlockId: { default: '' },
+      deletionOperationId: { default: '' },
+    };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'div[data-rdocs-deleted-synced-block]',
+        getAttrs: (element) => ({
+          syncedBlockId: element.getAttribute('data-synced-block-id') ?? '',
+          deletionOperationId: element.getAttribute('data-deletion-operation-id') ?? '',
+        }),
+      },
+    ];
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    return [
+      'div',
+      mergeAttributes(HTMLAttributes, {
+        'data-rdocs-deleted-synced-block': '',
+        'data-synced-block-id': node.attrs.syncedBlockId,
+        'data-deletion-operation-id': node.attrs.deletionOperationId,
+      }),
+      '已删除的同步块',
+    ];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(DeletedSyncedBlockNodeView, { stopEvent: () => true });
+  },
+});
+
+export function syncedBlockExtensions(getContext: () => SyncedBlockContext | null) {
+  return [SyncedBlock.configure({ getContext }), DeletedSyncedBlock.configure({ getContext })];
 }

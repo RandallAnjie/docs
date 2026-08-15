@@ -932,11 +932,25 @@ export function unsyncAllSyncedBlock(
 export function deleteAllSyncedBlock(
   pageId: string,
   blockId: string,
-): Promise<{ ok: true; mode: 'delete'; pages: number; replacements: number }> {
+): Promise<{
+  ok: true;
+  mode: 'delete';
+  pages: number;
+  replacements: number;
+  deletion: { operationId: string; expiresAt: number };
+}> {
   return request(
     `/api/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/delete-all`,
     { method: 'POST' },
   );
+}
+
+export function restoreDeletedSyncedBlock(
+  operationId: string,
+): Promise<{ ok: true; pages: number; replacements: number; syncedBlockId: string }> {
+  return request(`/api/synced-block-deletions/${encodeURIComponent(operationId)}/restore`, {
+    method: 'POST',
+  });
 }
 
 export function getAuthSession(): Promise<AuthSessionResponse> {

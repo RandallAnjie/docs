@@ -74,6 +74,35 @@ const MAX_ATTACHMENT_NAME_LENGTH = 180;
 const MAX_MARKDOWN_IMPORT_BYTES = 2 * 1024 * 1024;
 const MAX_PAGE_COPY_ATTACHMENTS = 200;
 const MAX_PAGE_COPY_ATTACHMENT_BYTES = 250 * 1024 * 1024;
+const SYNCED_BLOCK_DELETE_UNDO_MS = 30 * 24 * 60 * 60 * 1_000;
+const SYNCED_BLOCK_RESTORE_LEASE_MS = 5 * 60 * 1_000;
+const SYNCED_BLOCK_PAGE_MUTATION_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  task: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  let firstError: unknown;
+  const worker = async () => {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      try {
+        results[index] = await task(values[index] as T, index);
+      } catch (reason) {
+        firstError ??= reason;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, () => worker()),
+  );
+  if (firstError) throw firstError;
+  return results;
+}
 
 interface PageRow {
   id: string;
@@ -152,6 +181,9 @@ interface SyncedBlockRow {
   updated_at: number;
   deleted_at: number | null;
   lifecycle_state: 'active' | 'unsyncing';
+  deletion_operation_id: string | null;
+  deletion_expires_at: number | null;
+  deletion_restore_lease_at: number | null;
 }
 
 interface ShareLinkRow {
@@ -288,9 +320,11 @@ async function findSyncedBlock(env: Env, blockId: string): Promise<SyncedBlockSu
   const row = await env.DB.prepare(
     `SELECT id, organization_id, source_page_id, current_generation,
             editor_schema_version, acl_version, created_by, created_at,
-            updated_at, deleted_at, lifecycle_state
-       FROM synced_blocks
-      WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'`,
+            updated_at, deleted_at, lifecycle_state, deletion_operation_id,
+            deletion_expires_at, deletion_restore_lease_at
+      FROM synced_blocks
+      WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'
+        AND deletion_operation_id IS NULL`,
   )
     .bind(blockId)
     .first<SyncedBlockRow>();
@@ -300,16 +334,58 @@ async function findSyncedBlock(env: Env, blockId: string): Promise<SyncedBlockSu
 async function findSyncedBlockForUnsync(
   env: Env,
   blockId: string,
-): Promise<{ block: SyncedBlockSummary; lifecycleState: 'active' | 'unsyncing' } | null> {
+): Promise<{
+  block: SyncedBlockSummary;
+  lifecycleState: 'active' | 'unsyncing';
+  deletionOperationId: string | null;
+  deletionExpiresAt: number | null;
+} | null> {
   const row = await env.DB.prepare(
     `SELECT id, organization_id, source_page_id, current_generation,
             editor_schema_version, acl_version, created_by, created_at,
-            updated_at, deleted_at, lifecycle_state
+            updated_at, deleted_at, lifecycle_state, deletion_operation_id,
+            deletion_expires_at, deletion_restore_lease_at
        FROM synced_blocks WHERE id = ? AND deleted_at IS NULL`,
   )
     .bind(blockId)
     .first<SyncedBlockRow>();
-  return row ? { block: syncedBlockFromRow(row), lifecycleState: row.lifecycle_state } : null;
+  return row
+    ? {
+        block: syncedBlockFromRow(row),
+        lifecycleState: row.lifecycle_state,
+        deletionOperationId: row.deletion_operation_id,
+        deletionExpiresAt: row.deletion_expires_at,
+      }
+    : null;
+}
+
+async function findSyncedBlockByDeletionOperation(
+  env: Env,
+  operationId: string,
+): Promise<SyncedBlockRow | null> {
+  return env.DB.prepare(
+    `SELECT id, organization_id, source_page_id, current_generation,
+            editor_schema_version, acl_version, created_by, created_at,
+            updated_at, deleted_at, lifecycle_state, deletion_operation_id,
+            deletion_expires_at, deletion_restore_lease_at
+       FROM synced_blocks
+      WHERE deletion_operation_id = ?`,
+  )
+    .bind(operationId)
+    .first<SyncedBlockRow>();
+}
+
+async function findDeletedSyncedBlock(env: Env, blockId: string): Promise<SyncedBlockRow | null> {
+  return env.DB.prepare(
+    `SELECT id, organization_id, source_page_id, current_generation,
+            editor_schema_version, acl_version, created_by, created_at,
+            updated_at, deleted_at, lifecycle_state, deletion_operation_id,
+            deletion_expires_at, deletion_restore_lease_at
+       FROM synced_blocks
+      WHERE id = ? AND deleted_at IS NOT NULL AND deletion_operation_id IS NOT NULL`,
+  )
+    .bind(blockId)
+    .first<SyncedBlockRow>();
 }
 
 async function touchSyncedBlockReference(env: Env, blockId: string, pageId: string): Promise<void> {
@@ -323,6 +399,20 @@ async function touchSyncedBlockReference(env: Env, blockId: string, pageId: stri
   )
     .bind(pageId, now, now, blockId)
     .run();
+}
+
+async function hasTrashedSyncedBlockReference(env: Env, blockId: string): Promise<boolean> {
+  return Boolean(
+    await env.DB.prepare(
+      `SELECT 1 AS found
+         FROM synced_block_references r
+         JOIN pages p ON p.id = r.page_id
+        WHERE r.synced_block_id = ? AND p.deleted_at IS NOT NULL
+        LIMIT 1`,
+    )
+      .bind(blockId)
+      .first<{ found: number }>(),
+  );
 }
 
 async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
@@ -3097,8 +3187,52 @@ async function unsyncAllSyncedBlock(
 ): Promise<Response> {
   const resource = await findSyncedBlockForUnsync(env, blockId);
   if (!resource || resource.block.sourcePageId !== sourcePageId) {
+    if (mode === 'delete') {
+      const deleted = await findDeletedSyncedBlock(env, blockId);
+      const sourceAccess = deleted
+        ? await requirePageAction(env, deleted.source_page_id, actor.id, 'edit_content')
+        : null;
+      if (
+        deleted &&
+        deleted.source_page_id === sourcePageId &&
+        deleted.deletion_operation_id &&
+        deleted.deletion_expires_at &&
+        sourceAccess?.page.organizationId === deleted.organization_id
+      ) {
+        return json({
+          ok: true,
+          mode,
+          pages: 0,
+          replacements: 0,
+          deletion: {
+            operationId: deleted.deletion_operation_id,
+            expiresAt: Number(deleted.deletion_expires_at),
+          },
+        });
+      }
+    }
     return error('只能从原始页面取消全部同步', 404);
   }
+  if (mode === 'unsync' && resource.deletionOperationId) {
+    return error(
+      '级联删除尚未完成，请重试删除原始块及所有副本',
+      409,
+      'synced_block_delete_incomplete',
+    );
+  }
+  if (await hasTrashedSyncedBlockReference(env, blockId)) {
+    return error(
+      '同步块仍存在于回收站页面，请先恢复相关页面再继续',
+      409,
+      'synced_block_pages_trashed',
+    );
+  }
+  const operationId =
+    mode === 'delete' ? (resource.deletionOperationId ?? crypto.randomUUID()) : null;
+  let operationExpiresAt =
+    mode === 'delete'
+      ? (resource.deletionExpiresAt ?? Date.now() + SYNCED_BLOCK_DELETE_UNDO_MS)
+      : null;
   const pageIds = (
     await env.DB.prepare(
       `SELECT DISTINCT p.id
@@ -3120,24 +3254,40 @@ async function unsyncAllSyncedBlock(
   }
   const leaseAt = Date.now();
   if (resource.lifecycleState === 'active') {
-    const transitioned = await env.DB.prepare(
-      `UPDATE synced_blocks
-          SET lifecycle_state = 'unsyncing', acl_version = acl_version + 1, updated_at = ?
-        WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'`,
-    )
-      .bind(leaseAt, blockId)
-      .run();
+    const transitioned =
+      mode === 'delete'
+        ? await env.DB.prepare(
+            `UPDATE synced_blocks
+                SET lifecycle_state = 'unsyncing', acl_version = acl_version + 1,
+                    updated_at = ?, deletion_operation_id = ?, deletion_expires_at = ?,
+                    deletion_restore_lease_at = NULL
+              WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'
+                AND (deletion_operation_id IS NULL OR deletion_operation_id = ?)`,
+          )
+            .bind(leaseAt, operationId, operationExpiresAt, blockId, operationId)
+            .run()
+        : await env.DB.prepare(
+            `UPDATE synced_blocks
+                SET lifecycle_state = 'unsyncing', acl_version = acl_version + 1, updated_at = ?
+              WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'active'
+                AND deletion_operation_id IS NULL`,
+          )
+            .bind(leaseAt, blockId)
+            .run();
     if (!transitioned.meta.changes) return error('同步块状态已变化，请重试', 409);
   } else {
-    if (leaseAt - resource.block.updatedAt < 5 * 60 * 1000) {
+    if (leaseAt - resource.block.updatedAt < SYNCED_BLOCK_RESTORE_LEASE_MS) {
       return error('另一个取消同步操作正在进行', 409, 'unsync_in_progress');
     }
     const recovered = await env.DB.prepare(
       `UPDATE synced_blocks
-          SET acl_version = acl_version + 1, updated_at = ?
-        WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'unsyncing' AND updated_at = ?`,
+          SET acl_version = acl_version + 1, updated_at = ?,
+              deletion_operation_id = COALESCE(deletion_operation_id, ?),
+              deletion_expires_at = COALESCE(deletion_expires_at, ?)
+        WHERE id = ? AND deleted_at IS NULL AND lifecycle_state = 'unsyncing' AND updated_at = ?
+          AND (? = 'delete' OR deletion_operation_id IS NULL)`,
     )
-      .bind(leaseAt, blockId, resource.block.updatedAt)
+      .bind(leaseAt, operationId, operationExpiresAt, blockId, resource.block.updatedAt, mode)
       .run();
     if (!recovered.meta.changes) return error('同步块状态已变化，请重试', 409);
   }
@@ -3151,6 +3301,7 @@ async function unsyncAllSyncedBlock(
       .run();
   };
   let replacements = 0;
+  let remainingTargets = 0;
   try {
     const blockRoom = syncedBlockRoom(env, resource.block.id, resource.block.currentGeneration);
     const disconnected = await blockRoom.fetch('https://rdocs.internal/internal/access', {
@@ -3159,12 +3310,8 @@ async function unsyncAllSyncedBlock(
       body: JSON.stringify({ enabled: true, closeConnections: true }),
     });
     if (!disconnected.ok) throw new Error('synced_block_disconnect_failed');
-    let snapshot: ArrayBuffer;
-    if (mode === 'delete') {
-      const empty = new Y.Doc();
-      snapshot = toArrayBuffer(Y.encodeStateAsUpdate(empty));
-      empty.destroy();
-    } else {
+    let snapshot: ArrayBuffer | null = null;
+    if (mode === 'unsync') {
       const exported = await blockRoom.fetch('https://rdocs.internal/internal/export-snapshot', {
         method: 'POST',
         headers: { 'x-rdocs-actor-id': actor.id },
@@ -3172,48 +3319,87 @@ async function unsyncAllSyncedBlock(
       if (!exported.ok) throw new Error('synced_block_export_failed');
       snapshot = await exported.arrayBuffer();
     }
-    for (const item of access) {
-      if (!item) continue;
-      const response = await documentRoom(env, item.page.id, item.page.currentGeneration).fetch(
-        'https://rdocs.internal/internal/unsync-synced-block',
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/octet-stream',
-            'x-rdocs-page-id': item.page.id,
-            'x-rdocs-generation': String(item.page.currentGeneration),
-            'x-rdocs-actor-id': actor.id,
-            'x-rdocs-synced-block-id': blockId,
+    const editableAccess = access.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const mutationResults = await mapWithConcurrency(
+      editableAccess,
+      SYNCED_BLOCK_PAGE_MUTATION_CONCURRENCY,
+      async (item) => {
+        const response = await documentRoom(env, item.page.id, item.page.currentGeneration).fetch(
+          mode === 'delete'
+            ? 'https://rdocs.internal/internal/delete-synced-block'
+            : 'https://rdocs.internal/internal/unsync-synced-block',
+          {
+            method: 'POST',
+            headers: {
+              ...(mode === 'unsync' ? { 'content-type': 'application/octet-stream' } : {}),
+              'x-rdocs-page-id': item.page.id,
+              'x-rdocs-generation': String(item.page.currentGeneration),
+              'x-rdocs-actor-id': actor.id,
+              'x-rdocs-synced-block-id': blockId,
+              ...(operationId ? { 'x-rdocs-deletion-operation-id': operationId } : {}),
+            },
+            body: snapshot?.slice(0),
           },
-          body: snapshot.slice(0),
-        },
-      );
-      if (!response.ok) throw new Error(`page_unsync_failed:${item.page.id}`);
-      const result = (await response.json()) as { replacements?: number };
-      replacements += Number(result.replacements ?? 0);
+        );
+        if (!response.ok) throw new Error(`page_unsync_failed:${item.page.id}`);
+        return (await response.json()) as { replacements?: number; remaining?: number };
+      },
+    );
+    replacements = mutationResults.reduce(
+      (total, result) => total + Number(result.replacements ?? 0),
+      0,
+    );
+    remainingTargets = mutationResults.reduce(
+      (total, result) => total + Number(result.remaining ?? 0),
+      0,
+    );
+    if (mode === 'delete') {
+      if (remainingTargets > 0) throw new Error('synced_block_delete_targets_remain');
+    } else {
+      const remaining = await env.DB.prepare(
+        'SELECT COUNT(*) AS count FROM synced_block_references WHERE synced_block_id = ?',
+      )
+        .bind(blockId)
+        .first<{ count: number }>();
+      if (Number(remaining?.count ?? 0) > 0) throw new Error('synced_block_references_remain');
     }
-    const remaining = await env.DB.prepare(
-      'SELECT COUNT(*) AS count FROM synced_block_references WHERE synced_block_id = ?',
-    )
-      .bind(blockId)
-      .first<{ count: number }>();
-    if (Number(remaining?.count ?? 0) > 0) throw new Error('synced_block_references_remain');
     const completedAt = Date.now();
-    const completed = await env.DB.batch([
-      env.DB.prepare(
-        `UPDATE synced_blocks
-            SET deleted_at = ?, updated_by = ?, updated_at = ?
-          WHERE id = ? AND lifecycle_state = 'unsyncing' AND updated_at = ?`,
-      ).bind(completedAt, actor.id, completedAt, blockId, leaseAt),
-      env.DB.prepare(
-        `DELETE FROM synced_block_references
-          WHERE synced_block_id = ? AND EXISTS (
-            SELECT 1 FROM synced_blocks
-             WHERE id = ? AND deleted_at = ? AND updated_by = ?
-          )`,
-      ).bind(blockId, blockId, completedAt, actor.id),
-    ]);
-    if (!completed[0]?.meta.changes) throw new Error('synced_block_lifecycle_lost');
+    if (mode === 'delete') operationExpiresAt = completedAt + SYNCED_BLOCK_DELETE_UNDO_MS;
+    const completed =
+      mode === 'delete'
+        ? await env.DB.prepare(
+            `UPDATE synced_blocks
+                SET deleted_at = ?, updated_by = ?, updated_at = ?,
+                    deletion_expires_at = ?, deletion_restore_lease_at = NULL
+              WHERE id = ? AND lifecycle_state = 'unsyncing' AND updated_at = ?
+                AND deletion_operation_id = ?`,
+          )
+            .bind(
+              completedAt,
+              actor.id,
+              completedAt,
+              operationExpiresAt,
+              blockId,
+              leaseAt,
+              operationId,
+            )
+            .run()
+        : await env.DB.prepare(
+            `UPDATE synced_blocks
+                SET deleted_at = ?, updated_by = ?, updated_at = ?,
+                    deletion_operation_id = NULL, deletion_expires_at = NULL,
+                    deletion_restore_lease_at = NULL
+              WHERE id = ? AND lifecycle_state = 'unsyncing' AND updated_at = ?
+                AND deletion_operation_id IS NULL`,
+          )
+            .bind(completedAt, actor.id, completedAt, blockId, leaseAt)
+            .run();
+    if (!completed.meta.changes) throw new Error('synced_block_lifecycle_lost');
+    if (mode === 'unsync') {
+      await env.DB.prepare('DELETE FROM synced_block_references WHERE synced_block_id = ?')
+        .bind(blockId)
+        .run();
+    }
   } catch (reason) {
     await reactivate().catch(() => undefined);
     console.error(
@@ -3244,6 +3430,7 @@ async function unsyncAllSyncedBlock(
         pages: pageIds.length,
         replacements,
         syncedBlockId: blockId,
+        ...(operationId ? { deletionOperationId: operationId } : {}),
       },
     ).catch((reason) =>
       console.error(
@@ -3259,7 +3446,188 @@ async function unsyncAllSyncedBlock(
       ),
     );
   }
-  return json({ ok: true, mode, pages: pageIds.length, replacements });
+  return json({
+    ok: true,
+    mode,
+    pages: pageIds.length,
+    replacements,
+    ...(operationId && operationExpiresAt
+      ? { deletion: { operationId, expiresAt: operationExpiresAt } }
+      : {}),
+  });
+}
+
+async function restoreDeletedSyncedBlock(
+  env: Env,
+  operationId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const row = await findSyncedBlockByDeletionOperation(env, operationId);
+  if (!row || !row.deletion_expires_at) {
+    return error('同步块删除记录不存在', 404);
+  }
+  const now = Date.now();
+  if (Number(row.deletion_expires_at) <= now) {
+    return error('同步块的 30 天撤销期已结束', 410, 'synced_block_undo_expired');
+  }
+  if (await hasTrashedSyncedBlockReference(env, row.id)) {
+    return error(
+      '同步块删除占位仍存在于回收站页面，请先恢复相关页面',
+      409,
+      'synced_block_pages_trashed',
+    );
+  }
+  const pageIds = (
+    await env.DB.prepare(
+      `SELECT DISTINCT p.id
+         FROM pages p
+        WHERE p.deleted_at IS NULL AND p.organization_id = ?
+          AND (p.id = ? OR p.id IN (
+            SELECT page_id FROM synced_block_references WHERE synced_block_id = ?
+          ))
+        ORDER BY CASE WHEN p.id = ? THEN 1 ELSE 0 END, p.id ASC`,
+    )
+      .bind(row.organization_id, row.source_page_id, row.id, row.source_page_id)
+      .all<{ id: string }>()
+  ).results.map((item) => item.id);
+  const access = await Promise.all(
+    pageIds.map((pageId) => requirePageAction(env, pageId, actor.id, 'edit_content')),
+  );
+  if (access.some((item) => !item || item.page.isLocked || !item.page.collaborationEnabled)) {
+    return error('必须能编辑并解锁同步块删除操作涉及的全部页面', 409, 'synced_block_pages_locked');
+  }
+  const previousLease = row.deletion_restore_lease_at;
+  if (previousLease && now - Number(previousLease) < SYNCED_BLOCK_RESTORE_LEASE_MS) {
+    return error('另一个同步块恢复操作正在进行', 409, 'synced_block_restore_in_progress');
+  }
+  if (
+    row.deleted_at === null &&
+    row.lifecycle_state === 'unsyncing' &&
+    now - Number(row.updated_at) < SYNCED_BLOCK_RESTORE_LEASE_MS
+  ) {
+    return error('同步块级联删除仍在进行', 409, 'synced_block_delete_in_progress');
+  }
+  const leased = await env.DB.prepare(
+    `UPDATE synced_blocks
+        SET lifecycle_state = 'unsyncing', deletion_restore_lease_at = ?,
+            acl_version = acl_version + 1, updated_at = ?
+      WHERE id = ? AND deleted_at IS ? AND deletion_operation_id = ?
+        AND deletion_restore_lease_at IS ?`,
+  )
+    .bind(now, now, row.id, row.deleted_at, operationId, previousLease)
+    .run();
+  if (!leased.meta.changes) return error('同步块恢复状态已变化，请重试', 409);
+
+  const releaseLease = async () => {
+    await env.DB.prepare(
+      `UPDATE synced_blocks
+          SET lifecycle_state = CASE WHEN deleted_at IS NULL THEN 'active' ELSE 'unsyncing' END,
+              deletion_restore_lease_at = NULL, updated_at = ?
+        WHERE id = ? AND deleted_at IS ? AND deletion_operation_id = ?
+          AND deletion_restore_lease_at = ?`,
+    )
+      .bind(Date.now(), row.id, row.deleted_at, operationId, now)
+      .run();
+  };
+  const blockRoom = syncedBlockRoom(env, row.id, Number(row.current_generation));
+  let replacements = 0;
+  let remainingTargets = 0;
+  try {
+    const disconnected = await blockRoom.fetch('https://rdocs.internal/internal/access', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true, closeConnections: true }),
+    });
+    if (!disconnected.ok) throw new Error('synced_block_restore_disconnect_failed');
+    const editableAccess = access.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const mutationResults = await mapWithConcurrency(
+      editableAccess,
+      SYNCED_BLOCK_PAGE_MUTATION_CONCURRENCY,
+      async (item) => {
+        const response = await documentRoom(env, item.page.id, item.page.currentGeneration).fetch(
+          'https://rdocs.internal/internal/restore-synced-block',
+          {
+            method: 'POST',
+            headers: {
+              'x-rdocs-page-id': item.page.id,
+              'x-rdocs-generation': String(item.page.currentGeneration),
+              'x-rdocs-actor-id': actor.id,
+              'x-rdocs-synced-block-id': row.id,
+              'x-rdocs-deletion-operation-id': operationId,
+            },
+          },
+        );
+        if (!response.ok) throw new Error(`page_restore_synced_block_failed:${item.page.id}`);
+        return (await response.json()) as { replacements?: number; remaining?: number };
+      },
+    );
+    replacements = mutationResults.reduce(
+      (total, result) => total + Number(result.replacements ?? 0),
+      0,
+    );
+    remainingTargets = mutationResults.reduce(
+      (total, result) => total + Number(result.remaining ?? 0),
+      0,
+    );
+    if (remainingTargets > 0) throw new Error('synced_block_restore_targets_remain');
+    const restoredAt = Date.now();
+    const restored = await env.DB.prepare(
+      `UPDATE synced_blocks
+          SET deleted_at = NULL, lifecycle_state = 'active',
+              deletion_operation_id = NULL, deletion_expires_at = NULL,
+              deletion_restore_lease_at = NULL, acl_version = acl_version + 1,
+              updated_by = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS ? AND deletion_operation_id = ?
+          AND deletion_restore_lease_at = ?`,
+    )
+      .bind(actor.id, restoredAt, row.id, row.deleted_at, operationId, now)
+      .run();
+    if (!restored.meta.changes) throw new Error('synced_block_restore_lifecycle_lost');
+    await blockRoom
+      .fetch('https://rdocs.internal/internal/access', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: true, closeConnections: true }),
+      })
+      .catch(() => undefined);
+  } catch (reason) {
+    const sourceAccess = access.find((item) => item?.page.id === row.source_page_id);
+    if (sourceAccess) {
+      await documentRoom(env, sourceAccess.page.id, sourceAccess.page.currentGeneration)
+        .fetch('https://rdocs.internal/internal/delete-synced-block', {
+          method: 'POST',
+          headers: {
+            'x-rdocs-page-id': sourceAccess.page.id,
+            'x-rdocs-generation': String(sourceAccess.page.currentGeneration),
+            'x-rdocs-actor-id': actor.id,
+            'x-rdocs-synced-block-id': row.id,
+            'x-rdocs-deletion-operation-id': operationId,
+          },
+        })
+        .catch(() => undefined);
+    }
+    await releaseLease().catch(() => undefined);
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'synced_block_restore_all_failed',
+        syncedBlockId: row.id,
+        deletionOperationId: operationId,
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    );
+    return error('部分页面尚未恢复同步块，可安全重试', 503, 'synced_block_restore_incomplete');
+  }
+  const sourcePage = await findPage(env, row.source_page_id);
+  if (sourcePage) {
+    await pageAudit(env, sourcePage, actor.id, 'synced_block.restored_all', {
+      deletionOperationId: operationId,
+      pages: pageIds.length,
+      replacements,
+      syncedBlockId: row.id,
+    }).catch(() => undefined);
+  }
+  return json({ ok: true, pages: pageIds.length, replacements, syncedBlockId: row.id });
 }
 
 async function setCollaborationAccess(
@@ -3593,6 +3961,15 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     const blockId = decodeURIComponent(orphanSyncedBlockMatch[1]);
     if (!isPageId(blockId)) return error('同步块 ID 无效', 400);
     return deleteOrphanSyncedBlock(env, blockId, actor);
+  }
+
+  const restoreSyncedBlockDeletionMatch = url.pathname.match(
+    /^\/api\/synced-block-deletions\/([^/]+)\/restore$/,
+  );
+  if (restoreSyncedBlockDeletionMatch?.[1] && request.method === 'POST') {
+    const operationId = decodeURIComponent(restoreSyncedBlockDeletionMatch[1]);
+    if (!isPageId(operationId)) return error('同步块删除操作 ID 无效', 400);
+    return restoreDeletedSyncedBlock(env, operationId, actor);
   }
 
   const syncedBlockReferencesMatch = url.pathname.match(
