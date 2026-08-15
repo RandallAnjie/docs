@@ -246,6 +246,27 @@ export function markdownToYjsSnapshot(markdown: string): {
       index += 1;
       continue;
     }
+    const attachment = line
+      .trim()
+      .match(/^\[(📎|🎵|🎬)\s+((?:\\.|[^\\\]])+)\]\(\/api\/attachments\/([0-9a-f-]{36})\)$/i);
+    if (attachment) {
+      const kind = attachment[1] === '🎵' ? 'Audio' : attachment[1] === '🎬' ? 'Video' : 'File';
+      nodes.push(
+        element(`attachment${kind}`, '', {
+          attachmentId: attachment[3] ?? '',
+          byteSize: '0',
+          mimeType:
+            kind === 'Audio'
+              ? 'audio/unknown'
+              : kind === 'Video'
+                ? 'video/unknown'
+                : 'application/octet-stream',
+          name: cleanInlineMarkdown(attachment[2] ?? '附件'),
+        }),
+      );
+      index += 1;
+      continue;
+    }
     if (!line.trim()) {
       index += 1;
       continue;
@@ -352,6 +373,21 @@ function renderElement(node: Y.XmlElement): string {
       const provider = node.getAttribute('provider') || '网页';
       return url ? `[▶ ${provider} 嵌入](${url})\n\n` : '';
     }
+    case 'attachmentFile':
+    case 'attachmentAudio':
+    case 'attachmentVideo': {
+      const attachmentId = node.getAttribute('attachmentId') ?? '';
+      const name = (node.getAttribute('name') || '附件')
+        .replace(/\\/g, '\\\\')
+        .replace(/]/g, '\\]');
+      const icon =
+        node.nodeName === 'attachmentAudio'
+          ? '🎵'
+          : node.nodeName === 'attachmentVideo'
+            ? '🎬'
+            : '📎';
+      return attachmentId ? `[${icon} ${name}](/api/attachments/${attachmentId})\n\n` : '';
+    }
     case 'tableOfContents':
       return '<!-- rdocs:table-of-contents -->\n\n';
     case 'columns': {
@@ -448,6 +484,8 @@ export function yjsSnapshotToMarkdown(snapshot: Uint8Array, title?: string): str
 
 function replaceAttachmentUrls(value: unknown, replacements: ReadonlyMap<string, string>): unknown {
   if (typeof value === 'string') {
+    const directReplacement = replacements.get(value);
+    if (directReplacement) return directReplacement;
     return value.replace(
       /(\/api\/attachments\/)([0-9a-f-]{36})/gi,
       (match, prefix: string, attachmentId: string) => {

@@ -4,6 +4,8 @@ import { NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
 import { Bookmark, ExternalLink, ListTree, Pencil, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
+import { attachmentEditorBlocks } from './AttachmentBlocks';
+
 export interface EmbedTarget {
   originalUrl: string;
   provider: 'CodePen' | 'CodeSandbox' | 'Figma' | 'Loom' | 'YouTube';
@@ -412,4 +414,5 @@ export const rdocsEditorBlocks = [
   TableOfContentsBlock,
   ColumnsBlock,
   ColumnBlock,
+  ...attachmentEditorBlocks,
 ];

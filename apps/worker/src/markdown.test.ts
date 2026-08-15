@@ -25,7 +25,7 @@ describe('Markdown import and export', () => {
     const sourceId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const imported = markdownToYjsSnapshot(
-      `![架构图](/api/attachments/${sourceId})\n\n![外部图](https://example.com/keep.png)`,
+      `![架构图](/api/attachments/${sourceId})\n\n[📎 需求.pdf](/api/attachments/${sourceId})\n\n![外部图](https://example.com/keep.png)`,
     );
     const rewritten = rewriteYjsAttachmentReferences(
       imported.snapshot,
@@ -34,6 +34,7 @@ describe('Markdown import and export', () => {
     const exported = yjsSnapshotToMarkdown(rewritten);
     expect(exported).toContain(`/api/attachments/${targetId}`);
     expect(exported).not.toContain(sourceId);
+    expect(exported).toContain(`[📎 需求.pdf](/api/attachments/${targetId})`);
     expect(exported).toContain('https://example.com/keep.png');
   });
 
@@ -51,6 +52,12 @@ describe('Markdown import and export', () => {
 [▶ YouTube 嵌入](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
 
 <!-- rdocs:table-of-contents -->
+
+[📎 需求.pdf](/api/attachments/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)
+
+[🎵 访谈.mp3](/api/attachments/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb)
+
+[🎬 演示.mp4](/api/attachments/cccccccc-cccc-4ccc-8ccc-cccccccccccc)
 
 <!-- rdocs:columns:start -->
 <!-- rdocs:column -->
@@ -71,9 +78,25 @@ $$`;
     expect(exported).toContain('[🔖 Rdocs](https://docs.bigrandall.io/)');
     expect(exported).toContain('[▶ YouTube 嵌入](https://www.youtube.com/watch?v=dQw4w9WgXcQ)');
     expect(exported).toContain('<!-- rdocs:table-of-contents -->');
+    expect(exported).toContain(
+      '[📎 需求.pdf](/api/attachments/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)',
+    );
+    expect(exported).toContain(
+      '[🎵 访谈.mp3](/api/attachments/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb)',
+    );
+    expect(exported).toContain(
+      '[🎬 演示.mp4](/api/attachments/cccccccc-cccc-4ccc-8ccc-cccccccccccc)',
+    );
     expect(exported).toContain('<!-- rdocs:columns:start -->');
     expect(exported).toContain('左栏内容');
     expect(exported).toContain('右栏内容');
     expect(exported).toContain('$$\nE = mc^2\n$$');
+  });
+
+  it('保留文件块名称中的 Markdown 转义字符', () => {
+    const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const source = `[📎 需求\\\\终稿\\].pdf](/api/attachments/${attachmentId})`;
+
+    expect(yjsSnapshotToMarkdown(markdownToYjsSnapshot(source).snapshot)).toContain(source);
   });
 });

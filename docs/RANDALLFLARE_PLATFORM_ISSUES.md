@@ -97,6 +97,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行块操作与分栏迁移 `0018_editor_block_controls_and_columns.sql` 时第十一次复现：84 个现有页面全部更新为 `editor_schema_version = 4`，表数仍为 45，但第 18 条账本仍为 `(18, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-lxHMGw/before-0018.sql`（156,045 bytes）。复验全部页面版本后，只修复第 18 条 Rdocs 账本记录；迁移列表 `0001`–`0018` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行私有文件与媒体块迁移 `0019_editor_attachment_and_media_blocks.sql` 时第十二次复现：84 个现有页面全部更新为 `editor_schema_version = 5`，表数仍为 45，外键违规为 0，但第 19 条账本仍为 `(19, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-PfTTor/before-0019.sql`（156,987 bytes）。复验所有页面版本和数据完整性后，只修复第 19 条 Rdocs 账本记录；迁移列表 `0001`–`0019` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

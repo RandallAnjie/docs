@@ -42,6 +42,7 @@ import {
   rewriteYjsAttachmentReferences,
   yjsSnapshotToMarkdown,
 } from './markdown';
+import { parseByteRange } from './attachment-range';
 import { listPages } from './page-tree';
 import { pageAccessSnapshot } from './page-access';
 import { ftsMatchQuery, normalizeSearchText, searchIndexText } from './search-projection';
@@ -601,20 +602,50 @@ async function findAttachment(env: Env, attachmentId: string): Promise<Attachmen
     .first<AttachmentRow>();
 }
 
-async function downloadAttachment(env: Env, attachment: AttachmentRow): Promise<Response> {
+async function downloadAttachment(
+  request: Request,
+  env: Env,
+  attachment: AttachmentRow,
+): Promise<Response> {
   if (attachment.status !== 'ready' || attachment.deleted_at !== null) {
     return error('附件不存在', 404);
   }
-  const object = await env.ATTACHMENTS.get(attachment.r2_key);
+  const rangeHeader = request.headers.get('range');
+  const range = rangeHeader ? parseByteRange(rangeHeader, attachment.byte_size) : null;
+  if (rangeHeader && !range) {
+    return new Response(null, {
+      status: 416,
+      headers: {
+        'accept-ranges': 'bytes',
+        'content-range': `bytes */${attachment.byte_size}`,
+      },
+    });
+  }
+  const object = await env.ATTACHMENTS.get(
+    attachment.r2_key,
+    range ? { range: { offset: range.offset, length: range.length } } : undefined,
+  );
   if (!object) return error('附件对象丢失', 500);
+  const inline =
+    attachment.mime_type.startsWith('image/') ||
+    attachment.mime_type.startsWith('audio/') ||
+    attachment.mime_type.startsWith('video/') ||
+    attachment.mime_type === 'application/pdf';
+  const responseLength = range?.length ?? attachment.byte_size;
+  const headers = new Headers({
+    'content-type': attachment.mime_type,
+    'content-length': String(responseLength),
+    'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="download"; filename*=UTF-8''${encodeURIComponent(attachment.original_name)}`,
+    'cache-control': 'private, no-store',
+    'accept-ranges': 'bytes',
+    etag: object.httpEtag,
+    'x-content-type-options': 'nosniff',
+  });
+  if (range)
+    headers.set('content-range', `bytes ${range.offset}-${range.end}/${attachment.byte_size}`);
   return new Response(object.body, {
-    headers: {
-      'content-type': attachment.mime_type,
-      'content-length': String(attachment.byte_size),
-      'content-disposition': `${attachment.mime_type.startsWith('image/') ? 'inline' : 'attachment'}; filename="download"; filename*=UTF-8''${encodeURIComponent(attachment.original_name)}`,
-      'cache-control': 'private, no-store',
-      'x-content-type-options': 'nosniff',
-    },
+    status: range ? 206 : 200,
+    headers,
   });
 }
 
@@ -2600,7 +2631,7 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     if (!isPageId(attachmentId)) return error('附件 ID 无效', 400);
     const attachment = await findAttachment(env, attachmentId);
     if (attachment && (await canPubliclyDownloadAttachment(request, env, attachment))) {
-      return downloadAttachment(env, attachment);
+      return downloadAttachment(request, env, attachment);
     }
   }
 
@@ -2757,7 +2788,7 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     const authorized = await requirePageAction(env, attachment.page_id, actorId, action);
     if (!authorized) return error('附件不存在或无权访问', 404);
     return request.method === 'GET'
-      ? downloadAttachment(env, attachment)
+      ? downloadAttachment(request, env, attachment)
       : deleteAttachment(env, attachment, authorized.page, actorId);
   }
 

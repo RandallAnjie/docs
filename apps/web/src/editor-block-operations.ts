@@ -42,3 +42,39 @@ export function moveTopLevelBlock(
   transaction.scrollIntoView();
   return transaction;
 }
+
+export function removeAttachmentNodes(
+  state: EditorState,
+  attachmentId: string,
+): Transaction | null {
+  const positions: number[] = [];
+  const attachmentPath = `/api/attachments/${encodeURIComponent(attachmentId)}`;
+  state.doc.descendants((node, position) => {
+    const nodeAttachmentId = String(node.attrs.attachmentId ?? '');
+    const source = String(node.attrs.src ?? '');
+    if (nodeAttachmentId === attachmentId || source.includes(attachmentPath))
+      positions.push(position);
+  });
+  if (!positions.length) return null;
+
+  const transaction = state.tr;
+  const paragraph = state.schema.nodes.paragraph;
+  for (const position of [...positions].sort((left, right) => right - left)) {
+    const node = transaction.doc.nodeAt(position);
+    if (!node) continue;
+    const resolved = transaction.doc.resolve(position);
+    const index = resolved.index();
+    if (
+      paragraph &&
+      resolved.parent.childCount === 1 &&
+      resolved.parent.canReplaceWith(index, index + 1, paragraph)
+    ) {
+      transaction.replaceWith(position, position + node.nodeSize, paragraph.create());
+    } else {
+      transaction.delete(position, position + node.nodeSize);
+    }
+  }
+  const selectionPosition = Math.min(state.selection.from, transaction.doc.content.size);
+  transaction.setSelection(Selection.near(transaction.doc.resolve(selectionPosition)));
+  return transaction;
+}
