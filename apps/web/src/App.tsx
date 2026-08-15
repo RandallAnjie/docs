@@ -104,7 +104,9 @@ import {
   importMarkdown,
   movePage,
   updateSpace,
+  updatePageAppearance,
   updatePageTitle,
+  uploadAttachment,
 } from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel } from './AttachmentPanel';
@@ -1168,6 +1170,217 @@ function Workspace({
   );
 }
 
+function PageAppearanceDialog({
+  page,
+  canManage,
+  onSaved,
+  onClose,
+}: {
+  page: PageSummary;
+  canManage: boolean;
+  onSaved: (page: PageSummary) => void;
+  onClose: () => void;
+}) {
+  const [icon, setIcon] = useState(page.icon ?? '');
+  const [coverAttachmentId, setCoverAttachmentId] = useState<string | null>(page.coverAttachmentId);
+  const [fontStyle, setFontStyle] = useState(page.fontStyle);
+  const [isFullWidth, setIsFullWidth] = useState(page.isFullWidth);
+  const [isSmallText, setIsSmallText] = useState(page.isSmallText);
+  const [isLocked, setIsLocked] = useState(page.isLocked);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const uploadCover = async (file: File | undefined) => {
+    if (!file || busy) return;
+    if (!file.type.startsWith('image/')) {
+      setError('封面必须是图片文件');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const { attachment } = await uploadAttachment(page.id, file);
+      setCoverAttachmentId(attachment.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '封面上传失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const input = page.isLocked
+        ? { isLocked: false }
+        : {
+            icon: icon.trim() || null,
+            coverAttachmentId,
+            fontStyle,
+            isFullWidth,
+            isSmallText,
+            ...(canManage ? { isLocked } : {}),
+          };
+      const { page: updated } = await updatePageAppearance(page.id, input);
+      onSaved(updated);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法保存页面外观');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <form
+        className="rdocs-dialog page-appearance-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="page-appearance-title"
+        onSubmit={(event) => void save(event)}
+      >
+        <header>
+          <div>
+            <h2 id="page-appearance-title">自定义页面</h2>
+            <p>图标、封面和排版会对所有有权访问此页面的人生效。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>
+            ×
+          </button>
+        </header>
+        {page.isLocked ? (
+          <div className="page-appearance-locked">
+            <LockKeyhole size={17} />
+            <span>页面已锁定。先解锁，才能修改外观和内容。</span>
+          </div>
+        ) : (
+          <>
+            <div className="page-appearance-row">
+              <label>
+                页面图标
+                <input
+                  value={icon}
+                  maxLength={32}
+                  placeholder="输入一个 Emoji"
+                  onChange={(event) => setIcon(event.target.value)}
+                />
+              </label>
+              <button type="button" onClick={() => setIcon('')} disabled={!icon}>
+                移除图标
+              </button>
+            </div>
+            <div className="page-cover-setting">
+              {coverAttachmentId ? (
+                <img src={attachmentDownloadUrl(coverAttachmentId)} alt="当前页面封面" />
+              ) : (
+                <div className="page-cover-placeholder">添加一张页面封面</div>
+              )}
+              <div>
+                <label className="file-button">
+                  <Upload size={15} /> {busy ? '上传中…' : '上传图片'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={busy}
+                    onChange={(event) => void uploadCover(event.target.files?.[0])}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!coverAttachmentId || busy}
+                  onClick={() => setCoverAttachmentId(null)}
+                >
+                  移除封面
+                </button>
+              </div>
+            </div>
+            <fieldset className="page-font-options">
+              <legend>字体</legend>
+              {(
+                [
+                  ['sans', '默认', '清晰、现代'],
+                  ['serif', '衬线', '适合长文阅读'],
+                  ['mono', '等宽', '适合技术内容'],
+                ] as const
+              ).map(([value, label, description]) => (
+                <label key={value} className={`font-${value}`}>
+                  <input
+                    type="radio"
+                    name="fontStyle"
+                    value={value}
+                    checked={fontStyle === value}
+                    onChange={() => setFontStyle(value)}
+                  />
+                  <span>
+                    <strong>{label}</strong>
+                    <small>{description}</small>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <label className="page-setting-toggle">
+              <span>
+                <strong>全宽页面</strong>
+                <small>让内容使用更多横向空间</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={isFullWidth}
+                onChange={(event) => setIsFullWidth(event.target.checked)}
+              />
+            </label>
+            <label className="page-setting-toggle">
+              <span>
+                <strong>小字号</strong>
+                <small>提高长页面的信息密度</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={isSmallText}
+                onChange={(event) => setIsSmallText(event.target.checked)}
+              />
+            </label>
+            {canManage ? (
+              <label className="page-setting-toggle">
+                <span>
+                  <strong>锁定页面</strong>
+                  <small>关闭现有编辑连接，并阻止内容和数据库写入</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={isLocked}
+                  onChange={(event) => setIsLocked(event.target.checked)}
+                />
+              </label>
+            ) : null}
+          </>
+        )}
+        {error ? (
+          <p className="dialog-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="dialog-actions">
+          <button type="button" disabled={busy} onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={busy || (page.isLocked && !canManage)}
+          >
+            {busy ? '保存中…' : page.isLocked ? '解锁页面' : '保存'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function DocumentWorkspace({
   initialPage,
   initialPages,
@@ -1203,6 +1416,7 @@ function DocumentWorkspace({
   const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
+  const [appearanceDialogOpen, setAppearanceDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [accessDialogOpen, setAccessDialogOpen] = useState(false);
   const [moveParentId, setMoveParentId] = useState(page.parentId ?? '');
@@ -1220,7 +1434,9 @@ function DocumentWorkspace({
   const httpTransportRef = useRef<HttpCollaborationTransport | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
-  const canEdit = page.role === 'space_admin' || page.role === 'editor';
+  const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
+  const canManagePage = page.role === 'space_admin';
+  const canEdit = canEditStructure && !page.isLocked;
   const handleEditorReady = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
   }, []);
@@ -1659,7 +1875,7 @@ function DocumentWorkspace({
               主页
             </a>
           ) : null}
-          {canEdit ? (
+          {canEditStructure ? (
             <button
               onClick={() => void createAndOpenPage(null)}
               disabled={creatingUnder !== undefined}
@@ -1681,7 +1897,7 @@ function DocumentWorkspace({
             creatingUnder={creatingUnder}
             onToggle={togglePage}
             onCreateChild={(parentId) => void createAndOpenPage(parentId)}
-            canCreate={canEdit}
+            canCreate={canEditStructure}
           />
           {pageTree.length === 0 && <div className="page-tree-empty">还没有页面</div>}
           {treeError && <div className="page-tree-error">{treeError}</div>}
@@ -1730,6 +1946,7 @@ function DocumentWorkspace({
               </>
             ) : null}
             <span>{page.title}</span>
+            {page.isLocked ? <LockKeyhole size={13} aria-label="页面已锁定" /> : null}
           </div>
           <div className="header-actions">
             {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
@@ -1768,7 +1985,7 @@ function DocumentWorkspace({
                 <Download size={16} /> 导出
               </button>
             ) : null}
-            {canEdit ? (
+            {canEditStructure ? (
               <button
                 className="icon-button"
                 aria-label="更多"
@@ -1780,6 +1997,15 @@ function DocumentWorkspace({
             ) : null}
             {pageMenuOpen ? (
               <div className="page-action-menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAppearanceDialogOpen(true);
+                    setPageMenuOpen(false);
+                  }}
+                >
+                  <Sparkles size={15} /> 自定义页面
+                </button>
                 {page.role === 'space_admin' ? (
                   <button
                     type="button"
@@ -1839,7 +2065,28 @@ function DocumentWorkspace({
         </header>
 
         <div className="document-scroll">
-          <article className="document-sheet">
+          <article
+            className={`document-sheet font-${page.fontStyle} ${page.isFullWidth ? 'page-full-width' : ''} ${page.isSmallText ? 'page-small-text' : ''} ${page.coverAttachmentId ? 'has-cover' : ''}`}
+          >
+            {page.coverAttachmentId ? (
+              <div className="page-cover">
+                <img src={attachmentDownloadUrl(page.coverAttachmentId)} alt="" />
+              </div>
+            ) : null}
+            {page.icon ? (
+              canEditStructure && !renewTicket ? (
+                <button
+                  className="page-icon-display"
+                  type="button"
+                  aria-label="修改页面图标"
+                  onClick={() => setAppearanceDialogOpen(true)}
+                >
+                  {page.icon}
+                </button>
+              ) : (
+                <span className="page-icon-display static">{page.icon}</span>
+              )
+            ) : null}
             <div className="document-kicker">团队知识 / 协作原型</div>
             <input
               className="title-input"
@@ -1853,6 +2100,11 @@ function DocumentWorkspace({
               onBlur={() => void flushTitle()}
               aria-label="页面标题"
             />
+            {page.isLocked ? (
+              <div className="page-lock-notice">
+                <LockKeyhole size={15} /> 页面已锁定，当前为只读模式
+              </div>
+            ) : null}
             {database ? (
               <DatabaseCanvas initialSnapshot={database} canEdit={canEdit} />
             ) : collab ? (
@@ -1915,6 +2167,23 @@ function DocumentWorkspace({
             <AttachmentPanel pageId={page.id} canEdit={canEdit} onInsert={insertAttachment} />
           )}
         </aside>
+      ) : null}
+      {appearanceDialogOpen && !renewTicket ? (
+        <PageAppearanceDialog
+          page={page}
+          canManage={canManagePage}
+          onClose={() => setAppearanceDialogOpen(false)}
+          onSaved={(updated) => {
+            if (updated.isLocked !== page.isLocked) {
+              window.location.reload();
+              return;
+            }
+            setPage(updated);
+            setPages((current) =>
+              current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+            );
+          }}
+        />
       ) : null}
       {moveDialogOpen ? (
         <div className="dialog-backdrop" role="presentation">
@@ -2027,7 +2296,11 @@ function PageTree({
                 href={`/p/${encodeURIComponent(node.id)}`}
                 aria-current={active ? 'page' : undefined}
               >
-                <FileText size={14} />
+                {node.icon ? (
+                  <span className="page-tree-icon">{node.icon}</span>
+                ) : (
+                  <FileText size={14} />
+                )}
                 <span>{node.title}</span>
               </a>
               {canCreate ? (

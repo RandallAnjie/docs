@@ -91,6 +91,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行自动化迁移 `0015_database_automations.sql` 时第八次复现：CLI 报告成功，两张目标表已创建，生产表数由 43 增至 45，但第 15 条账本仍为 `(15, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-bdw4gk/before-0015.sql`（143,552 bytes）。复验目标表定义和外键后，只把第 15 条 Rdocs 账本记录修复为实际文件名；迁移列表 `0001`–`0015` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行页面外观与锁定迁移 `0016_page_appearance_and_lock.sql` 时第九次复现：6 个页面字段和封面索引均已创建，现有页面全部回填安全默认值，但第 16 条账本仍为 `(16, NULL, NULL)`。执行前 45 表完整备份位于 `/tmp/rdocs-db-backup-lScGOg/before-0016.sql`（145,279 bytes）。复验页面 schema 后，只修复第 16 条 Rdocs 账本记录；迁移列表 `0001`–`0016` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

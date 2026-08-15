@@ -16,6 +16,14 @@ interface AttachmentRow {
   sha256: string;
 }
 
+interface PageAppearanceRow {
+  icon: string | null;
+  cover_attachment_id: string | null;
+  font_style: 'sans' | 'serif' | 'mono';
+  is_full_width: number;
+  is_small_text: number;
+}
+
 export class PageContentCopyError extends Error {
   constructor(
     message: string,
@@ -144,7 +152,30 @@ export async function copyPageContent(
   )
     .bind(input.sourcePageId)
     .first<{ normalized_body: string }>();
+  const appearance = await env.DB.prepare(
+    `SELECT icon, cover_attachment_id, font_style, is_full_width, is_small_text
+       FROM pages WHERE id = ?`,
+  )
+    .bind(input.sourcePageId)
+    .first<PageAppearanceRow>();
   statements.push(
+    env.DB.prepare(
+      `UPDATE pages
+          SET icon = ?, cover_attachment_id = ?, font_style = ?,
+              is_full_width = ?, is_small_text = ?, updated_by = ?, updated_at = ?
+        WHERE id = ?`,
+    ).bind(
+      appearance?.icon ?? null,
+      appearance?.cover_attachment_id
+        ? (attachmentIds.get(appearance.cover_attachment_id) ?? null)
+        : null,
+      appearance?.font_style ?? 'sans',
+      appearance?.is_full_width ? 1 : 0,
+      appearance?.is_small_text ? 1 : 0,
+      input.actorId,
+      now,
+      input.targetPageId,
+    ),
     env.DB.prepare(
       `UPDATE page_search_projection SET normalized_body = ?, updated_at = ? WHERE page_id = ?`,
     ).bind(projection?.normalized_body ?? '', now, input.targetPageId),

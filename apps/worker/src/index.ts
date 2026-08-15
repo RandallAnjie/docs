@@ -71,6 +71,12 @@ interface PageRow {
   space_id: string;
   parent_id: string | null;
   title: string;
+  icon: string | null;
+  cover_attachment_id: string | null;
+  font_style: 'sans' | 'serif' | 'mono';
+  is_full_width: number;
+  is_small_text: number;
+  is_locked: number;
   current_generation: number;
   editor_schema_version: number;
   updated_at: number;
@@ -167,6 +173,12 @@ function pageFromRow(row: PageRow): PageSummary {
     spaceId: row.space_id,
     parentId: row.parent_id,
     title: row.title,
+    icon: row.icon,
+    coverAttachmentId: row.cover_attachment_id,
+    fontStyle: row.font_style,
+    isFullWidth: Boolean(row.is_full_width),
+    isSmallText: Boolean(row.is_small_text),
+    isLocked: Boolean(row.is_locked),
     currentGeneration: Number(row.current_generation),
     editorSchemaVersion: Number(row.editor_schema_version),
     updatedAt: Number(row.updated_at),
@@ -212,6 +224,8 @@ function documentRoom(env: Env, pageId: string, generation: number): DurableObje
 async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
   const row = await env.DB.prepare(
     `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+            p.icon, p.cover_attachment_id, p.font_style,
+            p.is_full_width, p.is_small_text, p.is_locked,
             p.current_generation, p.editor_schema_version, p.updated_at,
             a.collaboration_enabled, a.acl_version
        FROM pages p
@@ -274,6 +288,8 @@ async function searchPages(
   const like = escapedLike(query);
   const match = ftsMatchQuery(query);
   const baseSql = `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+                          p.icon, p.cover_attachment_id, p.font_style,
+                          p.is_full_width, p.is_small_text, p.is_locked,
                           p.current_generation, p.editor_schema_version, p.updated_at,
                           a.collaboration_enabled, a.acl_version,
                           projection.normalized_body
@@ -337,6 +353,8 @@ async function listPageActivity(
   const rows = (
     await env.DB.prepare(
       `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version,
               activity.${activityColumn} AS activity_at
@@ -607,12 +625,16 @@ async function deleteAttachment(
   actorId: string,
 ): Promise<Response> {
   const deletedAt = Date.now();
-  await env.DB.prepare(
-    `UPDATE attachments SET status = 'deleted', deleted_at = ?
-      WHERE id = ? AND status <> 'deleted'`,
-  )
-    .bind(deletedAt, attachment.id)
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE attachments SET status = 'deleted', deleted_at = ?
+        WHERE id = ? AND status <> 'deleted'`,
+    ).bind(deletedAt, attachment.id),
+    env.DB.prepare(
+      `UPDATE pages SET cover_attachment_id = NULL, updated_by = ?, updated_at = ?
+        WHERE id = ? AND cover_attachment_id = ?`,
+    ).bind(actorId, deletedAt, page.id, attachment.id),
+  ]);
   await pageAudit(env, page, actorId, 'attachment.deleted', {
     attachmentId: attachment.id,
     retainedObject: true,
@@ -1226,14 +1248,18 @@ async function copyPage(
   }
   const snapshot = rewriteYjsAttachmentReferences(sourceSnapshot, attachmentIds);
   const contentHash = await sha256Hex(snapshot);
+  const copiedCoverAttachmentId = source.coverAttachmentId
+    ? (attachmentIds.get(source.coverAttachmentId) ?? null)
+    : null;
   try {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO pages(
-         id, organization_id, space_id, parent_id, title, sort_key,
+         id, organization_id, space_id, parent_id, title, sort_key, icon,
+         cover_attachment_id, font_style, is_full_width, is_small_text,
          current_generation, editor_schema_version, created_by, updated_by,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
       ).bind(
         id,
         source.organizationId,
@@ -1241,6 +1267,11 @@ async function copyPage(
         parentId,
         title,
         now.toString().padStart(20, '0'),
+        source.icon,
+        copiedCoverAttachmentId,
+        source.fontStyle,
+        source.isFullWidth ? 1 : 0,
+        source.isSmallText ? 1 : 0,
         EDITOR_SCHEMA_VERSION,
         actorId,
         actorId,
@@ -1734,23 +1765,134 @@ async function createPage(request: Request, env: Env, actorId: string): Promise<
 async function updatePage(
   request: Request,
   env: Env,
-  pageId: string,
+  currentPage: PageSummary,
   actorId: string,
+  role: 'space_admin' | 'editor' | 'commenter' | 'viewer',
+  context: ExecutionContext,
 ): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { title?: unknown };
-  if (typeof body.title !== 'string') return error('title 必须是字符串', 400);
-  const title = (body.title.trim() || '未命名页面').slice(0, MAX_TITLE_LENGTH);
-  const result = await env.DB.prepare(
-    `UPDATE pages SET title = ?, updated_by = ?, updated_at = ?
-      WHERE id = ? AND deleted_at IS NULL`,
-  )
-    .bind(title, actorId, Date.now(), pageId)
-    .run();
-  if (!result.meta.changes) return error('页面不存在', 404);
-  await updateSearchProjectionTitle(env, pageId, title);
-  const page = await findPage(env, pageId);
-  if (page) await pageAudit(env, page, actorId, 'page.title.updated', { title });
-  return json({ page });
+  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body || Array.isArray(body)) return error('页面设置格式无效', 400);
+  const allowedKeys = new Set([
+    'title',
+    'icon',
+    'coverAttachmentId',
+    'fontStyle',
+    'isFullWidth',
+    'isSmallText',
+    'isLocked',
+  ]);
+  const keys = Object.keys(body);
+  if (!keys.length || keys.some((key) => !allowedKeys.has(key))) {
+    return error('没有可更新的页面设置', 400);
+  }
+  const canEdit = role === 'space_admin' || role === 'editor';
+  const managesPage = role === 'space_admin';
+  if (!canEdit) return error('页面不存在或无权编辑', 404);
+  if ('isLocked' in body && (typeof body.isLocked !== 'boolean' || !managesPage)) {
+    return error('只有页面管理员可以锁定或解锁页面', 403);
+  }
+  if (currentPage.isLocked && !(keys.length === 1 && body.isLocked === false && managesPage)) {
+    return error('页面已锁定，请先解锁', 423, 'page_locked');
+  }
+
+  const fields = ['updated_by = ?', 'updated_at = ?'];
+  const now = Date.now();
+  const values: unknown[] = [actorId, now];
+  let title: string | null = null;
+  if ('title' in body) {
+    if (typeof body.title !== 'string') return error('title 必须是字符串', 400);
+    title = (body.title.trim() || '未命名页面').slice(0, MAX_TITLE_LENGTH);
+    fields.push('title = ?');
+    values.push(title);
+  }
+  if ('icon' in body) {
+    if (body.icon !== null && typeof body.icon !== 'string') {
+      return error('页面图标格式无效', 400);
+    }
+    const icon = typeof body.icon === 'string' ? body.icon.trim() : '';
+    if ([...icon].length > 16) return error('页面图标过长', 400);
+    fields.push('icon = ?');
+    values.push(icon || null);
+  }
+  if ('coverAttachmentId' in body) {
+    if (body.coverAttachmentId !== null && typeof body.coverAttachmentId !== 'string') {
+      return error('封面附件 ID 无效', 400);
+    }
+    const coverAttachmentId = body.coverAttachmentId;
+    if (typeof coverAttachmentId === 'string') {
+      if (!isPageId(coverAttachmentId)) return error('封面附件 ID 无效', 400);
+      const attachment = await env.DB.prepare(
+        `SELECT 1 AS found FROM attachments
+          WHERE id = ? AND page_id = ? AND organization_id = ?
+            AND status = 'ready' AND deleted_at IS NULL AND mime_type LIKE 'image/%'`,
+      )
+        .bind(coverAttachmentId, currentPage.id, currentPage.organizationId)
+        .first<{ found: number }>();
+      if (!attachment) return error('封面图片不存在或不属于当前页面', 400);
+    }
+    fields.push('cover_attachment_id = ?');
+    values.push(coverAttachmentId);
+  }
+  if ('fontStyle' in body) {
+    if (!['sans', 'serif', 'mono'].includes(String(body.fontStyle))) {
+      return error('页面字体无效', 400);
+    }
+    fields.push('font_style = ?');
+    values.push(body.fontStyle);
+  }
+  for (const [key, column] of [
+    ['isFullWidth', 'is_full_width'],
+    ['isSmallText', 'is_small_text'],
+    ['isLocked', 'is_locked'],
+  ] as const) {
+    if (!(key in body)) continue;
+    if (typeof body[key] !== 'boolean') return error(`${key} 必须是布尔值`, 400);
+    fields.push(`${column} = ?`);
+    values.push(body[key] ? 1 : 0);
+  }
+  values.push(currentPage.id);
+  const lockChanged = typeof body.isLocked === 'boolean' && body.isLocked !== currentPage.isLocked;
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `UPDATE pages SET ${fields.join(', ')} WHERE id = ? AND deleted_at IS NULL`,
+    ).bind(...values),
+  ];
+  if (lockChanged) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE page_access_state
+            SET acl_version = acl_version + 1, updated_at = ? WHERE page_id = ?`,
+      ).bind(now, currentPage.id),
+    );
+  }
+  const [result] = await env.DB.batch(statements);
+  if (!result?.meta.changes) return error('页面不存在', 404);
+  if (title !== null) await updateSearchProjectionTitle(env, currentPage.id, title);
+  const page = await findPage(env, currentPage.id);
+  if (!page) return error('页面不存在', 404);
+  if (title !== null) await pageAudit(env, page, actorId, 'page.title.updated', { title });
+  const appearance = Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'title'));
+  if (Object.keys(appearance).length) {
+    await pageAudit(env, page, actorId, 'page.appearance.updated', appearance);
+  }
+  if (lockChanged) {
+    invalidateCollaborationPage(page.id);
+    const room = documentRoom(env, page.id, page.currentGeneration);
+    context.waitUntil(
+      room
+        .fetch('https://rdocs.internal/internal/access', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            enabled: page.collaborationEnabled,
+            aclVersion: page.aclVersion,
+            closeConnections: true,
+          }),
+        })
+        .then(() => undefined),
+    );
+  }
+  return json({ page: { ...page, role } });
 }
 
 async function pageAudit(
@@ -1891,6 +2033,8 @@ async function deletePage(
           WHERE p.deleted_at IS NULL
        )
        SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version
          FROM pages p JOIN page_access_state a ON a.page_id = p.id
@@ -1949,6 +2093,8 @@ async function listTrash(env: Env, spaceId: string, actorId: string): Promise<Re
   const rows = (
     await env.DB.prepare(
       `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at, p.deleted_at,
               a.collaboration_enabled, a.acl_version
          FROM pages p
@@ -1973,6 +2119,8 @@ async function listTrash(env: Env, spaceId: string, actorId: string): Promise<Re
 async function restorePage(env: Env, pageId: string, actorId: string): Promise<Response> {
   const row = await env.DB.prepare(
     `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+            p.icon, p.cover_attachment_id, p.font_style,
+            p.is_full_width, p.is_small_text, p.is_locked,
             p.current_generation, p.editor_schema_version, p.updated_at, p.deleted_at,
             a.collaboration_enabled, a.acl_version
        FROM pages p JOIN page_access_state a ON a.page_id = p.id
@@ -2058,6 +2206,8 @@ async function bumpPageSubtreeAcl(
           WHERE p.deleted_at IS NULL
        )
        SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version
          FROM pages p JOIN page_access_state a ON a.page_id = p.id
@@ -2250,7 +2400,9 @@ async function issueTicket(
     return error('页面不存在或无权访问', 404);
   }
   const ticketRole =
-    authorized.role === 'space_admin' || authorized.role === 'editor' ? 'editor' : 'viewer';
+    !page.isLocked && (authorized.role === 'space_admin' || authorized.role === 'editor')
+      ? 'editor'
+      : 'viewer';
 
   const issuedAt = Date.now();
   const expiresAt = issuedAt + 5 * 60 * 1000;
@@ -2704,8 +2856,9 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
         : error('页面不存在或无权访问', 404);
     }
     if (request.method === 'PATCH') {
-      return (await requirePageAction(env, pageId, actorId, 'edit_content'))
-        ? updatePage(request, env, pageId, actorId)
+      const authorized = await requirePageAction(env, pageId, actorId, 'view');
+      return authorized
+        ? updatePage(request, env, authorized.page, actorId, authorized.role, context)
         : error('页面不存在或无权编辑', 404);
     }
     if (request.method === 'DELETE') {

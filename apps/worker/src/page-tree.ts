@@ -16,6 +16,12 @@ interface PageTreeRow {
   space_id: string;
   parent_id: string | null;
   title: string;
+  icon: string | null;
+  cover_attachment_id: string | null;
+  font_style: 'sans' | 'serif' | 'mono';
+  is_full_width: number;
+  is_small_text: number;
+  is_locked: number;
   current_generation: number;
   editor_schema_version: number;
   updated_at: number;
@@ -44,6 +50,12 @@ function pageFromRow(row: PageTreeRow): PageSummary {
     spaceId: row.space_id,
     parentId: row.parent_id,
     title: row.title,
+    icon: row.icon,
+    coverAttachmentId: row.cover_attachment_id,
+    fontStyle: row.font_style,
+    isFullWidth: Boolean(row.is_full_width),
+    isSmallText: Boolean(row.is_small_text),
+    isLocked: Boolean(row.is_locked),
     currentGeneration: Number(row.current_generation),
     editorSchemaVersion: Number(row.editor_schema_version),
     updatedAt: Number(row.updated_at),
@@ -90,6 +102,8 @@ export async function listPages(env: Env, spaceId: string, userId: string): Prom
           WHERE child.deleted_at IS NULL
        )
        SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version, a.access_mode
          FROM pages p

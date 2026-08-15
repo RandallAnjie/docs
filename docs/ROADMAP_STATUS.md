@@ -62,11 +62,12 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 | 公开表单                       | 核心闭环完成           | 哈希能力令牌、过期/撤销/限流、字段显隐/排序/必填；系统提交者不属于任何租户且可触发规则                        |
 | 项目管理                       | 核心套件完成           | 原子创建项目/任务/Sprint 数据源；双向关系、依赖、父任务、看板、日历、时间线和进度                             |
 | 按钮、自动化                   | 核心闭环完成，持续增强 | 数据库按钮；5 类触发器、5 类单步动作、暂停/手动运行、幂等运行记录、签名 Webhook；执行时重新校验创建者当前权限 |
+| 页面外观与锁定                 | 核心闭环完成           | Emoji 图标、私有图片封面、三类字体、全宽/小字号；锁定进入共享 ACL、协作票据和旧连接撤权链路                   |
 | Sites、AI、企业治理、API、跨端 | 待实施                 | 详见功能等价实施基线                                                                                          |
 
 ## 上线状态与仍需本人完成的动作
 
-- 已完成：备份生产 D1，并精确应用 migrations `0004`–`0015`；迁移账本、模板/表单/自动化表、系统身份、设备密钥、组织所有者和外键完整性均已复验。
+- 已完成：备份生产 D1，并精确应用 migrations `0004`–`0016`；迁移账本、模板/表单/自动化表、页面外观字段、系统身份、设备密钥、组织所有者和外键完整性均已复验。
 - 已完成：格式、类型、单元/集成测试、构建、原生 WebSocket、generation 恢复和生产产品主链路 smoke。
 - 已完成：Rdocs v0.1 业务代码合并到 `main`，RandallFlare Git build 已自动激活并在正式域名复验。
 - 已完成：按 [设备密钥手册](PASSKEY_SETUP.md) 登记真实密钥、切换到 `passkey`、删除一次性登记 secret，并让旧 `phase0` 配置在代码中失效。
@@ -75,9 +76,9 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 ## 已知非阻塞差异
 
 - RandallFlare 已修复此前的平台阻塞；历史见 [平台修复清单](RANDALLFLARE_PLATFORM_ISSUES.md)。
-- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0015` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
+- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0016` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
 - 重复运行生产产品 smoke 时，三个不同写端点间歇出现过 `502 upstream peer unreachable`；完整重跑可以通过，已作为 RF-8 记录并保留 request ID，不能视为 Rdocs 业务层已消除的平台可靠性风险。
 - Rdocs 当前没有 browser→R2 直传所需的项目级短期签名配置，因此附件走鉴权 Worker，单文件限制 25 MB。功能、权限和数据保留闭环不受影响，大附件成本路径尚未达到设计推荐值。
 - 本机随附的 `workerd 2026-08-14` 当前只接受到 `2026-07-08` 的 compatibility date，导致本地完整 Worker 浏览器验收无法启动；生产 RandallFlare 不受该本地工具版本限制。
 
-当前自动验证包括 74 项单元/集成测试、双客户端 WebSocket smoke、generation 恢复 smoke，以及需要设备密钥测试会话的产品 smoke。匿名产品 smoke 已停用。
+当前自动验证包括 75 项单元/集成测试、双客户端 WebSocket smoke、generation 恢复 smoke，以及需要设备密钥测试会话的产品 smoke。匿名产品 smoke 已停用。
