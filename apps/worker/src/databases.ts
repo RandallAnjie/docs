@@ -1375,11 +1375,25 @@ async function deleteProperty(
       if (reciprocal.is_locked) return error('目标数据库已锁定', 409);
     }
   }
+  const now = Date.now();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM database_properties WHERE id = ? AND database_id = ?').bind(
       propertyId,
       authorization.database.id,
     ),
+    ...(property.type === 'date'
+      ? [
+          env.DB.prepare(
+            `UPDATE page_reminders
+                SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+              WHERE source_type = 'database_date' AND status = 'scheduled'
+                AND source_id LIKE ?
+                AND page_id IN (
+                  SELECT page_id FROM database_rows WHERE database_id = ?
+                )`,
+          ).bind(now, now, `%:${propertyId}`, authorization.database.id),
+        ]
+      : []),
     ...(syncedPropertyId
       ? [env.DB.prepare('DELETE FROM database_properties WHERE id = ?').bind(syncedPropertyId)]
       : []),
@@ -2529,6 +2543,18 @@ async function updateRow(
       ? (titleProperty[1].trim() || '未命名').slice(0, 200)
       : null;
   const now = Date.now();
+  const clearedDateReminderStatements = [...normalized.values].flatMap(([property, value]) =>
+    property.type === 'date' && value === null
+      ? [
+          env.DB.prepare(
+            `UPDATE page_reminders
+                SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+              WHERE page_id = ? AND source_type = 'database_date' AND source_id = ?
+                AND status = 'scheduled'`,
+          ).bind(now, now, row.page_id, `${authorization.database.id}:${rowId}:${property.id}`),
+        ]
+      : [],
+  );
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
       `UPDATE database_rows SET updated_by = ?, updated_at = ?, archived_at = ?
@@ -2542,12 +2568,22 @@ async function updateRow(
     ),
     ...cellStatements(env, authorization.database, rowId, actor.id, now, normalized.values),
     ...relationEdgeStatements(env, authorization.database, rowId, actor.id, now, normalized.values),
+    ...clearedDateReminderStatements,
     env.DB.prepare('UPDATE databases SET updated_by = ?, updated_at = ? WHERE id = ?').bind(
       actor.id,
       now,
       authorization.database.id,
     ),
   ];
+  if (archived) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE page_reminders
+            SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+          WHERE page_id = ? AND source_type = 'database_date' AND status = 'scheduled'`,
+      ).bind(now, now, row.page_id),
+    );
+  }
   if (title !== null) {
     statements.push(
       env.DB.prepare(

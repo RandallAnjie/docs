@@ -5,6 +5,7 @@ import { Bookmark, ExternalLink, ListTree, Pencil, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { attachmentEditorBlocks } from './AttachmentBlocks';
+import { inlineReminderExtension, type InlineReminderContext } from './InlineReminder';
 import {
   pageUtilityEditorBlocks,
   type BreadcrumbItem,
@@ -417,6 +418,7 @@ export function createRdocsEditorBlocks(
   getBreadcrumbItems: () => readonly BreadcrumbItem[] = () => [],
   getSyncedBlockContext: () => SyncedBlockContext | null = () => null,
   getPageLinkContext: () => PageLinkContext | null = () => null,
+  getInlineReminderContext: () => InlineReminderContext | null = () => null,
 ) {
   return [
     CalloutBlock,
@@ -425,6 +427,7 @@ export function createRdocsEditorBlocks(
     TableOfContentsBlock,
     ColumnsBlock,
     ColumnBlock,
+    inlineReminderExtension(getInlineReminderContext),
     ...attachmentEditorBlocks,
     ...pageUtilityEditorBlocks(getBreadcrumbItems, getPageLinkContext),
     ...syncedBlockExtensions(getSyncedBlockContext),

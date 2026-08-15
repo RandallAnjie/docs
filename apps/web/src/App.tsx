@@ -28,6 +28,7 @@ import {
   ArrowUp,
   Bookmark,
   Calculator,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronRight,
@@ -192,6 +193,7 @@ type SlashCommandId =
   | 'heading-1'
   | 'heading-2'
   | 'inline-math'
+  | 'inline-reminder'
   | 'audio'
   | 'numbered-list'
   | 'page-link'
@@ -303,6 +305,12 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     keywords: 'button action automation 按钮 动作',
   },
   {
+    id: 'inline-reminder',
+    label: '正文提醒',
+    description: '在文字中提醒自己或协作者',
+    keywords: 'remind reminder date time 提醒 日期 时间 @remind',
+  },
+  {
     id: 'synced-block',
     label: '同步块',
     description: '跨页面实时同步同一段内容',
@@ -406,6 +414,8 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <Link2 size={17} />;
     case 'page-button':
       return <Zap size={17} />;
+    case 'inline-reminder':
+      return <CalendarClock size={17} />;
     case 'synced-block':
       return <RefreshCw size={17} />;
     case 'file':
@@ -2488,7 +2498,7 @@ function DocumentWorkspace({
               </div>
             ) : null}
             {database ? (
-              <DatabaseCanvas initialSnapshot={database} canEdit={canEdit} />
+              <DatabaseCanvas initialSnapshot={database} canEdit={canEdit} actorId={identity.id} />
             ) : collab ? (
               <CollaborativeEditor
                 collab={collab}
@@ -2768,6 +2778,18 @@ function CollaborativeEditor({
   breadcrumbItemsRef.current = breadcrumbItems;
   const syncedBlockContextRef = useRef({ identity, pageId, publicShareToken });
   syncedBlockContextRef.current = { identity, pageId, publicShareToken };
+  const inlineReminderContextRef = useRef({
+    actorId: identity.id,
+    canEdit: editable,
+    pageId,
+    publicShareToken,
+  });
+  inlineReminderContextRef.current = {
+    actorId: identity.id,
+    canEdit: editable,
+    pageId,
+    publicShareToken,
+  };
   const editorBlocks = useMemo(
     () =>
       createRdocsEditorBlocks(
@@ -2777,6 +2799,7 @@ function CollaborativeEditor({
           containerPageId: syncedBlockContextRef.current.pageId,
           publicShareToken: syncedBlockContextRef.current.publicShareToken,
         }),
+        () => inlineReminderContextRef.current,
       ),
     [],
   );
@@ -3122,6 +3145,25 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'inline-reminder') {
+        editor
+          .chain()
+          .focus()
+          .deleteRange(context)
+          .insertContent({
+            type: 'inlineReminder',
+            attrs: {
+              sourceId: crypto.randomUUID(),
+              createdBy: identity.id,
+              recipientId: identity.id,
+              message: '查看这里',
+            },
+          })
+          .run();
+        setSlashMenu(null);
+        return;
+      }
+
       if (id === 'audio' || id === 'file' || id === 'video') {
         editor.chain().focus().deleteRange(context).run();
         onRequestAttachment(id);
@@ -3293,7 +3335,7 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor, onCreateSyncedBlock, onRequestAttachment, organizationId],
+    [editor, identity.id, onCreateSyncedBlock, onRequestAttachment, organizationId],
   );
 
   useEffect(() => setSlashIndex(0), [slashMenu?.query]);

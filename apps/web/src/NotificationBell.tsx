@@ -11,6 +11,7 @@ import {
   Clock3,
   MessageSquare,
   Pencil,
+  Send,
   Shield,
   Trash2,
   UserRoundPlus,
@@ -35,6 +36,7 @@ import {
   listNotificationsView,
   listPageReminders,
   markAllNotificationsRead,
+  replyToCommentThread,
   setPageNotificationSettings,
   updateNotification,
   updateNotifications,
@@ -90,6 +92,8 @@ export function NotificationBell({ organizationId }: { organizationId: string })
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
+  const [replyingGroupKey, setReplyingGroupKey] = useState<string | null>(null);
+  const [replyBody, setReplyBody] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -138,6 +142,27 @@ export function NotificationBell({ organizationId }: { organizationId: string })
   };
 
   const notificationCount = groups.reduce((total, group) => total + group.notifications.length, 0);
+
+  const replyFromInbox = async (event: FormEvent, group: NotificationGroupSummary) => {
+    event.preventDefault();
+    if (!group.threadId || !replyBody.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await replyToCommentThread(group.threadId, replyBody.trim());
+      await updateNotifications(
+        group.notifications.map((notification) => notification.id),
+        { read: true },
+      );
+      setReplyBody('');
+      setReplyingGroupKey(null);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法从收件箱回复评论');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const mutateNotification = async (
     notification: NotificationSummary,
@@ -345,6 +370,49 @@ export function NotificationBell({ organizationId }: { organizationId: string })
                             </div>
                           </article>
                         ))}
+                        {group.threadId && view !== 'archived' ? (
+                          replyingGroupKey === group.key ? (
+                            <form
+                              className="notification-inline-reply"
+                              onSubmit={(event) => void replyFromInbox(event, group)}
+                            >
+                              <textarea
+                                autoFocus
+                                value={replyBody}
+                                maxLength={5_000}
+                                placeholder="直接回复这个评论线程…"
+                                onChange={(event) => setReplyBody(event.target.value)}
+                                disabled={busy}
+                              />
+                              <div>
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setReplyingGroupKey(null);
+                                    setReplyBody('');
+                                  }}
+                                >
+                                  取消
+                                </button>
+                                <button type="submit" disabled={busy || !replyBody.trim()}>
+                                  <Send size={13} /> {busy ? '发送中…' : '回复'}
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <button
+                              className="notification-reply-trigger"
+                              type="button"
+                              onClick={() => {
+                                setReplyingGroupKey(group.key);
+                                setReplyBody('');
+                              }}
+                            >
+                              <MessageSquare size={13} /> 直接回复
+                            </button>
+                          )
+                        ) : null}
                       </div>
                     ) : null}
                   </section>

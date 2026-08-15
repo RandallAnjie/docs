@@ -37,6 +37,7 @@ import type {
   PageLinkPreview,
   PageNotificationMode,
   PageNotificationSettings,
+  PageReminderSourceType,
   PageReminderSummary,
   PageSearchSort,
   PageSearchResult,
@@ -713,15 +714,19 @@ export function listPageReminders(
   return request(`/api/pages/${encodeURIComponent(pageId)}/reminders`);
 }
 
+export interface PageReminderInput {
+  recipientId: string;
+  message: string;
+  dueAt: number;
+  remindAt: number;
+  timezone: string;
+  sourceType?: PageReminderSourceType;
+  sourceId?: string | null;
+}
+
 export function createPageReminder(
   pageId: string,
-  input: {
-    recipientId: string;
-    message: string;
-    dueAt: number;
-    remindAt: number;
-    timezone: string;
-  },
+  input: PageReminderInput,
 ): Promise<{ reminders: PageReminderSummary[]; recipients: AuthUserSummary[] }> {
   return request(`/api/pages/${encodeURIComponent(pageId)}/reminders`, {
     method: 'POST',
@@ -731,13 +736,7 @@ export function createPageReminder(
 
 export function updatePageReminder(
   reminderId: string,
-  input: {
-    recipientId: string;
-    message: string;
-    dueAt: number;
-    remindAt: number;
-    timezone: string;
-  },
+  input: PageReminderInput,
 ): Promise<{ reminders: PageReminderSummary[]; recipients: AuthUserSummary[] }> {
   return request(`/api/reminders/${encodeURIComponent(reminderId)}`, {
     method: 'PATCH',
@@ -747,6 +746,17 @@ export function updatePageReminder(
 
 export function cancelPageReminder(reminderId: string): Promise<{ ok: true }> {
   return request(`/api/reminders/${encodeURIComponent(reminderId)}`, { method: 'DELETE' });
+}
+
+export function cancelPageReminderSource(
+  pageId: string,
+  sourceType: 'inline' | 'database_date',
+  sourceId: string,
+): Promise<{ ok: true }> {
+  const query = new URLSearchParams({ sourceType, sourceId });
+  return request(`/api/pages/${encodeURIComponent(pageId)}/reminders/source?${query.toString()}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function uploadAttachment(
