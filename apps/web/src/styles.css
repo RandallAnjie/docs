@@ -4586,6 +4586,71 @@ button {
   display: inline-flex;
   padding: 5px;
 }
+.database-view-config-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.database-view-config-field select {
+  min-width: 180px;
+  border: 1px solid #e1e0dd;
+  border-radius: 5px;
+  background: #fff;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 11px;
+}
+.database-view-properties {
+  display: grid;
+  gap: 3px;
+}
+.database-view-property-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) auto 62px minmax(100px, 0.8fr);
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+}
+.database-view-property-row > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+.database-view-property-row > label span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.database-view-property-row select,
+.database-view-width {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #e1e0dd;
+  border-radius: 5px;
+  background: #fff;
+  padding: 4px 5px;
+  font: inherit;
+  font-size: 10px;
+}
+.database-view-property-order {
+  display: flex;
+}
+.database-view-property-order button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #898781;
+  cursor: pointer;
+}
+.database-view-property-order button:hover:not(:disabled) {
+  background: #efefed;
+  color: #37352f;
+}
 .database-view-options footer {
   display: flex;
   flex-direction: column;
@@ -4681,6 +4746,38 @@ button {
 }
 .database-table th button:hover svg {
   opacity: 1;
+}
+.database-table-group-heading th {
+  height: 38px;
+  border-right: 0;
+  border-left: 0 !important;
+  color: #37352f;
+  font-weight: 600;
+}
+.database-table-group-heading th button {
+  width: auto;
+  gap: 7px;
+}
+.database-table-group-heading th button svg {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  opacity: 1;
+  transition: transform 120ms ease;
+}
+.database-table-group-heading th button svg.collapsed {
+  transform: rotate(-90deg);
+}
+.database-table-group-heading small {
+  color: #9b9994;
+  font-weight: 400;
+}
+.database-table-aggregations td {
+  height: 30px;
+  padding: 0 8px;
+  color: #787671;
+  font-size: 11px;
+  text-align: right;
 }
 .database-input-cell {
   height: 100%;
@@ -5277,6 +5374,20 @@ button {
 .database-dialog textarea {
   min-height: 88px;
   resize: vertical;
+}
+.database-dialog-hint {
+  margin: -4px 0 2px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-dialog-checkbox {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+}
+.database-dialog-checkbox input {
+  width: auto !important;
 }
 .database-dialog-actions {
   display: grid !important;

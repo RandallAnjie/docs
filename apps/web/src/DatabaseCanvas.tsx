@@ -22,6 +22,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -62,8 +63,12 @@ import {
 } from './api';
 import {
   applyDatabaseView,
+  databaseAggregationValue,
   databaseViewFilters,
   databaseViewSorts,
+  groupDatabaseRows,
+  orderedVisibleDatabaseProperties,
+  type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
 
@@ -716,15 +721,46 @@ function TableDatabaseView({
   addRow,
   removeRow,
   openProperty,
+  view,
+  updateViewConfig,
 }: DatabaseViewProps & { openProperty: (property: DatabasePropertySummary) => void }) {
   if (!rows.length) return <EmptyDatabase onCreate={addRow} disabled={!canEdit} />;
+  const groupPropertyId =
+    typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : null;
+  const groups = groupDatabaseRows(rows, groupPropertyId);
+  const collapsedGroups = new Set(
+    Array.isArray(view.config.collapsedGroups)
+      ? view.config.collapsedGroups.filter((value): value is string => typeof value === 'string')
+      : [],
+  );
+  const propertyWidths =
+    view.config.propertyWidths &&
+    !Array.isArray(view.config.propertyWidths) &&
+    typeof view.config.propertyWidths === 'object'
+      ? view.config.propertyWidths
+      : {};
+  const aggregations =
+    view.config.aggregations &&
+    !Array.isArray(view.config.aggregations) &&
+    typeof view.config.aggregations === 'object'
+      ? view.config.aggregations
+      : {};
+  const grouped = Boolean(groupPropertyId);
   return (
     <div className="database-table-wrap">
       <table className="database-table">
         <thead>
           <tr>
             {properties.map((property) => (
-              <th key={property.id}>
+              <th
+                key={property.id}
+                style={{
+                  width:
+                    typeof propertyWidths[property.id] === 'number'
+                      ? Number(propertyWidths[property.id])
+                      : undefined,
+                }}
+              >
                 <button type="button" onClick={() => openProperty(property)}>
                   <span>{PROPERTY_LABELS[property.type]}</span>
                   {property.name}
@@ -735,37 +771,85 @@ function TableDatabaseView({
             {canEdit ? <th className="database-row-actions-heading" /> : null}
           </tr>
         </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              {properties.map((property) => (
-                <td key={property.id}>
-                  <DatabaseCell
-                    property={property}
-                    value={row.values[property.id]}
-                    disabled={!canEdit}
-                    openPage={property.type === 'title' ? row.pageId : undefined}
-                    organizationId={organizationId}
-                    rowPageId={row.pageId}
-                    onSave={(value) => saveCell(row, property, value)}
-                  />
-                </td>
-              ))}
-              {canEdit ? (
-                <td className="database-row-actions">
-                  <button
-                    type="button"
-                    title="归档记录"
-                    aria-label={`归档${rowTitle(row, properties)}`}
-                    onClick={() => removeRow(row)}
-                  >
-                    <Archive size={14} />
-                  </button>
-                </td>
-              ) : null}
-            </tr>
-          ))}
-        </tbody>
+        {groups.map((group) => (
+          <Fragment key={group.key}>
+            {grouped ? (
+              <tbody className="database-table-group-heading">
+                <tr>
+                  <th colSpan={properties.length + (canEdit ? 1 : 0)}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = new Set(collapsedGroups);
+                        if (next.has(group.key)) next.delete(group.key);
+                        else next.add(group.key);
+                        void updateViewConfig({
+                          ...view.config,
+                          collapsedGroups: [...next],
+                        });
+                      }}
+                    >
+                      <ChevronDown className={collapsedGroups.has(group.key) ? 'collapsed' : ''} />
+                      {group.label} <small>{group.rows.length}</small>
+                    </button>
+                  </th>
+                </tr>
+              </tbody>
+            ) : null}
+            {!collapsedGroups.has(group.key) ? (
+              <tbody>
+                {group.rows.map((row) => (
+                  <tr key={row.id}>
+                    {properties.map((property) => (
+                      <td key={property.id}>
+                        <DatabaseCell
+                          property={property}
+                          value={row.values[property.id]}
+                          disabled={!canEdit}
+                          openPage={property.type === 'title' ? row.pageId : undefined}
+                          organizationId={organizationId}
+                          rowPageId={row.pageId}
+                          onSave={(value) => saveCell(row, property, value)}
+                        />
+                      </td>
+                    ))}
+                    {canEdit ? (
+                      <td className="database-row-actions">
+                        <button
+                          type="button"
+                          title="归档记录"
+                          aria-label={`归档${rowTitle(row, properties)}`}
+                          onClick={() => removeRow(row)}
+                        >
+                          <Archive size={14} />
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+                ))}
+                {Object.keys(aggregations).length ? (
+                  <tr className="database-table-aggregations">
+                    {properties.map((property) => {
+                      const aggregation = aggregations[property.id];
+                      return (
+                        <td key={property.id}>
+                          {typeof aggregation === 'string'
+                            ? databaseAggregationValue(
+                                group.rows,
+                                property.id,
+                                aggregation as DatabaseAggregation,
+                              )
+                            : ''}
+                        </td>
+                      );
+                    })}
+                    {canEdit ? <td /> : null}
+                  </tr>
+                ) : null}
+              </tbody>
+            ) : null}
+          </Fragment>
+        ))}
       </table>
       {canEdit ? (
         <button className="database-new-row" type="button" onClick={addRow}>
@@ -1265,6 +1349,30 @@ function ViewOptionsPanel({
   const filters = databaseViewFilters(view.config);
   const sorts = databaseViewSorts(view.config);
   const propertyNames = new Map(properties.map((property) => [property.id, property.name]));
+  const visiblePropertyIds = new Set(
+    Array.isArray(view.config.visiblePropertyIds)
+      ? view.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string')
+      : properties.map((property) => property.id),
+  );
+  const configuredOrder = Array.isArray(view.config.propertyOrder)
+    ? view.config.propertyOrder.filter((id): id is string => typeof id === 'string')
+    : [];
+  const propertyOrder = [
+    ...configuredOrder.filter((id) => propertyNames.has(id)),
+    ...properties.map((property) => property.id).filter((id) => !configuredOrder.includes(id)),
+  ];
+  const propertyWidths =
+    view.config.propertyWidths &&
+    !Array.isArray(view.config.propertyWidths) &&
+    typeof view.config.propertyWidths === 'object'
+      ? view.config.propertyWidths
+      : {};
+  const aggregations =
+    view.config.aggregations &&
+    !Array.isArray(view.config.aggregations) &&
+    typeof view.config.aggregations === 'object'
+      ? view.config.aggregations
+      : {};
   const addFilter = async () => {
     if (!filterPropertyId) return;
     const next = [
@@ -1429,6 +1537,136 @@ function ViewOptionsPanel({
           </div>
         ) : null}
       </section>
+      <section>
+        <header>
+          <strong>分组</strong>
+        </header>
+        <label className="database-view-config-field">
+          <span>按属性分组</span>
+          <select
+            value={
+              typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : ''
+            }
+            disabled={!canEdit}
+            onChange={(event) =>
+              void onUpdate({
+                ...view.config,
+                groupPropertyId: event.target.value || null,
+                collapsedGroups: [],
+              })
+            }
+          >
+            <option value="">不分组</option>
+            {properties.map((property) => (
+              <option key={property.id} value={property.id}>
+                {property.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+      <section>
+        <header>
+          <strong>属性、列宽与计算</strong>
+        </header>
+        <div className="database-view-properties">
+          {propertyOrder.map((propertyId, index) => {
+            const property = properties.find((candidate) => candidate.id === propertyId);
+            if (!property) return null;
+            const aggregation = aggregations[property.id];
+            return (
+              <div key={property.id} className="database-view-property-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={property.type === 'title' || visiblePropertyIds.has(property.id)}
+                    disabled={!canEdit || property.type === 'title'}
+                    onChange={(event) => {
+                      const next = new Set(visiblePropertyIds);
+                      if (event.target.checked) next.add(property.id);
+                      else next.delete(property.id);
+                      void onUpdate({ ...view.config, visiblePropertyIds: [...next] });
+                    }}
+                  />
+                  <span>{property.name}</span>
+                </label>
+                <div className="database-view-property-order">
+                  <button
+                    type="button"
+                    aria-label={`${property.name}前移`}
+                    disabled={!canEdit || index === 0}
+                    onClick={() => {
+                      const next = [...propertyOrder];
+                      [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
+                      void onUpdate({ ...view.config, propertyOrder: next });
+                    }}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${property.name}后移`}
+                    disabled={!canEdit || index === propertyOrder.length - 1}
+                    onClick={() => {
+                      const next = [...propertyOrder];
+                      [next[index], next[index + 1]] = [next[index + 1]!, next[index]!];
+                      void onUpdate({ ...view.config, propertyOrder: next });
+                    }}
+                  >
+                    ↓
+                  </button>
+                </div>
+                <input
+                  className="database-view-width"
+                  type="number"
+                  min={100}
+                  max={600}
+                  step={20}
+                  aria-label={`${property.name}列宽`}
+                  disabled={!canEdit}
+                  value={
+                    typeof propertyWidths[property.id] === 'number'
+                      ? Number(propertyWidths[property.id])
+                      : 180
+                  }
+                  onChange={(event) =>
+                    void onUpdate({
+                      ...view.config,
+                      propertyWidths: {
+                        ...propertyWidths,
+                        [property.id]: Math.max(100, Math.min(600, Number(event.target.value))),
+                      },
+                    })
+                  }
+                />
+                <select
+                  aria-label={`${property.name}计算`}
+                  disabled={!canEdit}
+                  value={typeof aggregation === 'string' ? aggregation : ''}
+                  onChange={(event) => {
+                    const next = { ...aggregations };
+                    if (event.target.value) next[property.id] = event.target.value;
+                    else delete next[property.id];
+                    void onUpdate({ ...view.config, aggregations: next });
+                  }}
+                >
+                  <option value="">不计算</option>
+                  <option value="count_all">全部计数</option>
+                  <option value="count_values">非空计数</option>
+                  <option value="count_unique">唯一值计数</option>
+                  <option value="sum">求和</option>
+                  <option value="average">平均值</option>
+                  <option value="min">最小值</option>
+                  <option value="max">最大值</option>
+                  {property.type === 'checkbox' ? (
+                    <option value="percent_checked">已选百分比</option>
+                  ) : null}
+                </select>
+              </div>
+            );
+          })}
+        </div>
+      </section>
       <footer>
         {canLock ? (
           <button type="button" onClick={() => void onToggleLock()}>
@@ -1471,6 +1709,8 @@ function PropertyDialog({
   const [targetDatabaseId, setTargetDatabaseId] = useState(
     typeof property?.config.targetDatabaseId === 'string' ? property.config.targetDatabaseId : '',
   );
+  const [twoWayRelation, setTwoWayRelation] = useState(false);
+  const [reciprocalName, setReciprocalName] = useState('关联页面');
   const [prefix, setPrefix] = useState(
     typeof property?.config.prefix === 'string' ? property.config.prefix : '',
   );
@@ -1538,7 +1778,10 @@ function PropertyDialog({
         .filter(Boolean);
     }
     if (type === 'formula') config.expression = expression;
-    if (type === 'relation') config.targetDatabaseId = targetDatabaseId;
+    if (type === 'relation') {
+      config.targetDatabaseId = targetDatabaseId;
+      if (!property && twoWayRelation) config.reciprocalName = reciprocalName;
+    }
     if (type === 'rollup') {
       config.relationPropertyId = relationPropertyId;
       config.targetDatabaseId = targetDatabaseId;
@@ -1625,20 +1868,51 @@ function PropertyDialog({
           </label>
         ) : null}
         {type === 'relation' ? (
-          <label>
-            目标数据库
-            <select
-              value={targetDatabaseId}
-              onChange={(event) => setTargetDatabaseId(event.target.value)}
-            >
-              <option value="">选择数据库</option>
-              {databases.map((database) => (
-                <option key={database.id} value={database.id}>
-                  {database.title}
-                </option>
-              ))}
-            </select>
-          </label>
+          <>
+            <label>
+              目标数据库
+              <select
+                value={targetDatabaseId}
+                disabled={Boolean(property)}
+                onChange={(event) => setTargetDatabaseId(event.target.value)}
+              >
+                <option value="">选择数据库</option>
+                {databases.map((database) => (
+                  <option key={database.id} value={database.id}>
+                    {database.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {property ? (
+              typeof property.config.syncedPropertyId === 'string' ? (
+                <p className="database-dialog-hint">此关系会自动同步到目标数据库。</p>
+              ) : (
+                <p className="database-dialog-hint">这是单向关系；如需双向关系，请新建属性。</p>
+              )
+            ) : (
+              <>
+                <label className="database-dialog-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={twoWayRelation}
+                    onChange={(event) => setTwoWayRelation(event.target.checked)}
+                  />
+                  在目标数据库中显示反向关系
+                </label>
+                {twoWayRelation ? (
+                  <label>
+                    反向属性名称
+                    <input
+                      value={reciprocalName}
+                      maxLength={100}
+                      onChange={(event) => setReciprocalName(event.target.value)}
+                    />
+                  </label>
+                ) : null}
+              </>
+            )}
+          </>
         ) : null}
         {type === 'rollup' ? (
           <>
@@ -1809,8 +2083,14 @@ export function DatabaseCanvas({
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const viewSaveQueue = useRef(new Map<string, Promise<void>>());
+  const viewSaveVersion = useRef(new Map<string, number>());
   const activeView = snapshot.views.find((view) => view.id === activeViewId) ?? snapshot.views[0];
   const editable = canEdit && !snapshot.database.isLocked;
+  const viewProperties = useMemo(
+    () => orderedVisibleDatabaseProperties(snapshot.properties, activeView?.config ?? {}),
+    [activeView?.config, snapshot.properties],
+  );
 
   const refresh = useCallback(async () => {
     const next = await getDatabase(snapshot.database.id);
@@ -1904,11 +2184,40 @@ export function DatabaseCanvas({
 
   const updateViewConfig = async (config: Record<string, JsonValue>) => {
     if (!activeView || !editable) return;
-    const { view } = await updateDatabaseView(snapshot.database.id, activeView.id, { config });
+    const databaseId = snapshot.database.id;
+    const viewId = activeView.id;
+    const version = (viewSaveVersion.current.get(viewId) ?? 0) + 1;
+    viewSaveVersion.current.set(viewId, version);
     setSnapshot((current) => ({
       ...current,
-      views: current.views.map((candidate) => (candidate.id === view.id ? view : candidate)),
+      views: current.views.map((candidate) =>
+        candidate.id === viewId ? { ...candidate, config } : candidate,
+      ),
     }));
+    const preceding = viewSaveQueue.current.get(viewId) ?? Promise.resolve();
+    const save = preceding
+      .catch(() => undefined)
+      .then(async () => {
+        const { view } = await updateDatabaseView(databaseId, viewId, { config });
+        if (viewSaveVersion.current.get(viewId) !== version) return;
+        setSnapshot((current) => ({
+          ...current,
+          views: current.views.map((candidate) => (candidate.id === view.id ? view : candidate)),
+        }));
+        setError(null);
+      })
+      .catch(async (reason: unknown) => {
+        if (viewSaveVersion.current.get(viewId) !== version) return;
+        setError(reason instanceof Error ? reason.message : '视图自动保存失败');
+        try {
+          setSnapshot(await getDatabase(databaseId));
+        } catch {
+          // Keep the optimistic view visible while the connection recovers.
+        }
+      });
+    viewSaveQueue.current.set(viewId, save);
+    await save;
+    if (viewSaveQueue.current.get(viewId) === save) viewSaveQueue.current.delete(viewId);
   };
 
   const removeActiveView = async () => {
@@ -1940,7 +2249,7 @@ export function DatabaseCanvas({
   const viewProps: DatabaseViewProps = {
     organizationId: snapshot.database.organizationId,
     rows: filteredRows,
-    properties: snapshot.properties,
+    properties: viewProperties,
     view: activeView,
     canEdit: editable,
     saveCell,
