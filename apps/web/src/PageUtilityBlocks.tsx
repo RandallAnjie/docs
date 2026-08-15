@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import type { PageLinkPreview } from '@rdocs/shared';
 
 import { getPageLinkPreview } from './api';
+import { pageButtonDialog } from './dialogs';
 
 export interface BreadcrumbItem {
   id: string;
@@ -84,28 +85,13 @@ function BreadcrumbNodeView(props: NodeViewProps) {
 }
 
 function editPageButton(props: NodeViewProps) {
-  const currentAction = String(props.node.attrs.action ?? 'insertText') as PageButtonAction;
-  const label = window.prompt('按钮名称', String(props.node.attrs.label ?? '新按钮'));
-  if (label === null || !label.trim()) return;
-  const actionChoice = window.prompt(
-    '按钮动作：1 = 插入预设内容，2 = 打开网页',
-    currentAction === 'openUrl' ? '2' : '1',
-  );
-  if (actionChoice === null) return;
-  const action: PageButtonAction = actionChoice.trim() === '2' ? 'openUrl' : 'insertText';
-  const payload = window.prompt(
-    action === 'openUrl' ? '输入 HTTP(S) 网页地址' : '输入点击后要插入的内容；换行会创建多个段落',
-    String(props.node.attrs.payload ?? ''),
-  );
-  if (payload === null) return;
-  if (action === 'openUrl' && !normalizePageButtonUrl(payload)) {
-    window.alert('请输入有效的 HTTP(S) 网页地址');
-    return;
-  }
-  props.updateAttributes({
-    action,
-    label: label.trim().slice(0, 100),
-    payload: payload.slice(0, 10_000),
+  void pageButtonDialog({
+    defaultAction: String(props.node.attrs.action ?? 'insertText') as PageButtonAction,
+    defaultLabel: String(props.node.attrs.label ?? '新按钮'),
+    defaultPayload: String(props.node.attrs.payload ?? ''),
+    normalizeUrl: normalizePageButtonUrl,
+  }).then((button) => {
+    if (button) props.updateAttributes(button);
   });
 }
 

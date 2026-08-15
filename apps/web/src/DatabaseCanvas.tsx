@@ -107,6 +107,7 @@ import {
   type DatabaseFilterOperator,
 } from './database-view';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
+import { confirmDialog } from './dialogs';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   title: '标题',
@@ -1805,7 +1806,16 @@ function FormPublishingPanel(props: DatabaseViewProps) {
     }
   };
   const revoke = async (link: DatabaseFormLinkSummary) => {
-    if (busy || !window.confirm('关闭这个表单链接？已打开的链接将立即失效。')) return;
+    if (busy) return;
+    if (
+      !(await confirmDialog({
+        title: '关闭表单链接',
+        message: '关闭这个表单链接？已打开的链接将立即失效。',
+        confirmLabel: '关闭链接',
+        danger: true,
+      }))
+    )
+      return;
     setBusy(true);
     try {
       const result = await revokeDatabaseFormLink(link.id);
@@ -2760,10 +2770,14 @@ function PropertyDialog({
     }
   };
   const remove = async () => {
+    if (!property || property.type === 'title') return;
     if (
-      !property ||
-      property.type === 'title' ||
-      !window.confirm(`删除属性“${property.name}”及其数据？`)
+      !(await confirmDialog({
+        title: '删除属性',
+        message: `删除属性“${property.name}”及其数据？`,
+        confirmLabel: '删除属性',
+        danger: true,
+      }))
     )
       return;
     setBusy(true);
@@ -3225,7 +3239,16 @@ function DatabaseAutomationDialog({
   };
 
   const remove = async (automation: DatabaseAutomationSummary) => {
-    if (busy || !window.confirm(`删除自动化“${automation.name}”及其运行记录？`)) return;
+    if (busy) return;
+    if (
+      !(await confirmDialog({
+        title: '删除自动化',
+        message: `删除自动化“${automation.name}”及其运行记录？`,
+        confirmLabel: '删除',
+        danger: true,
+      }))
+    )
+      return;
     setBusy(true);
     try {
       await deleteDatabaseAutomation(snapshot.database.id, automation.id);
@@ -3515,7 +3538,16 @@ function DatabaseTemplateDialog({
     }
   };
   const remove = async (template: DatabaseTemplateSummary) => {
-    if (busy || !window.confirm(`删除模板“${template.name}”？已有记录不会受影响。`)) return;
+    if (busy) return;
+    if (
+      !(await confirmDialog({
+        title: '删除模板',
+        message: `删除模板“${template.name}”？已有记录不会受影响。`,
+        confirmLabel: '删除模板',
+        danger: true,
+      }))
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
@@ -3817,7 +3849,16 @@ export function DatabaseCanvas({
   );
 
   const removeRow = async (row: DatabaseRowSummary) => {
-    if (!editable || !window.confirm(`归档“${rowTitle(row, snapshot.properties)}”？`)) return;
+    if (!editable) return;
+    if (
+      !(await confirmDialog({
+        title: '归档记录',
+        message: `归档“${rowTitle(row, snapshot.properties)}”？`,
+        confirmLabel: '归档',
+        danger: true,
+      }))
+    )
+      return;
     try {
       await deleteDatabaseRow(snapshot.database.id, row.id);
       setSnapshot((current) => ({
@@ -3946,7 +3987,16 @@ export function DatabaseCanvas({
   };
 
   const removeActiveView = async () => {
-    if (!activeView || !editable || !window.confirm(`删除视图“${activeView.name}”？`)) return;
+    if (!activeView || !editable) return;
+    if (
+      !(await confirmDialog({
+        title: '删除视图',
+        message: `删除视图“${activeView.name}”？`,
+        confirmLabel: '删除视图',
+        danger: true,
+      }))
+    )
+      return;
     try {
       await deleteDatabaseView(snapshot.database.id, activeView.id);
       const remaining = snapshot.views.filter((view) => view.id !== activeView.id);

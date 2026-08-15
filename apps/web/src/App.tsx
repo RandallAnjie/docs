@@ -43,6 +43,7 @@ import {
   FolderInput,
   Heading1,
   Heading2,
+  Heading3,
   Italic,
   KeyRound,
   LibraryBig,
@@ -129,7 +130,6 @@ import {
   listPages,
   listOrganizations,
   listSpaces,
-  searchPages,
   logout,
   importMarkdown,
   movePage,
@@ -140,6 +140,15 @@ import {
   updatePageTitle,
   uploadAttachment,
 } from './api';
+import {
+  bookmarkDialog,
+  confirmDialog,
+  embedDialog,
+  pageButtonDialog,
+  pickPageDialog,
+  promptDialog,
+  showToast,
+} from './dialogs';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
 import { blockAnchorFromHash, blockAnchorUrl, encodeRelativePosition } from './block-anchor';
@@ -214,6 +223,7 @@ type SlashCommandId =
   | 'file'
   | 'heading-1'
   | 'heading-2'
+  | 'heading-3'
   | 'inline-math'
   | 'inline-reminder'
   | 'audio'
@@ -257,6 +267,7 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { id: 'paragraph', label: '正文', description: '从普通文本开始', keywords: 'text 文本 段落' },
   { id: 'heading-1', label: '一级标题', description: '大号章节标题', keywords: 'h1 title 标题' },
   { id: 'heading-2', label: '二级标题', description: '中号章节标题', keywords: 'h2 subtitle 标题' },
+  { id: 'heading-3', label: '三级标题', description: '小号章节标题', keywords: 'h3 subtitle 标题' },
   {
     id: 'bullet-list',
     label: '无序列表',
@@ -414,6 +425,8 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <Heading1 size={17} />;
     case 'heading-2':
       return <Heading2 size={17} />;
+    case 'heading-3':
+      return <Heading3 size={17} />;
     case 'bullet-list':
       return <List size={17} />;
     case 'numbered-list':
@@ -2392,7 +2405,13 @@ function DocumentWorkspace({
   };
 
   const removeCurrentPage = async () => {
-    if (!window.confirm(`确定将“${page.title}”及其子页面移入回收站吗？`)) return;
+    const confirmed = await confirmDialog({
+      title: '移入回收站',
+      message: `确定将“${page.title}”及其子页面移入回收站吗？`,
+      confirmLabel: '移入回收站',
+      danger: true,
+    });
+    if (!confirmed) return;
     setPageActionBusy(true);
     setPageActionError(null);
     try {
@@ -3243,28 +3262,42 @@ function CollaborativeEditor({
           onClick: (node, position) => {
             const currentEditor = editorInstance.current;
             if (!currentEditor?.isEditable) return;
-            const latex = window.prompt('编辑行内 LaTeX 公式', String(node.attrs.latex ?? ''));
-            if (latex === null || !latex.trim()) return;
-            currentEditor
-              .chain()
-              .setNodeSelection(position)
-              .updateInlineMath({ latex: latex.trim(), pos: position })
-              .focus()
-              .run();
+            void promptDialog({
+              title: '编辑行内公式',
+              label: 'LaTeX',
+              defaultValue: String(node.attrs.latex ?? ''),
+              placeholder: 'E = mc^2',
+              multiline: true,
+            }).then((latex) => {
+              if (!latex?.trim() || !currentEditor.isEditable) return;
+              currentEditor
+                .chain()
+                .setNodeSelection(position)
+                .updateInlineMath({ latex: latex.trim(), pos: position })
+                .focus()
+                .run();
+            });
           },
         },
         blockOptions: {
           onClick: (node, position) => {
             const currentEditor = editorInstance.current;
             if (!currentEditor?.isEditable) return;
-            const latex = window.prompt('编辑块 LaTeX 公式', String(node.attrs.latex ?? ''));
-            if (latex === null || !latex.trim()) return;
-            currentEditor
-              .chain()
-              .setNodeSelection(position)
-              .updateBlockMath({ latex: latex.trim(), pos: position })
-              .focus()
-              .run();
+            void promptDialog({
+              title: '编辑块公式',
+              label: 'LaTeX',
+              defaultValue: String(node.attrs.latex ?? ''),
+              placeholder: '\\sum_{i=1}^{n} x_i',
+              multiline: true,
+            }).then((latex) => {
+              if (!latex?.trim() || !currentEditor.isEditable) return;
+              currentEditor
+                .chain()
+                .setNodeSelection(position)
+                .updateBlockMath({ latex: latex.trim(), pos: position })
+                .focus()
+                .run();
+            });
           },
         },
       }),
@@ -3521,55 +3554,46 @@ function CollaborativeEditor({
       }
 
       if (id === 'bookmark') {
-        const input = window.prompt('输入网页书签地址');
-        if (input === null) return;
-        const url = normalizeBookmarkUrl(input);
-        if (!url) {
-          window.alert('请输入有效的 HTTP(S) 地址');
-          return;
-        }
-        const suggestedTitle = new URL(url).hostname;
-        const title = window.prompt('书签标题', suggestedTitle)?.trim() || suggestedTitle;
-        editor
-          .chain()
-          .focus()
-          .deleteRange(context)
-          .insertContent({ type: 'bookmark', attrs: { title, url } })
-          .run();
         setSlashMenu(null);
+        void bookmarkDialog({ normalize: normalizeBookmarkUrl }).then((bookmark) => {
+          if (!bookmark || !editor.isEditable) return;
+          editor
+            .chain()
+            .focus()
+            .deleteRange(context)
+            .insertContent({ type: 'bookmark', attrs: bookmark })
+            .run();
+        });
         return;
       }
 
       if (id === 'embed') {
-        const input = window.prompt(
-          '输入嵌入地址（支持 YouTube、Figma、Loom、CodePen、CodeSandbox）',
-        );
-        if (input === null) return;
-        const target = normalizeEmbedUrl(input);
-        if (!target) {
-          window.alert('暂不支持这个嵌入地址，或地址不是 HTTPS');
-          return;
-        }
-        editor
-          .chain()
-          .focus()
-          .deleteRange(context)
-          .insertContent({ type: 'embed', attrs: target })
-          .run();
         setSlashMenu(null);
+        void embedDialog({ normalize: normalizeEmbedUrl }).then((target) => {
+          if (!target || !editor.isEditable) return;
+          editor
+            .chain()
+            .focus()
+            .deleteRange(context)
+            .insertContent({ type: 'embed', attrs: target })
+            .run();
+        });
         return;
       }
 
       if (id === 'inline-math' || id === 'block-math') {
-        const latex = window.prompt(
-          id === 'inline-math' ? '输入行内 LaTeX 公式' : '输入块 LaTeX 公式',
-          id === 'inline-math' ? 'E = mc^2' : '\\sum_{i=1}^{n} x_i',
-        );
-        if (latex === null || !latex.trim()) return;
-        const chain = editor.chain().focus().deleteRange(context);
-        if (id === 'inline-math') chain.insertInlineMath({ latex: latex.trim() }).run();
-        else chain.insertBlockMath({ latex: latex.trim() }).run();
         setSlashMenu(null);
+        void promptDialog({
+          title: id === 'inline-math' ? '行内公式' : '块公式',
+          label: 'LaTeX',
+          defaultValue: id === 'inline-math' ? 'E = mc^2' : '\\sum_{i=1}^{n} x_i',
+          multiline: true,
+        }).then((latex) => {
+          if (!latex?.trim() || !editor.isEditable) return;
+          const chain = editor.chain().focus().deleteRange(context);
+          if (id === 'inline-math') chain.insertInlineMath({ latex: latex.trim() }).run();
+          else chain.insertBlockMath({ latex: latex.trim() }).run();
+        });
         return;
       }
 
@@ -3600,36 +3624,19 @@ function CollaborativeEditor({
       }
 
       if (id === 'page-button') {
-        const label = window.prompt('按钮名称', '插入新内容');
-        if (label === null || !label.trim()) return;
-        const actionChoice = window.prompt('按钮动作：1 = 插入预设内容，2 = 打开网页', '1');
-        if (actionChoice === null) return;
-        const action = actionChoice.trim() === '2' ? 'openUrl' : 'insertText';
-        const payload = window.prompt(
-          action === 'openUrl'
-            ? '输入 HTTP(S) 网页地址'
-            : '输入点击后要插入的内容；换行会创建多个段落',
-          action === 'openUrl' ? 'https://' : '新内容',
-        );
-        if (payload === null) return;
-        if (action === 'openUrl' && !normalizePageButtonUrl(payload)) {
-          window.alert('请输入有效的 HTTP(S) 网页地址');
-          return;
-        }
-        editor
-          .chain()
-          .focus()
-          .deleteRange(context)
-          .insertContent({
-            type: 'pageButton',
-            attrs: {
-              action,
-              label: label.trim().slice(0, 100),
-              payload: payload.slice(0, 10_000),
-            },
-          })
-          .run();
         setSlashMenu(null);
+        void pageButtonDialog({ normalizeUrl: normalizePageButtonUrl }).then((button) => {
+          if (!button || !editor.isEditable) return;
+          editor
+            .chain()
+            .focus()
+            .deleteRange(context)
+            .insertContent({
+              type: 'pageButton',
+              attrs: button,
+            })
+            .run();
+        });
         return;
       }
 
@@ -3650,41 +3657,28 @@ function CollaborativeEditor({
             if (!inserted) await deleteOrphanSyncedBlock(syncedBlockId).catch(() => undefined);
           })
           .catch((reason) => {
-            window.alert(reason instanceof Error ? reason.message : '同步块创建失败');
+            showToast(reason instanceof Error ? reason.message : '同步块创建失败');
           });
         return;
       }
 
       if (id === 'page-link') {
-        const pageQuery = window.prompt('搜索要关联的页面');
-        if (!pageQuery?.trim()) return;
-        editor.chain().focus().deleteRange(context).run();
         setSlashMenu(null);
-        void searchPages(organizationId, pageQuery, { titleOnly: true })
-          .then((result) => {
-            if (!result.results.length) throw new Error('没有找到可访问的页面');
-            let selected = result.results[0];
-            if (result.results.length > 1) {
-              const choices = result.results
-                .slice(0, 9)
-                .map((candidate, index) => `${index + 1}. ${candidate.page.title}`)
-                .join('\n');
-              const choice = window.prompt(`找到多个页面，请输入序号：\n${choices}`, '1');
-              if (choice === null) return;
-              selected = result.results[Number(choice) - 1];
-            }
-            if (!selected) throw new Error('页面序号无效');
+        void pickPageDialog({ organizationId })
+          .then((page) => {
+            if (!page || !editor.isEditable) return;
             editor
               .chain()
               .focus()
+              .deleteRange(context)
               .insertContent({
                 type: 'pageLink',
-                attrs: { pageId: selected.page.id, title: selected.page.title },
+                attrs: { pageId: page.id, title: page.title },
               })
               .run();
           })
           .catch((reason) =>
-            window.alert(reason instanceof Error ? reason.message : '无法插入页面链接'),
+            showToast(reason instanceof Error ? reason.message : '无法插入页面链接'),
           );
         return;
       }
@@ -3699,6 +3693,9 @@ function CollaborativeEditor({
           break;
         case 'heading-2':
           chain.setHeading({ level: 2 }).run();
+          break;
+        case 'heading-3':
+          chain.setHeading({ level: 3 }).run();
           break;
         case 'bullet-list':
           chain.toggleBulletList().run();
@@ -3813,7 +3810,7 @@ function CollaborativeEditor({
       last.position + last.node.nodeSize,
       blocks.map(({ node }) => node.toJSON()),
     ).catch((reason) => {
-      window.alert(reason instanceof Error ? reason.message : '无法转换为同步块');
+      showToast(reason instanceof Error ? reason.message : '无法转换为同步块');
     });
   };
 
@@ -3870,6 +3867,12 @@ function CollaborativeEditor({
       active: editor.isActive('heading', { level: 2 }),
     },
     {
+      label: '三级标题',
+      icon: <Heading3 size={16} />,
+      action: () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
+      active: editor.isActive('heading', { level: 3 }),
+    },
+    {
       label: '粗体',
       icon: <Bold size={16} />,
       action: () => editor.chain().focus().toggleBold().run(),
@@ -3916,10 +3919,19 @@ function CollaborativeEditor({
       icon: <Link2 size={16} />,
       action: () => {
         const current = String(editor.getAttributes('link').href ?? '');
-        const href = window.prompt('输入链接地址；留空可移除链接', current);
-        if (href === null) return;
-        if (!href.trim()) editor.chain().focus().extendMarkRange('link').unsetLink().run();
-        else editor.chain().focus().extendMarkRange('link').setLink({ href: href.trim() }).run();
+        void promptDialog({
+          title: editor.isActive('link') ? '编辑链接' : '添加链接',
+          message: '留空并确认可移除当前链接。',
+          label: '地址',
+          defaultValue: current,
+          placeholder: 'https://',
+          allowEmpty: true,
+          submitLabel: current ? '保存' : '添加',
+        }).then((href) => {
+          if (href === null || !editor.isEditable) return;
+          if (!href.trim()) editor.chain().focus().extendMarkRange('link').unsetLink().run();
+          else editor.chain().focus().extendMarkRange('link').setLink({ href: href.trim() }).run();
+        });
       },
       active: editor.isActive('link'),
     },

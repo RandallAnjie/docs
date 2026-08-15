@@ -1,10 +1,11 @@
 import { mergeAttributes, Node } from '@tiptap/core';
 import type { NodeViewProps } from '@tiptap/react';
-import { NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
+import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
 import { Bookmark, ExternalLink, ListTree, Pencil, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { attachmentEditorBlocks } from './AttachmentBlocks';
+import { bookmarkDialog, embedDialog, emojiDialog } from './dialogs';
 import { inlineReminderExtension, type InlineReminderContext } from './InlineReminder';
 import {
   pageUtilityEditorBlocks,
@@ -105,17 +106,14 @@ export function normalizeEmbedUrl(value: string): EmbedTarget | null {
 }
 
 function promptForBookmark(props: NodeViewProps): void {
-  const currentUrl = String(props.node.attrs.url ?? '');
-  const nextUrl = window.prompt('编辑书签地址', currentUrl);
-  if (nextUrl === null) return;
-  const normalized = normalizeBookmarkUrl(nextUrl);
-  if (!normalized) {
-    window.alert('请输入有效的 HTTP(S) 地址');
-    return;
-  }
-  const currentTitle = String(props.node.attrs.title ?? '');
-  const nextTitle = window.prompt('书签标题', currentTitle) ?? currentTitle;
-  props.updateAttributes({ url: normalized, title: nextTitle.trim() || normalized });
+  void bookmarkDialog({
+    defaultUrl: String(props.node.attrs.url ?? ''),
+    defaultTitle: String(props.node.attrs.title ?? ''),
+    normalize: normalizeBookmarkUrl,
+  }).then((bookmark) => {
+    if (!bookmark) return;
+    props.updateAttributes({ url: bookmark.url, title: bookmark.title });
+  });
 }
 
 function BookmarkNodeView(props: NodeViewProps) {
@@ -160,17 +158,9 @@ function EmbedNodeView(props: NodeViewProps) {
   const normalized = normalizeEmbedUrl(source);
 
   const edit = () => {
-    const nextUrl = window.prompt(
-      '编辑嵌入地址（支持 YouTube、Figma、Loom、CodePen、CodeSandbox）',
-      source,
-    );
-    if (nextUrl === null) return;
-    const target = normalizeEmbedUrl(nextUrl);
-    if (!target) {
-      window.alert('暂不支持这个嵌入地址，或地址不是 HTTPS');
-      return;
-    }
-    props.updateAttributes(target);
+    void embedDialog({ defaultUrl: source, normalize: normalizeEmbedUrl }).then((target) => {
+      if (target) props.updateAttributes(target);
+    });
   };
 
   return (
@@ -266,6 +256,67 @@ function TableOfContentsNodeView({ editor }: NodeViewProps) {
   );
 }
 
+const CALLOUT_TONES = [
+  { id: 'gray', label: '灰' },
+  { id: 'blue', label: '蓝' },
+  { id: 'yellow', label: '黄' },
+  { id: 'red', label: '红' },
+  { id: 'green', label: '绿' },
+  { id: 'purple', label: '紫' },
+] as const;
+
+function CalloutNodeView(props: NodeViewProps) {
+  const icon = String(props.node.attrs.icon ?? '💡');
+  const tone = String(props.node.attrs.tone ?? 'gray');
+
+  return (
+    <NodeViewWrapper as="aside" className="rdocs-callout" data-rdocs-callout="" data-tone={tone}>
+      {props.editor.isEditable ? (
+        <button
+          type="button"
+          className="rdocs-callout-icon"
+          data-callout-icon=""
+          title="更换图标"
+          onClick={() => {
+            void emojiDialog({
+              title: '提示块图标',
+              defaultValue: icon,
+              allowEmpty: false,
+            }).then((next) => {
+              if (next) props.updateAttributes({ icon: next });
+            });
+          }}
+        >
+          {icon}
+        </button>
+      ) : (
+        <span className="rdocs-callout-icon" data-callout-icon="">
+          {icon}
+        </span>
+      )}
+      <div data-callout-content="">
+        {props.editor.isEditable ? (
+          <div className="rdocs-callout-tones" contentEditable={false}>
+            {CALLOUT_TONES.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={tone === option.id ? 'active' : undefined}
+                data-tone={option.id}
+                title={`${option.label}色背景`}
+                onClick={() => props.updateAttributes({ tone: option.id })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <NodeViewContent />
+      </div>
+    </NodeViewWrapper>
+  );
+}
+
 export const CalloutBlock = Node.create({
   name: 'callout',
   group: 'block',
@@ -293,6 +344,9 @@ export const CalloutBlock = Node.create({
       ['span', { 'data-callout-icon': '', contenteditable: 'false' }, String(node.attrs.icon)],
       ['div', { 'data-callout-content': '' }, 0],
     ];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(CalloutNodeView);
   },
 });
 

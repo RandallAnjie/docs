@@ -2170,12 +2170,198 @@ button {
   gap: 8px;
   margin-top: 22px;
 }
-.dialog-actions > button:not(.primary-button) {
+.dialog-actions > button:not(.primary-button):not(.danger-button) {
   border: 1px solid #d9d5cd;
   border-radius: 8px;
   background: #fff;
   padding: 9px 14px;
   color: #5f5b54;
+  cursor: pointer;
+}
+.dialog-actions > button.danger-button {
+  border: 0;
+  border-radius: 8px;
+  background: #b65339;
+  padding: 9px 14px;
+  color: #fff;
+  cursor: pointer;
+}
+.dialog-actions > button.danger-button:hover {
+  background: #9d452e;
+}
+.app-dialog-backdrop {
+  z-index: 240;
+}
+.app-dialog {
+  width: min(430px, 100%);
+  display: grid;
+  gap: 12px;
+}
+.app-dialog .primary-button,
+.app-dialog .danger-button {
+  min-height: 40px;
+  box-shadow: none;
+}
+.app-dialog-wide {
+  width: min(520px, 100%);
+}
+.app-dialog > p {
+  margin: 0;
+}
+.app-dialog label {
+  display: grid;
+  gap: 7px;
+}
+.app-dialog input,
+.app-dialog textarea,
+.app-dialog select {
+  min-height: 40px;
+  border: 1px solid #d9d5cd;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  color: #37352f;
+  font: inherit;
+  outline: none;
+}
+.app-dialog textarea {
+  min-height: 112px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.app-dialog input:focus,
+.app-dialog textarea:focus,
+.app-dialog select:focus {
+  border-color: #2383e2;
+  box-shadow: 0 0 0 1px #2383e2;
+}
+.app-dialog-mono {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.app-dialog-hint {
+  color: #92908a;
+  font-size: 10px;
+  font-weight: 400;
+}
+.app-page-pick-search > span {
+  position: relative;
+  display: block;
+}
+.app-page-pick-search > span svg {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  color: #9b9891;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.app-page-pick-search input {
+  padding-left: 32px;
+}
+.app-page-pick-list {
+  display: grid;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid #ece8e1;
+  border-radius: 10px;
+  background: #fbfaf8;
+}
+.app-page-pick-list > button {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #f0ece5;
+  background: transparent;
+  padding: 10px 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.app-page-pick-list > button:last-child {
+  border-bottom: 0;
+}
+.app-page-pick-list > button.active,
+.app-page-pick-list > button:hover {
+  background: #fff;
+}
+.app-page-pick-list strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+.app-page-pick-list small,
+.app-page-pick-empty {
+  color: #8c8880;
+  font-size: 11px;
+}
+.app-page-pick-empty {
+  margin: 0;
+  padding: 18px 12px;
+  text-align: center;
+}
+.app-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 6px;
+}
+.app-emoji-grid > button {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #f7f6f3;
+  font-size: 18px;
+  cursor: pointer;
+}
+.app-emoji-grid > button.active,
+.app-emoji-grid > button:hover {
+  border-color: #d9d5cd;
+  background: #fff;
+}
+.app-toast-stack {
+  position: fixed;
+  z-index: 260;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 36px));
+}
+.app-toast {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgb(50 40 34 / 16%);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app-toast-error {
+  background: #fff0eb;
+  color: #a44029;
+}
+.app-toast-success {
+  background: #eef6ee;
+  color: #2f6b3a;
+}
+.app-toast-info {
+  background: #eef3f8;
+  color: #35536b;
+}
+.app-toast > button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
   cursor: pointer;
 }
 .dialog-error,
@@ -3825,10 +4011,63 @@ button.page-icon-display:hover {
   border-color: #d9e7f2;
   background: #eef6fb;
 }
+.rdocs-editor aside[data-rdocs-callout][data-tone='yellow'] {
+  border-color: #f0e2b8;
+  background: #fbf6e6;
+}
+.rdocs-editor aside[data-rdocs-callout][data-tone='red'] {
+  border-color: #efd4cc;
+  background: #fbf0ec;
+}
+.rdocs-editor aside[data-rdocs-callout][data-tone='green'] {
+  border-color: #d4e6d4;
+  background: #eef6ee;
+}
+.rdocs-editor aside[data-rdocs-callout][data-tone='purple'] {
+  border-color: #e3d7ee;
+  background: #f6f1fa;
+}
 .rdocs-editor aside[data-rdocs-callout] [data-callout-icon] {
   font-size: 18px;
   line-height: 1.7;
   user-select: none;
+}
+.rdocs-editor aside[data-rdocs-callout] .rdocs-callout-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+.rdocs-editor aside[data-rdocs-callout] button.rdocs-callout-icon:hover {
+  background: rgb(55 53 47 / 8%);
+}
+.rdocs-callout-tones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 8px;
+}
+.rdocs-callout-tones > button {
+  min-width: 28px;
+  height: 22px;
+  border: 1px solid #e6e2da;
+  border-radius: 999px;
+  background: #fff;
+  padding: 0 7px;
+  color: #787774;
+  font-size: 10px;
+  cursor: pointer;
+}
+.rdocs-callout-tones > button.active {
+  border-color: #37352f;
+  color: #37352f;
 }
 .rdocs-editor aside[data-rdocs-callout] [data-callout-content] > :first-child {
   margin-top: 0;

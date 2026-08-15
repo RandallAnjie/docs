@@ -39,6 +39,7 @@ import {
   setPageFavorite,
   updatePageAppearance,
 } from './api';
+import { confirmDialog, emojiDialog } from './dialogs';
 import { navigateHome } from './navigation';
 import {
   canManagePageStructure,
@@ -270,15 +271,23 @@ export function DiscoveryDialog({
 
     let icon: string | null = null;
     if (action === 'icon') {
-      const input = window.prompt('输入要应用到所选页面的 Emoji；留空移除图标', '📄');
+      const input = await emojiDialog({
+        title: '批量设置图标',
+        message: '将应用到所选页面。留空可移除图标。',
+        defaultValue: '📄',
+        allowEmpty: true,
+      });
       if (input === null) return;
       icon = [...input.trim()].slice(0, 2).join('') || null;
     }
-    if (
-      action === 'trash' &&
-      !window.confirm(`确定将所选的 ${selectedRootIds.length} 个页面子树移入回收站吗？`)
-    ) {
-      return;
+    if (action === 'trash') {
+      const confirmed = await confirmDialog({
+        title: '移入回收站',
+        message: `确定将所选的 ${selectedRootIds.length} 个页面子树移入回收站吗？`,
+        confirmLabel: '移入回收站',
+        danger: true,
+      });
+      if (!confirmed) return;
     }
 
     const targetIds =

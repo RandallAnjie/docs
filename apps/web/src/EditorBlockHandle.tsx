@@ -23,6 +23,8 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
+import { showToast } from './dialogs';
+
 import { moveTopLevelBlock, topLevelBlocks, type BlockDirection } from './editor-block-operations';
 
 const DRAG_POSITION = { placement: 'left-start', strategy: 'fixed' } as const;
@@ -241,7 +243,7 @@ export function EditorBlockHandle({
     try {
       await onConvertToSyncedBlock(targetPosition, current);
     } catch (reason) {
-      window.alert(reason instanceof Error ? reason.message : '无法转换为同步块');
+      showToast(reason instanceof Error ? reason.message : '无法转换为同步块');
     } finally {
       setBusy(false);
     }
@@ -252,8 +254,9 @@ export function EditorBlockHandle({
     setMenuOpen(false);
     try {
       await onCopyBlockLink(targetPosition);
+      showToast('块链接已复制', 'success');
     } catch (reason) {
-      window.alert(reason instanceof Error ? reason.message : '无法复制块链接');
+      showToast(reason instanceof Error ? reason.message : '无法复制块链接');
     }
   };
 

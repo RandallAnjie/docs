@@ -18,6 +18,7 @@ import {
   transferOrganizationOwnership,
   updateOrganizationMember,
 } from './api';
+import { confirmDialog } from './dialogs';
 import { GroupSettings } from './GroupSettings';
 import { OrganizationActivity } from './OrganizationActivity';
 import { PlatformSettings } from './PlatformSettings';
@@ -123,7 +124,15 @@ export function OrganizationSettings({
   };
 
   const removeMember = async (member: OrganizationMemberSummary) => {
-    if (!window.confirm(`确定将 ${member.displayName} 移出组织吗？`)) return;
+    if (
+      !(await confirmDialog({
+        title: '移出成员',
+        message: `确定将 ${member.displayName} 移出组织吗？`,
+        confirmLabel: '移出',
+        danger: true,
+      }))
+    )
+      return;
     setBusyId(member.userId);
     setError(null);
     try {
@@ -137,7 +146,15 @@ export function OrganizationSettings({
   };
 
   const transferOwnership = async (member: OrganizationMemberSummary) => {
-    if (!window.confirm(`确定将组织所有权转让给 ${member.displayName} 吗？`)) return;
+    if (
+      !(await confirmDialog({
+        title: '转让所有权',
+        message: `确定将组织所有权转让给 ${member.displayName} 吗？此操作不可撤销。`,
+        confirmLabel: '转让所有权',
+        danger: true,
+      }))
+    )
+      return;
     setBusyId(member.userId);
     setError(null);
     try {

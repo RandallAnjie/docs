@@ -18,6 +18,7 @@ import {
   putSpaceGrant,
   updateSpace,
 } from './api';
+import { confirmDialog } from './dialogs';
 
 type Principal = { type: SpaceGrantPrincipalType; id: string };
 
@@ -124,7 +125,15 @@ export function SpaceAccessDialog({
   };
 
   const archiveSpace = async () => {
-    if (busy || !window.confirm(`归档“${space.name}”？页面会停止对普通成员开放，可随时恢复。`)) {
+    if (busy) return;
+    if (
+      !(await confirmDialog({
+        title: '归档空间',
+        message: `归档“${space.name}”？页面会停止对普通成员开放，可随时恢复。`,
+        confirmLabel: '归档',
+        danger: true,
+      }))
+    ) {
       return;
     }
     setBusy(true);
