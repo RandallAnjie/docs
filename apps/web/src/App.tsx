@@ -139,6 +139,8 @@ import {
   listSpaces,
   logout,
   importMarkdown,
+  importMarkdownZip,
+  transcribePageAudio,
   movePage,
   recordPublicSiteEvent,
   setOfflinePin,
@@ -1225,10 +1227,18 @@ function TenantHome({
     setBusy(true);
     setError(null);
     try {
-      const { page } = await importMarkdown(markdownSpaceId, file);
-      navigateToPage(page.id);
+      const isZip = /\.zip$/i.test(file.name) || file.type === 'application/zip';
+      if (isZip) {
+        const result = await importMarkdownZip(markdownSpaceId, file);
+        const first = result.pages[0];
+        if (first) navigateToPage(first.id);
+        else setBusy(false);
+      } else {
+        const { page } = await importMarkdown(markdownSpaceId, file);
+        navigateToPage(page.id);
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法导入 Markdown');
+      setError(reason instanceof Error ? reason.message : '无法导入 Markdown 或 ZIP');
       setBusy(false);
     } finally {
       if (markdownInput.current) markdownInput.current.value = '';
@@ -1267,7 +1277,7 @@ function TenantHome({
       <input
         ref={markdownInput}
         type="file"
-        accept=".md,text/markdown,text/plain"
+        accept=".md,.markdown,.txt,.zip,text/markdown,text/plain,application/zip"
         hidden
         onChange={(event) => void importMarkdownFile(event.target.files?.[0])}
       />
@@ -2002,6 +2012,7 @@ function DocumentWorkspace({
   const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
+  const transcribeInput = useRef<HTMLInputElement>(null);
   const [appearanceDialogOpen, setAppearanceDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [accessDialogOpen, setAccessDialogOpen] = useState(false);
@@ -2507,6 +2518,23 @@ function DocumentWorkspace({
     }
   };
 
+  const transcribeMeeting = async (file: File | undefined) => {
+    const currentEditor = editorRef.current;
+    if (!file || !currentEditor || pageActionBusy) return;
+    setPageMenuOpen(false);
+    setPageActionBusy(true);
+    setPageActionError(null);
+    try {
+      const { text } = await transcribePageAudio(page.id, file);
+      currentEditor.chain().focus().insertContent(markdownToEditorContent(text)).run();
+    } catch (reason) {
+      setPageActionError(reason instanceof Error ? reason.message : '无法转写会议录音');
+    } finally {
+      setPageActionBusy(false);
+      if (transcribeInput.current) transcribeInput.current.value = '';
+    }
+  };
+
   const exportCurrentPage = async (format: 'html' | 'markdown' | 'pdf' | 'zip' = 'markdown') => {
     setPageActionBusy(true);
     setPageActionError(null);
@@ -2705,6 +2733,13 @@ function DocumentWorkspace({
       </aside>
 
       <main className="document-area" aria-busy={isSwitching}>
+        <input
+          ref={transcribeInput}
+          type="file"
+          accept="audio/*,video/*,.mp3,.wav,.m4a,.webm,.mp4"
+          hidden
+          onChange={(event) => void transcribeMeeting(event.target.files?.[0])}
+        />
         {publicSite ? (
           <PublicSiteHeader
             site={publicSite}
@@ -2841,6 +2876,15 @@ function DocumentWorkspace({
                 </button>
                 <button type="button" onClick={() => void copyCurrentPage()}>
                   <Copy size={15} /> 创建副本
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    window.setTimeout(() => transcribeInput.current?.click(), 0);
+                  }}
+                >
+                  <Music2 size={15} /> 上传会议录音
                 </button>
                 <button
                   type="button"

@@ -50,17 +50,13 @@ import {
   invalidateCollaborationPage,
 } from './collaboration-access-cache';
 import { isCollaborationOriginAllowed } from './origins';
-import { markdownToHtmlDocument, simplePdf, zipStore } from './export-archive';
+import { dispatchRandallFlareEmail, handleInboundEmail } from './email';
+import { markdownToHtmlDocument, simplePdf, unzipEntries, zipStore } from './export-archive';
 import {
   emailFromSamlResponse,
-  findOrganizationByScimToken,
   handleEnterpriseProtocol,
+  handleScimUsers,
   processDueScheduledJobs,
-  queueOutboundEmail,
-  samlMetadataXml,
-  scimError,
-  scimListResponse,
-  scimUserResource,
 } from './enterprise-protocol';
 import {
   markdownToYjsSnapshot,
@@ -104,6 +100,8 @@ const RESTORE_OPERATION_LEASE_MS = 60_000;
 const COLLAB_AUTH_CACHE_MS = 2_000;
 const MAX_ATTACHMENT_NAME_LENGTH = 180;
 const MAX_MARKDOWN_IMPORT_BYTES = 2 * 1024 * 1024;
+const MAX_ZIP_IMPORT_BYTES = 20 * 1024 * 1024;
+const MAX_ZIP_IMPORT_FILES = 25;
 const MAX_PAGE_COPY_ATTACHMENTS = 200;
 const MAX_PAGE_COPY_ATTACHMENT_BYTES = MAX_ATTACHMENT_BYTES;
 const SYNCED_BLOCK_DELETE_UNDO_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -1802,7 +1800,6 @@ async function importMarkdown(
   } catch {
     return error('Markdown 文件不是有效的 UTF-8 文本', 400);
   }
-  const imported = markdownToYjsSnapshot(markdown);
   let filename = 'Markdown 导入';
   try {
     filename = decodeURIComponent(request.headers.get('x-rdocs-file-name') ?? filename)
@@ -1811,8 +1808,68 @@ async function importMarkdown(
   } catch {
     return error('文件名编码无效', 400);
   }
-  const title = (imported.title || filename || 'Markdown 导入').slice(0, MAX_TITLE_LENGTH);
-  const access = await requireSpaceAction(env, spaceId, actorId, 'create_child');
+  const page = await createImportedMarkdownPage(env, {
+    actorId,
+    filename,
+    markdown,
+    spaceId,
+  });
+  if (page instanceof Response) return page;
+  await pageAudit(env, page, actorId, 'page.markdown.imported', { byteSize: bytes.byteLength });
+  return json({ page }, { status: 201 });
+}
+
+async function importMarkdownZip(
+  request: Request,
+  env: Env,
+  spaceId: string,
+  actorId: string,
+): Promise<Response> {
+  const declaredLength = Number(request.headers.get('content-length') ?? 0);
+  if (declaredLength > MAX_ZIP_IMPORT_BYTES) return error('ZIP 文件超过 20 MB', 413);
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!bytes.byteLength || bytes.byteLength > MAX_ZIP_IMPORT_BYTES) {
+    return error('ZIP 文件为空或超过 20 MB', 400);
+  }
+  const entries = await unzipEntries(bytes);
+  const markdowns = entries
+    .filter((entry) => {
+      const name = entry.name.replace(/\\/g, '/');
+      if (!name || name.includes('..') || name.startsWith('/')) return false;
+      return /\.(md|markdown|txt)$/i.test(name);
+    })
+    .slice(0, MAX_ZIP_IMPORT_FILES);
+  if (!markdowns.length) return error('ZIP 中没有可导入的 Markdown 文件', 400);
+  const pages: PageSummary[] = [];
+  for (const entry of markdowns) {
+    const filename =
+      entry.name
+        .split('/')
+        .pop()
+        ?.replace(/\.(md|markdown|txt)$/i, '') || '导入';
+    const page = await createImportedMarkdownPage(env, {
+      actorId,
+      filename,
+      markdown: entry.body,
+      spaceId,
+    });
+    if (page instanceof Response) {
+      if (!pages.length) return page;
+      continue;
+    }
+    pages.push(page);
+  }
+  if (!pages.length) return error('ZIP 导入失败', 500);
+  return json({ imported: pages.length, pages }, { status: 201 });
+}
+
+async function createImportedMarkdownPage(
+  env: Env,
+  input: { actorId: string; filename: string; markdown: string; spaceId: string },
+): Promise<PageSummary | Response> {
+  const imported = markdownToYjsSnapshot(input.markdown);
+  const title = (imported.title || input.filename || 'Markdown 导入').slice(0, MAX_TITLE_LENGTH);
+  const access = await requireSpaceAction(env, input.spaceId, input.actorId, 'create_child');
   if (!access) return error('空间不存在或无权导入', 404);
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -1827,12 +1884,12 @@ async function importMarkdown(
     ).bind(
       id,
       access.organizationId,
-      spaceId,
+      input.spaceId,
       title,
       now.toString().padStart(20, '0'),
       EDITOR_SCHEMA_VERSION,
-      actorId,
-      actorId,
+      input.actorId,
+      input.actorId,
       now,
       now,
     ),
@@ -1845,7 +1902,7 @@ async function importMarkdown(
          page_id, organization_id, space_id, generation, collab_seq,
          title, normalized_body, updated_at
        ) VALUES (?, ?, ?, 1, 0, ?, ?, ?)`,
-    ).bind(id, access.organizationId, spaceId, title, normalizedBody, now),
+    ).bind(id, access.organizationId, input.spaceId, title, normalizedBody, now),
     env.DB.prepare(
       'INSERT INTO page_search_fts(page_id, title, normalized_body) VALUES (?, ?, ?)',
     ).bind(id, searchIndexText(title), searchIndexText(`${title}\n${normalizedBody}`)),
@@ -1861,7 +1918,7 @@ async function importMarkdown(
         'x-rdocs-generation': '1',
         'x-rdocs-revision-id': `import_${id}`,
         'x-rdocs-content-hash': contentHash,
-        'x-rdocs-actor-id': actorId,
+        'x-rdocs-actor-id': input.actorId,
       },
       body: toArrayBuffer(imported.snapshot),
     },
@@ -1875,8 +1932,7 @@ async function importMarkdown(
   }
   const page = await findPage(env, id);
   if (!page) return error('Markdown 页面创建失败', 500);
-  await pageAudit(env, page, actorId, 'page.markdown.imported', { byteSize: bytes.byteLength });
-  return json({ page }, { status: 201 });
+  return page;
 }
 
 async function copyPage(
@@ -4072,56 +4128,8 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     });
   }
 
-  if (url.pathname.startsWith('/scim/v2/Users')) {
-    const org = await findOrganizationByScimToken(env, request);
-    if (!org) return scimError('Unauthorized', 401);
-    if (url.pathname === '/scim/v2/Users' && request.method === 'GET') {
-      const rows = (
-        await env.DB.prepare(
-          `SELECT u.id, u.email, u.display_name, u.status
-             FROM users u
-             JOIN organization_members m ON m.user_id = u.id
-            WHERE m.organization_id = ?
-            ORDER BY u.created_at DESC LIMIT 100`,
-        )
-          .bind(org.organizationId)
-          .all<{ id: string; email: string; display_name: string; status: string }>()
-      ).results;
-      return json(
-        scimListResponse(
-          rows.map((row) =>
-            scimUserResource({
-              id: row.id,
-              email: row.email,
-              displayName: row.display_name,
-              active: row.status === 'active',
-            }),
-          ),
-        ),
-      );
-    }
-    const userMatch = url.pathname.match(/^\/scim\/v2\/Users\/([^/]+)$/);
-    if (userMatch?.[1] && request.method === 'GET') {
-      const row = await env.DB.prepare(
-        `SELECT u.id, u.email, u.display_name, u.status
-           FROM users u
-           JOIN organization_members m ON m.user_id = u.id
-          WHERE m.organization_id = ? AND u.id = ?`,
-      )
-        .bind(org.organizationId, decodeURIComponent(userMatch[1]))
-        .first<{ id: string; email: string; display_name: string; status: string }>();
-      if (!row) return scimError('User not found', 404);
-      return json(
-        scimUserResource({
-          id: row.id,
-          email: row.email,
-          displayName: row.display_name,
-          active: row.status === 'active',
-        }),
-      );
-    }
-    return scimError('Not implemented', 501);
-  }
+  const scimUsers = await handleScimUsers(request, env);
+  if (scimUsers) return scimUsers;
 
   const publicApiResponse = await handlePublicApi(request, env, context);
   if (publicApiResponse) return publicApiResponse;
@@ -4367,6 +4375,11 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const markdownImportMatch = url.pathname.match(/^\/api\/spaces\/([^/]+)\/import\/markdown$/);
   if (markdownImportMatch?.[1] && request.method === 'POST') {
     return importMarkdown(request, env, decodeURIComponent(markdownImportMatch[1]), actorId);
+  }
+
+  const zipImportMatch = url.pathname.match(/^\/api\/spaces\/([^/]+)\/import\/zip$/);
+  if (zipImportMatch?.[1] && request.method === 'POST') {
+    return importMarkdownZip(request, env, decodeURIComponent(zipImportMatch[1]), actorId);
   }
 
   const restorePageMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/restore$/);
@@ -4739,10 +4752,19 @@ async function publicSiteHtmlResponse(request: Request, env: Env): Promise<Respo
 }
 
 export default {
+  async email(message: import('./email').EdgeEmailMessage, env: Env): Promise<void> {
+    await handleInboundEmail(message, env);
+  },
   async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
     const requestId = crypto.randomUUID();
     const startedAt = Date.now();
     const url = new URL(request.url);
+    try {
+      const inbound = await dispatchRandallFlareEmail(request, env);
+      if (inbound) return inbound;
+    } catch {
+      // Local tests and builds without the RandallFlare email shim skip this path.
+    }
     const route = url.pathname.startsWith('/api/')
       ? '/api/*'
       : url.pathname.startsWith('/collab/')
@@ -4820,25 +4842,26 @@ export default {
     context: ExecutionContext,
   ): Promise<void> {
     context.waitUntil(
-      deliverDueReminders(env, null, 500)
-        .then((delivered) => {
-          console.log(
-            JSON.stringify({
-              level: 'info',
-              event: 'scheduled_reminders_delivered',
-              delivered,
-            }),
-          );
-        })
-        .catch((reason) => {
-          console.error(
-            JSON.stringify({
-              level: 'error',
-              event: 'scheduled_reminder_delivery_failed',
-              message: reason instanceof Error ? reason.message : String(reason),
-            }),
-          );
-        }),
+      (async () => {
+        const delivered = await deliverDueReminders(env, null, 500);
+        const jobs = await processDueScheduledJobs(env);
+        console.log(
+          JSON.stringify({
+            delivered,
+            event: 'scheduled_work_completed',
+            jobs,
+            level: 'info',
+          }),
+        );
+      })().catch((reason) => {
+        console.error(
+          JSON.stringify({
+            event: 'scheduled_work_failed',
+            level: 'error',
+            message: reason instanceof Error ? reason.message : String(reason),
+          }),
+        );
+      }),
     );
   },
 };

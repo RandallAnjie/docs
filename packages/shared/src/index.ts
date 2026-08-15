@@ -384,6 +384,15 @@ export interface CalendarConnectionSummary {
   updatedAt: number;
 }
 
+export interface CalendarEventSummary {
+  allDay: boolean;
+  endsAt: number | null;
+  location: string | null;
+  startsAt: number | null;
+  title: string;
+  uid: string;
+}
+
 export interface DatabaseAutomationRunSummary {
   id: string;
   databaseId: string;

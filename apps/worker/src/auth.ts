@@ -372,8 +372,19 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
     const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?')
       .bind(email)
       .first<{ id: string }>();
-    if (existing) return error('该邮箱已存在，请先使用已有设备密钥登录', 409);
-    userId = crypto.randomUUID();
+    if (existing) {
+      const credential = await env.DB.prepare(
+        'SELECT 1 AS found FROM passkey_credentials WHERE user_id = ? LIMIT 1',
+      )
+        .bind(existing.id)
+        .first<{ found: number }>();
+      if (credential || !invitationId) {
+        return error('该邮箱已存在，请先使用已有设备密钥登录', 409);
+      }
+      userId = existing.id;
+    } else {
+      userId = crypto.randomUUID();
+    }
   }
 
   const credentials = (
@@ -456,8 +467,8 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
   const credential = registration.credential;
   const authenticated = await authenticateRequest(request, env);
   let userId = challenge.user_id;
-  const createsUser = userId === null;
-  if (!createsUser && userId) {
+  let createsUser = false;
+  if (userId) {
     if (!authenticated.user || authenticated.user.id !== userId) {
       return error('当前会话不能为此用户添加设备密钥', 403);
     }
@@ -476,6 +487,10 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
     ) {
       return error('邀请已失效，请重新获取邀请', 409);
     }
+    const existing = await env.DB.prepare('SELECT id FROM users WHERE id = ?')
+      .bind(userId)
+      .first<{ id: string }>();
+    createsUser = !existing;
   }
   if (!(await consumeChallenge(env, challenge))) return error('设备登记请求已被使用', 409);
 

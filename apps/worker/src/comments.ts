@@ -13,6 +13,7 @@ import type {
 } from '@rdocs/shared';
 
 import { findActiveMembership, requirePageAction, resolvePageAccess } from './access';
+import { appOrigin, emailUsers, notificationEmailBodies, queueOutboundEmail } from './email';
 import type { Env } from './env';
 
 const MAX_COMMENT_LENGTH = 5_000;
@@ -445,7 +446,27 @@ export async function deliverDueReminders(
           WHERE id = ? AND status = 'scheduled'`,
       ).bind(now, now, reminder.id),
     ]);
-    if (result[1]?.meta.changes) delivered += 1;
+    if (result[1]?.meta.changes) {
+      delivered += 1;
+      const page = await env.DB.prepare('SELECT title FROM pages WHERE id = ?')
+        .bind(reminder.page_id)
+        .first<{ title: string }>();
+      const bodies = notificationEmailBodies({
+        actorName: 'Rdocs',
+        kind: 'reminder',
+        pageTitle: page?.title ?? '未命名页面',
+        pageUrl: `${appOrigin(env)}/p/${encodeURIComponent(reminder.page_id)}`,
+        preview: reminder.message || '到点提醒',
+      });
+      await queueOutboundEmail(env, {
+        bodyHtml: bodies.html,
+        bodyText: bodies.text,
+        organizationId: reminder.organization_id,
+        recipientEmail: reminder.recipient_email,
+        recipientUserId: reminder.recipient_id,
+        subject: bodies.html.includes('提醒') ? `提醒：${page?.title ?? '页面'}` : 'Rdocs 提醒',
+      });
+    }
   }
   return delivered;
 }
@@ -819,6 +840,47 @@ async function notificationRecipients(
   return recipients;
 }
 
+async function emailNotificationRecipients(
+  env: Env,
+  input: {
+    actorName: string;
+    organizationId: string;
+    pageId: string;
+    preview: string;
+    recipients: Map<string, NotificationType>;
+  },
+): Promise<void> {
+  const mentionIds = [...input.recipients.entries()]
+    .filter(([, type]) => type === 'mention')
+    .map(([userId]) => userId);
+  if (!mentionIds.length) return;
+  const users = await emailUsers(env, mentionIds);
+  const page = await env.DB.prepare('SELECT title FROM pages WHERE id = ?')
+    .bind(input.pageId)
+    .first<{ title: string }>();
+  const pageTitle = page?.title ?? '未命名页面';
+  const pageUrl = `${appOrigin(env)}/p/${encodeURIComponent(input.pageId)}`;
+  for (const userId of mentionIds) {
+    const user = users.get(userId);
+    if (!user) continue;
+    const bodies = notificationEmailBodies({
+      actorName: input.actorName,
+      kind: 'mention',
+      pageTitle,
+      pageUrl,
+      preview: input.preview,
+    });
+    await queueOutboundEmail(env, {
+      bodyHtml: bodies.html,
+      bodyText: bodies.text,
+      organizationId: input.organizationId,
+      recipientEmail: user.email,
+      recipientUserId: userId,
+      subject: `${input.actorName} 在「${pageTitle}」中提到了你`,
+    });
+  }
+}
+
 async function createThread(
   request: Request,
   env: Env,
@@ -902,6 +964,13 @@ async function createThread(
         ),
       ),
     );
+    await emailNotificationRecipients(env, {
+      actorName: actor.displayName,
+      organizationId: page.organization_id,
+      pageId,
+      preview: body,
+      recipients,
+    });
   }
   return listThreads(env, pageId);
 }
@@ -965,6 +1034,13 @@ async function replyToThread(
         ),
       ),
     );
+    await emailNotificationRecipients(env, {
+      actorName: actor.displayName,
+      organizationId: thread.organization_id,
+      pageId: thread.page_id,
+      preview: body,
+      recipients,
+    });
   }
   return listThreads(env, thread.page_id);
 }
