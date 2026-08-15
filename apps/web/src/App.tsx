@@ -91,6 +91,7 @@ import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
 import 'katex/dist/katex.min.css';
+import './sites.css';
 
 import type {
   AuthSessionResponse,
@@ -99,6 +100,7 @@ import type {
   DatabaseSnapshot,
   OrganizationSummary,
   PageSummary,
+  SiteSummary,
   SpaceSummary,
   SpaceVisibility,
 } from '@rdocs/shared';
@@ -122,6 +124,7 @@ import {
   getCollabTicket,
   getPageDatabase,
   getPage,
+  getPublicSite,
   getPublicShare,
   listPages,
   listOrganizations,
@@ -130,6 +133,7 @@ import {
   logout,
   importMarkdown,
   movePage,
+  recordPublicSiteEvent,
   updateSpace,
   updatePageAppearance,
   updatePageTitle,
@@ -149,6 +153,11 @@ import { NotificationBell, PageNotificationControl, PageReminderControl } from '
 import { PageAccessDialog } from './PageAccessDialog';
 import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
+import {
+  PublicSiteBreadcrumbs,
+  PublicSiteHeader,
+  PublicSiteSearchDialog,
+} from './PublicSiteChrome';
 import {
   ancestorPageIds,
   buildPageTree,
@@ -456,6 +465,29 @@ function currentFormToken(): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
+function currentSiteRoute(): { siteSlug: string; pageSlug: string | null } | null {
+  const match = window.location.pathname.match(/^\/site\/([^/]+)(?:\/([^/]+))?\/?$/);
+  return match?.[1]
+    ? {
+        siteSlug: decodeURIComponent(match[1]),
+        pageSlug: match[2] ? decodeURIComponent(match[2]) : null,
+      }
+    : null;
+}
+
+function publicSiteSessionId(): string {
+  const key = 'rdocs:site-session';
+  try {
+    const existing = window.sessionStorage.getItem(key);
+    if (existing && /^[a-zA-Z0-9_-]{16,100}$/.test(existing)) return existing;
+    const created = crypto.randomUUID().replace(/-/g, '');
+    window.sessionStorage.setItem(key, created);
+    return created;
+  } catch {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+}
+
 function navigateToPage(pageId: string): void {
   window.location.assign(`/p/${encodeURIComponent(pageId)}`);
 }
@@ -469,6 +501,7 @@ export function App() {
   const invitationToken = currentInvitationToken();
   const shareToken = currentShareToken();
   const formToken = currentFormToken();
+  const siteRoute = currentSiteRoute();
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
@@ -484,16 +517,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (formToken || shareToken) return;
+    if (formToken || shareToken || siteRoute) return;
     void refreshSession().catch(() => undefined);
-  }, [formToken, refreshSession, shareToken]);
+  }, [formToken, refreshSession, shareToken, siteRoute?.pageSlug, siteRoute?.siteSlug]);
 
   useEffect(() => {
-    if (formToken || shareToken) return;
+    if (formToken || shareToken || siteRoute) return;
     const handleAuthRequired = () => void refreshSession().catch(() => undefined);
     window.addEventListener('rdocs:auth-required', handleAuthRequired);
     return () => window.removeEventListener('rdocs:auth-required', handleAuthRequired);
-  }, [formToken, refreshSession, shareToken]);
+  }, [formToken, refreshSession, shareToken, siteRoute?.pageSlug, siteRoute?.siteSlug]);
 
   const signOut = useCallback(async () => {
     try {
@@ -507,6 +540,7 @@ export function App() {
   }, [refreshSession]);
 
   if (formToken) return <PublicDatabaseForm token={formToken} />;
+  if (siteRoute) return <PublishedSite {...siteRoute} />;
   if (shareToken) return <SharedPage token={shareToken} />;
 
   if (!session) {
@@ -536,6 +570,75 @@ export function App() {
     return <TenantHome identity={identity} user={session.user} onLogout={signOut} />;
   }
   return <Workspace pageId={pageId} identity={identity} onLogout={signOut} />;
+}
+
+function PublishedSite({ siteSlug, pageSlug }: { siteSlug: string; pageSlug: string | null }) {
+  const identity = useMemo(
+    () => ({ id: `site-${siteSlug}`, name: '站点访客', color: '#73706b' }),
+    [siteSlug],
+  );
+  const [published, setPublished] = useState<Awaited<ReturnType<typeof getPublicSite>> | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [sessionId] = useState(publicSiteSessionId);
+  const renewTicket = useCallback(
+    async () => (await getPublicSite(siteSlug, pageSlug)).ticket,
+    [pageSlug, siteSlug],
+  );
+
+  useEffect(() => {
+    let active = true;
+    getPublicSite(siteSlug, pageSlug)
+      .then((result) => {
+        if (!active) return;
+        setPublished(result);
+        void recordPublicSiteEvent(siteSlug, {
+          type: 'page_view',
+          pageId: result.currentPage.page.id,
+          sessionId,
+        }).catch(() => undefined);
+      })
+      .catch(
+        (reason) => active && setError(reason instanceof Error ? reason.message : '站点页面不可用'),
+      );
+    return () => {
+      active = false;
+    };
+  }, [pageSlug, sessionId, siteSlug]);
+
+  useEffect(() => {
+    const measurementId = published?.site.googleAnalyticsId;
+    if (!measurementId || document.querySelector(`script[data-rdocs-ga="${measurementId}"]`))
+      return;
+    const globalWindow = window as typeof window & {
+      dataLayer?: unknown[][];
+      gtag?: (...args: unknown[]) => void;
+    };
+    globalWindow.dataLayer = globalWindow.dataLayer ?? [];
+    globalWindow.gtag = (...args: unknown[]) => globalWindow.dataLayer?.push(args);
+    globalWindow.gtag('js', new Date());
+    globalWindow.gtag('config', measurementId, { anonymize_ip: true });
+    const script = document.createElement('script');
+    script.async = true;
+    script.dataset.rdocsGa = measurementId;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(measurementId)}`;
+    document.head.append(script);
+  }, [published?.site.googleAnalyticsId]);
+
+  if (error) return <NotFound message={error} />;
+  if (!published) return <LoadingScreen message="正在打开站点…" />;
+  return (
+    <DocumentWorkspace
+      initialPage={published.currentPage.page}
+      initialPages={published.site.pages.map((page) => page.page)}
+      initialTicket={published.ticket}
+      identity={identity}
+      renewTicket={renewTicket}
+      publicSite={published.site}
+      publicSiteSessionId={sessionId}
+    />
+  );
 }
 
 function SharedPage({ token }: { token: string }) {
@@ -1720,6 +1823,8 @@ function DocumentWorkspace({
   onLogout,
   renewTicket,
   publicShareToken,
+  publicSite,
+  publicSiteSessionId,
   initialDatabase,
 }: {
   initialPage: PageSummary;
@@ -1729,6 +1834,8 @@ function DocumentWorkspace({
   onLogout?: () => Promise<void>;
   renewTicket?: () => Promise<string>;
   publicShareToken?: string;
+  publicSite?: SiteSummary;
+  publicSiteSessionId?: string;
   initialDatabase?: DatabaseSnapshot | null;
 }) {
   const initialCommentThreadId = new URLSearchParams(window.location.hash.slice(1)).get('comment');
@@ -1760,6 +1867,7 @@ function DocumentWorkspace({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(Boolean(initialCommentThreadId));
   const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
+  const [siteSearchOpen, setSiteSearchOpen] = useState(false);
   const titleTimer = useRef<number | undefined>(undefined);
   const latestTitle = useRef(page.title);
   const savedTitle = useRef(page.title);
@@ -2196,7 +2304,7 @@ function DocumentWorkspace({
 
   return (
     <div
-      className={`app-shell ${renewTicket ? 'public-share' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${contextPanelOpen ? 'context-panel-open' : ''}`}
+      className={`app-shell ${renewTicket ? 'public-share' : ''} ${publicSite ? `public-site theme-${publicSite.theme}` : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${contextPanelOpen ? 'context-panel-open' : ''}`}
     >
       <aside className="sidebar">
         <div className="sidebar-top">
@@ -2315,6 +2423,13 @@ function DocumentWorkspace({
       </aside>
 
       <main className="document-area">
+        {publicSite ? (
+          <PublicSiteHeader
+            site={publicSite}
+            currentPageId={page.id}
+            onSearch={() => setSiteSearchOpen(true)}
+          />
+        ) : null}
         <header className="document-header">
           <div className="breadcrumbs">
             <span>{activeOrganization?.name ?? 'Rdocs'}</span>
@@ -2478,7 +2593,11 @@ function DocumentWorkspace({
                 <span className="page-icon-display static">{page.icon}</span>
               )
             ) : null}
-            <div className="document-kicker">团队知识 / 协作原型</div>
+            {publicSite ? (
+              <PublicSiteBreadcrumbs site={publicSite} currentPageId={page.id} />
+            ) : (
+              <div className="document-kicker">团队知识 / 协作原型</div>
+            )}
             {!renewTicket ? <PageBacklinks pageId={page.id} /> : null}
             <input
               className="title-input"
@@ -2512,6 +2631,7 @@ function DocumentWorkspace({
                 breadcrumbItems={breadcrumbItems}
                 pageId={page.id}
                 publicShareToken={publicShareToken}
+                publicSiteSlug={publicSite?.slug}
               />
             ) : (
               <div className="editor-loading">
@@ -2522,6 +2642,14 @@ function DocumentWorkspace({
           </article>
         </div>
       </main>
+
+      {publicSite && siteSearchOpen && publicSiteSessionId ? (
+        <PublicSiteSearchDialog
+          site={publicSite}
+          sessionId={publicSiteSessionId}
+          onClose={() => setSiteSearchOpen(false)}
+        />
+      ) : null}
 
       {!renewTicket && contextPanelOpen ? (
         <aside className="context-panel">
@@ -2759,6 +2887,7 @@ function CollaborativeEditor({
   breadcrumbItems,
   pageId,
   publicShareToken,
+  publicSiteSlug,
 }: {
   collab: { ydoc: Y.Doc; provider: WebsocketProvider };
   identity: LocalIdentity;
@@ -2771,24 +2900,27 @@ function CollaborativeEditor({
   breadcrumbItems: readonly { id: string; title: string }[];
   pageId: string;
   publicShareToken?: string;
+  publicSiteSlug?: string;
 }) {
   const [, rerender] = useState(0);
   const editorInstance = useRef<Editor | null>(null);
   const breadcrumbItemsRef = useRef(breadcrumbItems);
   breadcrumbItemsRef.current = breadcrumbItems;
-  const syncedBlockContextRef = useRef({ identity, pageId, publicShareToken });
-  syncedBlockContextRef.current = { identity, pageId, publicShareToken };
+  const syncedBlockContextRef = useRef({ identity, pageId, publicShareToken, publicSiteSlug });
+  syncedBlockContextRef.current = { identity, pageId, publicShareToken, publicSiteSlug };
+  const publicReadOnlyToken =
+    publicShareToken ?? (publicSiteSlug ? `site:${publicSiteSlug}` : undefined);
   const inlineReminderContextRef = useRef({
     actorId: identity.id,
     canEdit: editable,
     pageId,
-    publicShareToken,
+    publicShareToken: publicReadOnlyToken,
   });
   inlineReminderContextRef.current = {
     actorId: identity.id,
     canEdit: editable,
     pageId,
-    publicShareToken,
+    publicShareToken: publicReadOnlyToken,
   };
   const editorBlocks = useMemo(
     () =>
@@ -2797,7 +2929,7 @@ function CollaborativeEditor({
         () => syncedBlockContextRef.current,
         () => ({
           containerPageId: syncedBlockContextRef.current.pageId,
-          publicShareToken: syncedBlockContextRef.current.publicShareToken,
+          publicShareToken: publicReadOnlyToken,
         }),
         () => inlineReminderContextRef.current,
       ),

@@ -48,6 +48,9 @@ import type {
   RecentPageResult,
   RestoreRevisionResponse,
   ShareLinkSummary,
+  SiteAnalyticsDay,
+  SiteSearchResult,
+  SiteSummary,
   SpaceGrantPrincipalType,
   SpaceGrantRole,
   SpaceGrantSummary,
@@ -287,6 +290,109 @@ export function createShareLink(
 
 export function revokeShareLink(shareLinkId: string): Promise<{ ok: true; revokedAt: number }> {
   return request(`/api/share-links/${encodeURIComponent(shareLinkId)}`, { method: 'DELETE' });
+}
+
+export function getPageSite(pageId: string): Promise<{ site: SiteSummary | null }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/site`);
+}
+
+export function publishPageSite(
+  pageId: string,
+  input: { name: string; slug: string },
+): Promise<{ site: SiteSummary }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/site`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateSite(
+  siteId: string,
+  input: Partial<
+    Pick<
+      SiteSummary,
+      | 'slug'
+      | 'name'
+      | 'theme'
+      | 'faviconAttachmentId'
+      | 'shareImageAttachmentId'
+      | 'seoTitle'
+      | 'seoDescription'
+      | 'searchEnabled'
+      | 'breadcrumbsEnabled'
+      | 'watermarkEnabled'
+      | 'searchEngineIndexing'
+      | 'googleAnalyticsId'
+    >
+  >,
+): Promise<{ site: SiteSummary }> {
+  return request(`/api/sites/${encodeURIComponent(siteId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function unpublishSite(siteId: string): Promise<{ site: SiteSummary }> {
+  return request(`/api/sites/${encodeURIComponent(siteId)}`, { method: 'DELETE' });
+}
+
+export function syncSitePages(siteId: string): Promise<{ site: SiteSummary }> {
+  return request(`/api/sites/${encodeURIComponent(siteId)}/sync-pages`, { method: 'POST' });
+}
+
+export function updateSitePage(
+  siteId: string,
+  pageId: string,
+  input: {
+    slug?: string;
+    isVisible?: boolean;
+    inNavigation?: boolean;
+    navigationLabel?: string | null;
+    navigationOrder?: number;
+  },
+): Promise<{ site: SiteSummary }> {
+  return request(`/api/sites/${encodeURIComponent(siteId)}/pages/${encodeURIComponent(pageId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function getSiteAnalytics(siteId: string): Promise<{ days: SiteAnalyticsDay[] }> {
+  return request(`/api/sites/${encodeURIComponent(siteId)}/analytics`);
+}
+
+export function getPublicSite(
+  siteSlug: string,
+  pageSlug?: string | null,
+): Promise<{
+  site: SiteSummary;
+  currentPage: SiteSummary['pages'][number];
+  ticket: string;
+  expiresAt: number;
+}> {
+  const path = pageSlug
+    ? `/api/public/sites/${encodeURIComponent(siteSlug)}/pages/${encodeURIComponent(pageSlug)}`
+    : `/api/public/sites/${encodeURIComponent(siteSlug)}`;
+  return request(path);
+}
+
+export function searchPublicSite(
+  siteSlug: string,
+  query: string,
+): Promise<{ results: SiteSearchResult[] }> {
+  return request(
+    `/api/public/sites/${encodeURIComponent(siteSlug)}/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export function recordPublicSiteEvent(
+  siteSlug: string,
+  input: { type: 'page_view' | 'search'; pageId?: string; sessionId: string },
+): Promise<{ ok: true }> {
+  return request(`/api/public/sites/${encodeURIComponent(siteSlug)}/events`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 export function getPage(pageId: string): Promise<{ page: PageSummary }> {
@@ -972,6 +1078,23 @@ export function getPublicSyncedBlockTicket(
 ): Promise<CollabTicketResponse & { role: 'viewer' }> {
   return request(
     `/api/public/shares/${encodeURIComponent(token)}/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/ticket`,
+    { method: 'POST' },
+  );
+}
+
+export function getPublicSiteSyncedBlockTicket(
+  siteSlug: string,
+  pageId: string,
+  blockId: string,
+): Promise<{
+  ticket: string;
+  expiresAt: number;
+  generation: number;
+  role: 'viewer';
+  sourcePageId: string;
+}> {
+  return request(
+    `/api/public/sites/${encodeURIComponent(siteSlug)}/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/ticket`,
     { method: 'POST' },
   );
 }

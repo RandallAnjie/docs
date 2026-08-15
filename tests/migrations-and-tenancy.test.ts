@@ -21,6 +21,11 @@ import {
   handleCommentsAndNotificationsApi,
 } from '../apps/worker/src/comments';
 import { handleDatabasesApi, handlePublicDatabaseFormsApi } from '../apps/worker/src/databases';
+import {
+  handlePublicSitesApi,
+  handleSitesApi,
+  publicSiteDiscoveryResponse,
+} from '../apps/worker/src/sites';
 
 class TestStatement {
   constructor(
@@ -102,6 +107,7 @@ const MIGRATIONS = [
   '0025_synced_block_delete_undo.sql',
   '0026_page_reminders_and_inbox_groups.sql',
   '0027_reminder_sources.sql',
+  '0028_sites.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -389,6 +395,250 @@ describe('database migrations', () => {
     await expect(
       requirePageAction(env, 'page_appearance', owner.id, 'edit_content'),
     ).resolves.not.toBeNull();
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    database.close();
+  });
+});
+
+describe('public Sites integration', () => {
+  it('publishes only safe descendants and supports navigation, search, analytics, and unpublish', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'sites');
+    const outsider = seedTenant(database, 'sites-outsider');
+    const now = Date.now();
+    const pages = [
+      { id: 'site_root', parentId: null, title: 'Rdocs Handbook', sort: '1', mode: 'inherit' },
+      {
+        id: 'site_public',
+        parentId: 'site_root',
+        title: 'Getting Started',
+        sort: '2',
+        mode: 'inherit',
+      },
+      {
+        id: 'site_private',
+        parentId: 'site_root',
+        title: 'Private Notes',
+        sort: '3',
+        mode: 'restricted',
+      },
+      {
+        id: 'site_private_child',
+        parentId: 'site_private',
+        title: 'Private Child',
+        sort: '4',
+        mode: 'inherit',
+      },
+      {
+        id: 'site_database',
+        parentId: 'site_root',
+        title: 'Structured Data',
+        sort: '5',
+        mode: 'inherit',
+      },
+    ];
+    for (const page of pages) {
+      database
+        .prepare(
+          `INSERT INTO pages(
+             id, organization_id, space_id, parent_id, title, sort_key,
+             created_by, updated_by, created_at, updated_at
+           ) VALUES (?, 'org_sites', 'spc_sites', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(page.id, page.parentId, page.title, page.sort, owner.id, owner.id, now, now);
+      database
+        .prepare(
+          `INSERT INTO page_access_state(
+             page_id, collaboration_enabled, acl_version, access_mode, updated_at
+           ) VALUES (?, 1, 1, ?, ?)`,
+        )
+        .run(page.id, page.mode, now);
+      database
+        .prepare(
+          `INSERT INTO page_search_projection(
+             page_id, organization_id, space_id, generation, collab_seq,
+             title, normalized_body, updated_at
+           ) VALUES (?, 'org_sites', 'spc_sites', 1, 0, ?, ?, ?)`,
+        )
+        .run(page.id, page.title, `${page.title.toLowerCase()} documentation`, now);
+    }
+    database
+      .prepare(
+        `INSERT INTO databases(
+           id, organization_id, page_id, is_locked, created_by, updated_by, created_at, updated_at
+         ) VALUES ('database_site', 'org_sites', 'site_database', 0, ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    const env = testEnv(database);
+    const databaseSiteResponse = await handleSitesApi(
+      new Request('https://docs.test/api/pages/site_database/site', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Structured Data', slug: 'structured-data' }),
+      }),
+      env,
+      owner,
+    );
+    expect(databaseSiteResponse?.status).toBe(400);
+    const publishedResponse = await handleSitesApi(
+      new Request('https://docs.test/api/pages/site_root/site', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Rdocs Handbook', slug: 'rdocs-handbook' }),
+      }),
+      env,
+      owner,
+    );
+    expect(publishedResponse?.status).toBe(201);
+    const published = (await publishedResponse?.json()) as {
+      site: { id: string; pages: Array<{ page: { id: string }; slug: string }> };
+    };
+    expect(published.site.pages.map((page) => page.page.id)).toEqual(['site_root', 'site_public']);
+    expect(
+      database
+        .prepare('SELECT COUNT(*) AS count FROM site_pages WHERE site_id = ?')
+        .get(published.site.id),
+    ).toEqual({ count: 2 });
+
+    const forbidden = await handleSitesApi(
+      new Request('https://docs.test/api/pages/site_root/site'),
+      env,
+      outsider,
+    );
+    expect(forbidden?.status).toBe(404);
+
+    const rootResponse = await handlePublicSitesApi(
+      new Request('https://docs.test/api/public/sites/rdocs-handbook'),
+      env,
+    );
+    expect(rootResponse?.status).toBe(200);
+    await expect(rootResponse?.json()).resolves.toMatchObject({
+      currentPage: { page: { id: 'site_root' }, isHome: true },
+      site: {
+        searchEnabled: true,
+        pages: [{ page: { id: 'site_root' } }, { page: { id: 'site_public' } }],
+      },
+    });
+
+    const publicPage = published.site.pages.find((page) => page.page.id === 'site_public')!;
+    const pageUpdate = await handleSitesApi(
+      new Request(`https://docs.test/api/sites/${published.site.id}/pages/site_public`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'start-here', inNavigation: true, navigationLabel: 'Start' }),
+      }),
+      env,
+      owner,
+    );
+    expect(pageUpdate?.status).toBe(200);
+    const childResponse = await handlePublicSitesApi(
+      new Request('https://docs.test/api/public/sites/rdocs-handbook/pages/start-here'),
+      env,
+    );
+    expect(childResponse?.status).toBe(200);
+    await expect(childResponse?.json()).resolves.toMatchObject({
+      currentPage: { page: { id: 'site_public' }, slug: 'start-here' },
+    });
+    expect(publicPage.slug).not.toBe('start-here');
+
+    const privateRobotsResponse = await publicSiteDiscoveryResponse(
+      new Request('https://docs.test/site/rdocs-handbook/robots.txt'),
+      env,
+    );
+    await expect(privateRobotsResponse?.text()).resolves.toContain('Disallow: /');
+    const indexingResponse = await handleSitesApi(
+      new Request(`https://docs.test/api/sites/${published.site.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ searchEngineIndexing: true }),
+      }),
+      env,
+      owner,
+    );
+    expect(indexingResponse?.status).toBe(200);
+    const sitemapResponse = await publicSiteDiscoveryResponse(
+      new Request('https://docs.test/site/rdocs-handbook/sitemap.xml'),
+      env,
+    );
+    expect(sitemapResponse?.headers.get('content-type')).toContain('application/xml');
+    const sitemap = await sitemapResponse?.text();
+    expect(sitemap).toContain('<loc>https://docs.test/site/rdocs-handbook</loc>');
+    expect(sitemap).toContain('<loc>https://docs.test/site/rdocs-handbook/start-here</loc>');
+    expect(sitemap).not.toContain('site_private');
+    const robotsResponse = await publicSiteDiscoveryResponse(
+      new Request('https://docs.test/site/rdocs-handbook/robots.txt'),
+      env,
+    );
+    await expect(robotsResponse?.text()).resolves.toContain(
+      'Sitemap: https://docs.test/site/rdocs-handbook/sitemap.xml',
+    );
+
+    const hideParentResponse = await handleSitesApi(
+      new Request(`https://docs.test/api/sites/${published.site.id}/pages/site_public`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ isVisible: false }),
+      }),
+      env,
+      owner,
+    );
+    expect(hideParentResponse?.status).toBe(200);
+    const hiddenChildResponse = await handlePublicSitesApi(
+      new Request('https://docs.test/api/public/sites/rdocs-handbook/pages/start-here'),
+      env,
+    );
+    expect(hiddenChildResponse?.status).toBe(404);
+    await handleSitesApi(
+      new Request(`https://docs.test/api/sites/${published.site.id}/pages/site_public`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ isVisible: true }),
+      }),
+      env,
+      owner,
+    );
+
+    const searchResponse = await handlePublicSitesApi(
+      new Request('https://docs.test/api/public/sites/rdocs-handbook/search?q=getting'),
+      env,
+    );
+    await expect(searchResponse?.json()).resolves.toMatchObject({
+      results: [expect.objectContaining({ pageId: 'site_public', slug: 'start-here' })],
+    });
+
+    const eventResponse = await handlePublicSitesApi(
+      new Request('https://docs.test/api/public/sites/rdocs-handbook/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://docs.test' },
+        body: JSON.stringify({
+          type: 'page_view',
+          pageId: 'site_public',
+          sessionId: 'siteintegrationvisitor123',
+        }),
+      }),
+      env,
+    );
+    expect(eventResponse?.status).toBe(200);
+    const analyticsResponse = await handleSitesApi(
+      new Request(`https://docs.test/api/sites/${published.site.id}/analytics`),
+      env,
+      owner,
+    );
+    await expect(analyticsResponse?.json()).resolves.toMatchObject({
+      days: [expect.objectContaining({ pageViews: 1, uniqueVisitors: 1 })],
+    });
+
+    const unpublishedResponse = await handleSitesApi(
+      new Request(`https://docs.test/api/sites/${published.site.id}`, { method: 'DELETE' }),
+      env,
+      owner,
+    );
+    expect(unpublishedResponse?.status).toBe(200);
+    const unavailable = await handlePublicSitesApi(
+      new Request('https://docs.test/api/public/sites/rdocs-handbook'),
+      env,
+    );
+    expect(unavailable?.status).toBe(404);
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     database.close();
   });

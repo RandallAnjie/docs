@@ -61,6 +61,13 @@ import { syncedBlockTicketRole } from './synced-block-access';
 import { bumpSyncedBlocksForPageSubtree } from './synced-block-acl';
 import { handleTenancyApi } from './tenancy';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
+import {
+  canPubliclyDownloadSiteAttachment,
+  handlePublicSitesApi,
+  handleSitesApi,
+  publicSiteDiscoveryResponse,
+  siteHtmlMetadata,
+} from './sites';
 
 export { DocumentRoom };
 
@@ -3845,6 +3852,9 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const publicFormResponse = await handlePublicDatabaseFormsApi(request, env);
   if (publicFormResponse) return publicFormResponse;
 
+  const publicSiteResponse = await handlePublicSitesApi(request, env);
+  if (publicSiteResponse) return publicSiteResponse;
+
   const ticketedSyncMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/collaboration-sync$/);
   if (ticketedSyncMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(ticketedSyncMatch[1]);
@@ -3868,7 +3878,11 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     const attachmentId = decodeURIComponent(publicAttachmentMatch[1]);
     if (!isPageId(attachmentId)) return error('附件 ID 无效', 400);
     const attachment = await findAttachment(env, attachmentId);
-    if (attachment && (await canPubliclyDownloadAttachment(request, env, attachment))) {
+    if (
+      attachment &&
+      ((await canPubliclyDownloadAttachment(request, env, attachment)) ||
+        (await canPubliclyDownloadSiteAttachment(request, env, attachment.page_id)))
+    ) {
       return downloadAttachment(request, env, attachment);
     }
   }
@@ -3892,6 +3906,8 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (commentsResponse) return commentsResponse;
   const databasesResponse = await handleDatabasesApi(request, env, actor);
   if (databasesResponse) return databasesResponse;
+  const sitesResponse = await handleSitesApi(request, env, actor);
+  if (sitesResponse) return sitesResponse;
 
   if (url.pathname === '/api/search' && request.method === 'GET') {
     const organizationId = url.searchParams.get('organizationId') ?? '';
@@ -4265,28 +4281,95 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   return error('API 路径不存在', 404);
 }
 
-function htmlResponse(): Response {
-  return new Response(appHtml, {
+function htmlResponse(
+  html = appHtml,
+  options: { embeddable?: boolean; analytics?: boolean } = {},
+): Response {
+  const scriptSources = ["'self'", "'unsafe-inline'"];
+  const connectSources = ["'self'", 'ws:', 'wss:'];
+  if (options.analytics) {
+    scriptSources.push('https://www.googletagmanager.com');
+    connectSources.push('https://www.google-analytics.com', 'https://region1.google-analytics.com');
+  }
+  const headers = new Headers({
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-cache',
+    'content-security-policy': [
+      "default-src 'self'",
+      `script-src ${scriptSources.join(' ')}`,
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "img-src 'self' data: blob: https://www.google-analytics.com",
+      `connect-src ${connectSources.join(' ')}`,
+      'frame-src https://www.youtube-nocookie.com https://www.figma.com https://www.loom.com https://codepen.io https://codesandbox.io',
+      "object-src 'none'",
+      "base-uri 'self'",
+      `frame-ancestors ${options.embeddable ? '*' : "'none'"}`,
+    ].join('; '),
+    'referrer-policy': 'strict-origin-when-cross-origin',
+    'x-content-type-options': 'nosniff',
+    'permissions-policy': 'publickey-credentials-create=(self), publickey-credentials-get=(self)',
+  });
+  if (!options.embeddable) headers.set('x-frame-options', 'DENY');
+  return new Response(html, {
     headers: {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-cache',
-      'content-security-policy': [
-        "default-src 'self'",
-        "script-src 'self' 'unsafe-inline'",
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src 'self' data: https://fonts.gstatic.com",
-        "img-src 'self' data: blob:",
-        "connect-src 'self' ws: wss:",
-        'frame-src https://www.youtube-nocookie.com https://www.figma.com https://www.loom.com https://codepen.io https://codesandbox.io',
-        "object-src 'none'",
-        "base-uri 'self'",
-        "frame-ancestors 'none'",
-      ].join('; '),
-      'referrer-policy': 'strict-origin-when-cross-origin',
-      'x-content-type-options': 'nosniff',
-      'x-frame-options': 'DENY',
-      'permissions-policy': 'publickey-credentials-create=(self), publickey-credentials-get=(self)',
+      ...Object.fromEntries(headers.entries()),
     },
+  });
+}
+
+function escapedHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function publicSiteHtmlResponse(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\/site\/([^/]+)(?:\/([^/]+))?\/?$/);
+  if (!match?.[1]) return null;
+  const siteSlug = decodeURIComponent(match[1]);
+  const pageSlug = match[2] ? decodeURIComponent(match[2]) : null;
+  const metadata = await siteHtmlMetadata(env, siteSlug, pageSlug);
+  if (!metadata) {
+    return new Response('Site not found', {
+      status: 404,
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+    });
+  }
+  const { site, page } = metadata;
+  const title = site.seo_title || `${page.page.title} · ${site.name}`;
+  const description = site.seo_description || `${site.name} 发布的 Rdocs 站点页面`;
+  const canonical = `${url.origin}/site/${encodeURIComponent(site.slug)}${
+    page.isHome ? '' : `/${encodeURIComponent(page.slug)}`
+  }`;
+  const shareImage = site.share_image_attachment_id
+    ? `${url.origin}/api/attachments/${encodeURIComponent(site.share_image_attachment_id)}?site=${encodeURIComponent(site.slug)}`
+    : null;
+  const favicon = site.favicon_attachment_id
+    ? `${url.origin}/api/attachments/${encodeURIComponent(site.favicon_attachment_id)}?site=${encodeURIComponent(site.slug)}`
+    : null;
+  const meta = [
+    `<meta name="description" content="${escapedHtml(description)}">`,
+    `<meta name="robots" content="${site.search_engine_indexing ? 'index,follow' : 'noindex,nofollow'}">`,
+    `<link rel="canonical" href="${escapedHtml(canonical)}">`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:title" content="${escapedHtml(title)}">`,
+    `<meta property="og:description" content="${escapedHtml(description)}">`,
+    `<meta property="og:url" content="${escapedHtml(canonical)}">`,
+    `<meta name="twitter:card" content="${shareImage ? 'summary_large_image' : 'summary'}">`,
+    ...(shareImage ? [`<meta property="og:image" content="${escapedHtml(shareImage)}">`] : []),
+    ...(favicon ? [`<link rel="icon" href="${escapedHtml(favicon)}">`] : []),
+  ].join('');
+  const html = appHtml
+    .replace(/<title>[^<]*<\/title>/, `<title>${escapedHtml(title)}</title>`)
+    .replace('</head>', `${meta}</head>`);
+  return htmlResponse(html, {
+    embeddable: true,
+    analytics: Boolean(site.google_analytics_id),
   });
 }
 
@@ -4312,7 +4395,10 @@ export default {
             ? await openCollaborationSocket(request, env, pageId)
             : error('页面 ID 无效', 400);
         } else if (request.method === 'GET' || request.method === 'HEAD') {
-          response = htmlResponse();
+          response =
+            (await publicSiteDiscoveryResponse(request, env)) ??
+            (await publicSiteHtmlResponse(request, env)) ??
+            htmlResponse();
         } else {
           response = error('Method not allowed', 405);
         }

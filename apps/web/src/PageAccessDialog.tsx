@@ -20,6 +20,7 @@ import {
   updatePageAccessMode,
 } from './api';
 import { ShareLinkSettings } from './ShareLinkSettings';
+import { SitePublishingSettings } from './SitePublishingSettings';
 
 function parsePrincipal(value: string): { type: SpaceGrantPrincipalType; id: string } | null {
   const separator = value.indexOf(':');
@@ -330,6 +331,7 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
           </p>
         ) : null}
         <ShareLinkSettings pageId={page.id} />
+        <SitePublishingSettings pageId={page.id} pageTitle={page.title} />
       </section>
     </div>
   );

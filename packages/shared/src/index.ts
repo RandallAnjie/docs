@@ -451,6 +451,58 @@ export interface ShareLinkSummary {
   createdAt: number;
 }
 
+export type SiteTheme = 'system' | 'light' | 'dark';
+
+export interface SitePageSummary {
+  page: PageSummary;
+  slug: string;
+  isHome: boolean;
+  isVisible: boolean;
+  navigationLabel: string | null;
+  navigationOrder: number | null;
+}
+
+export interface SiteSummary {
+  id: string;
+  organizationId: string;
+  rootPageId: string;
+  slug: string;
+  name: string;
+  theme: SiteTheme;
+  faviconAttachmentId: string | null;
+  shareImageAttachmentId: string | null;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  searchEnabled: boolean;
+  breadcrumbsEnabled: boolean;
+  watermarkEnabled: boolean;
+  searchEngineIndexing: boolean;
+  googleAnalyticsId: string | null;
+  publishedAt: number;
+  unpublishedAt: number | null;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: number;
+  updatedAt: number;
+  pages: SitePageSummary[];
+}
+
+export interface SiteSearchResult {
+  pageId: string;
+  title: string;
+  icon: string | null;
+  slug: string;
+  excerpt: string;
+  updatedAt: number;
+}
+
+export interface SiteAnalyticsDay {
+  date: string;
+  pageViews: number;
+  searches: number;
+  uniqueVisitors: number;
+}
+
 export interface AuditEventSummary {
   id: string;
   actor: AuthUserSummary | null;
