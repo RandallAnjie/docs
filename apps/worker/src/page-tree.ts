@@ -96,6 +96,7 @@ export async function listPages(env: Env, spaceId: string, userId: string): Prom
          JOIN page_access_state a ON a.page_id = p.id
         WHERE p.organization_id = ? AND p.space_id = ? AND p.deleted_at IS NULL
           AND p.id NOT IN (SELECT id FROM database_row_subtree)
+          AND NOT EXISTS (SELECT 1 FROM database_templates t WHERE t.page_id = p.id)
         ORDER BY p.sort_key ASC, p.id ASC
         LIMIT ?`,
     )

@@ -14,6 +14,7 @@ import {
   GalleryHorizontal,
   KanbanSquare,
   LayoutDashboard,
+  LayoutTemplate,
   List,
   ListPlus,
   Lock,
@@ -23,6 +24,7 @@ import {
   RotateCcw,
   Search,
   Settings2,
+  Star,
   Table2,
   Trash2,
 } from 'lucide-react';
@@ -44,6 +46,7 @@ import type {
   DatabasePropertyType,
   DatabaseRowSummary,
   DatabaseSnapshot,
+  DatabaseTemplateSummary,
   DatabaseViewSummary,
   DatabaseViewType,
   JsonValue,
@@ -54,9 +57,12 @@ import {
   createDatabaseProperty,
   createDatabaseFormLink,
   createDatabaseRow,
+  createDatabaseRowFromTemplate,
+  createDatabaseTemplate,
   createDatabaseView,
   deleteDatabaseProperty,
   deleteDatabaseRow,
+  deleteDatabaseTemplate,
   deleteDatabaseView,
   duplicateDatabaseRow,
   getArchivedDatabaseRows,
@@ -68,6 +74,7 @@ import {
   updateDatabase,
   updateDatabaseProperty,
   updateDatabaseRow,
+  updateDatabaseTemplate,
   updateDatabaseView,
   uploadAttachment,
   revokeDatabaseFormLink,
@@ -76,11 +83,13 @@ import {
   applyDatabaseView,
   databaseAggregationValue,
   databaseCalendarDays,
+  databaseDateRange,
   databaseViewFilters,
   databaseViewSorts,
   groupDatabaseRows,
   moveDatabaseDate,
   orderedVisibleDatabaseProperties,
+  resizeDatabaseDate,
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
@@ -1256,26 +1265,217 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
     dateCandidates[0];
   if (!dateProperty)
     return <ViewRequirement icon={<Columns3 size={24} />} text="添加日期属性后即可使用时间线。" />;
-  const rows = props.rows
-    .map((row) => ({ row, date: dateInputValue(row.values[dateProperty.id]) }))
-    .filter((item) => item.date)
-    .sort((left, right) => left.date.localeCompare(right.date));
+  const datedRows = props.rows
+    .map((row) => ({ row, range: databaseDateRange(row.values[dateProperty.id]) }))
+    .filter(
+      (item): item is { row: DatabaseRowSummary; range: { start: string; end: string } } =>
+        item.range !== null,
+    )
+    .sort((left, right) => left.range.start.localeCompare(right.range.start));
+  const unscheduled = props.rows.filter((row) => !databaseDateRange(row.values[dateProperty.id]));
+  const timelineDays =
+    props.view.config.timelineDays === 14 || props.view.config.timelineDays === 90
+      ? props.view.config.timelineDays
+      : 30;
+  const configuredStart =
+    typeof props.view.config.timelineStart === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(props.view.config.timelineStart)
+      ? props.view.config.timelineStart
+      : (datedRows[0]?.range.start ?? new Date().toISOString().slice(0, 10));
+  const startTime = Date.parse(`${configuredStart}T00:00:00.000Z`);
+  const axisDays = Array.from({ length: timelineDays }, (_, index) => {
+    const day = new Date(startTime);
+    day.setUTCDate(day.getUTCDate() + index);
+    return day.toISOString().slice(0, 10);
+  });
+  const shiftWindow = (offset: number) => {
+    const date = new Date(startTime);
+    date.setUTCDate(date.getUTCDate() + offset);
+    void props.updateViewConfig({
+      ...props.view.config,
+      timelineStart: date.toISOString().slice(0, 10),
+      timelineDays,
+    });
+  };
+  const dateOffset = (date: string) =>
+    Math.round((Date.parse(`${date}T00:00:00.000Z`) - startTime) / 86_400_000);
+  const updateRange = (row: DatabaseRowSummary, mode: 'move' | 'start' | 'end', date: string) => {
+    if (!props.canEdit || dateProperty.type !== 'date') return;
+    const value =
+      mode === 'move'
+        ? moveDatabaseDate(row.values[dateProperty.id], date)
+        : resizeDatabaseDate(row.values[dateProperty.id], mode, date);
+    void props.saveCell(row, dateProperty, value);
+  };
+  const dropOnTrack = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!props.canEdit || dateProperty.type !== 'date') return;
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const index = Math.max(
+      0,
+      Math.min(
+        timelineDays - 1,
+        Math.floor(((event.clientX - bounds.left) / bounds.width) * timelineDays),
+      ),
+    );
+    try {
+      const payload = JSON.parse(event.dataTransfer.getData('application/x-rdocs-timeline')) as {
+        rowId?: unknown;
+        mode?: unknown;
+      };
+      const row = props.rows.find((candidate) => candidate.id === payload.rowId);
+      const mode =
+        payload.mode === 'start' || payload.mode === 'end' ? payload.mode : ('move' as const);
+      if (row) updateRange(row, mode, axisDays[index]!);
+    } catch {
+      // Ignore drags that do not originate from this timeline.
+    }
+  };
   return (
-    <div className="database-timeline-view">
-      <PropertyPicker
-        label="时间"
-        value={dateProperty.id}
-        properties={dateCandidates}
-        onChange={(datePropertyId) =>
-          void props.updateViewConfig({ ...props.view.config, datePropertyId })
-        }
-      />
-      {rows.map(({ row, date }, index) => (
-        <article key={row.id} style={{ '--timeline-offset': index % 4 } as React.CSSProperties}>
-          <time>{date}</time>
-          <a href={`/p/${encodeURIComponent(row.pageId)}`}>{rowTitle(row, props.properties)}</a>
-        </article>
-      ))}
+    <div
+      className="database-timeline-view"
+      style={{ '--timeline-days': timelineDays } as React.CSSProperties}
+    >
+      <div className="database-timeline-toolbar">
+        <PropertyPicker
+          label="时间"
+          value={dateProperty.id}
+          properties={dateCandidates}
+          onChange={(datePropertyId) =>
+            void props.updateViewConfig({ ...props.view.config, datePropertyId })
+          }
+        />
+        <div>
+          <button type="button" aria-label="上一时间段" onClick={() => shiftWindow(-timelineDays)}>
+            <ChevronLeft size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void props.updateViewConfig({
+                ...props.view.config,
+                timelineStart: new Date().toISOString().slice(0, 10),
+                timelineDays,
+              })
+            }
+          >
+            今天
+          </button>
+          <button type="button" aria-label="下一时间段" onClick={() => shiftWindow(timelineDays)}>
+            <ChevronRight size={15} />
+          </button>
+          <select
+            aria-label="时间线范围"
+            value={timelineDays}
+            onChange={(event) =>
+              void props.updateViewConfig({
+                ...props.view.config,
+                timelineStart: configuredStart,
+                timelineDays: Number(event.target.value),
+              })
+            }
+          >
+            <option value={14}>2 周</option>
+            <option value={30}>1 月</option>
+            <option value={90}>1 季度</option>
+          </select>
+        </div>
+      </div>
+      <div className="database-timeline-axis">
+        <span>记录</span>
+        <div>
+          {axisDays.map((date) => (
+            <time key={date} dateTime={date} title={date}>
+              {date.slice(5)}
+            </time>
+          ))}
+        </div>
+      </div>
+      {datedRows.map(({ row, range }) => {
+        const start = Math.max(0, dateOffset(range.start));
+        const end = Math.min(timelineDays - 1, dateOffset(range.end));
+        const visible = end >= 0 && start < timelineDays;
+        return (
+          <article key={row.id}>
+            <a href={`/p/${encodeURIComponent(row.pageId)}`}>{rowTitle(row, props.properties)}</a>
+            <div
+              className="database-timeline-track"
+              onDragOver={(event) => {
+                if (props.canEdit && dateProperty.type === 'date') event.preventDefault();
+              }}
+              onDrop={dropOnTrack}
+            >
+              {visible ? (
+                <div
+                  className="database-timeline-bar"
+                  draggable={props.canEdit && dateProperty.type === 'date'}
+                  style={
+                    {
+                      '--timeline-left': `${(start / timelineDays) * 100}%`,
+                      '--timeline-width': `${((Math.max(end, start) - start + 1) / timelineDays) * 100}%`,
+                    } as React.CSSProperties
+                  }
+                  onDragStart={(event) =>
+                    event.dataTransfer.setData(
+                      'application/x-rdocs-timeline',
+                      JSON.stringify({ rowId: row.id, mode: 'move' }),
+                    )
+                  }
+                  title={`${range.start} → ${range.end}`}
+                >
+                  <button
+                    type="button"
+                    draggable={props.canEdit && dateProperty.type === 'date'}
+                    aria-label={`调整“${rowTitle(row, props.properties)}”开始日期`}
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      event.dataTransfer.setData(
+                        'application/x-rdocs-timeline',
+                        JSON.stringify({ rowId: row.id, mode: 'start' }),
+                      );
+                    }}
+                  />
+                  <span>{rowTitle(row, props.properties)}</span>
+                  <button
+                    type="button"
+                    draggable={props.canEdit && dateProperty.type === 'date'}
+                    aria-label={`调整“${rowTitle(row, props.properties)}”结束日期`}
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      event.dataTransfer.setData(
+                        'application/x-rdocs-timeline',
+                        JSON.stringify({ rowId: row.id, mode: 'end' }),
+                      );
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </article>
+        );
+      })}
+      {unscheduled.length ? (
+        <details className="database-timeline-unscheduled">
+          <summary>无日期 · {unscheduled.length}</summary>
+          <div>
+            {unscheduled.map((row) => (
+              <a
+                key={row.id}
+                href={`/p/${encodeURIComponent(row.pageId)}`}
+                draggable={props.canEdit && dateProperty.type === 'date'}
+                onDragStart={(event) =>
+                  event.dataTransfer.setData(
+                    'application/x-rdocs-timeline',
+                    JSON.stringify({ rowId: row.id, mode: 'move' }),
+                  )
+                }
+              >
+                {rowTitle(row, props.properties)}
+              </a>
+            ))}
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -2699,6 +2899,174 @@ function ViewDialog({
   );
 }
 
+function DatabaseTemplateDialog({
+  snapshot,
+  onChanged,
+  onClose,
+}: {
+  snapshot: DatabaseSnapshot;
+  onChanged: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState('新模板');
+  const [description, setDescription] = useState('');
+  const [sourceRowId, setSourceRowId] = useState(snapshot.rows[0]?.id ?? '');
+  const [isDefault, setIsDefault] = useState(snapshot.templates.length === 0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const create = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!sourceRowId || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createDatabaseTemplate(snapshot.database.id, {
+        name,
+        description,
+        sourceRowId,
+        isDefault,
+      });
+      await onChanged();
+      setName('新模板');
+      setDescription('');
+      setIsDefault(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法创建模板');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const makeDefault = async (template: DatabaseTemplateSummary) => {
+    if (busy || template.isDefault) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateDatabaseTemplate(snapshot.database.id, template.id, { isDefault: true });
+      await onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法设置默认模板');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (template: DatabaseTemplateSummary) => {
+    if (busy || !window.confirm(`删除模板“${template.name}”？已有记录不会受影响。`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteDatabaseTemplate(snapshot.database.id, template.id);
+      await onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法删除模板');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="rdocs-dialog database-template-dialog" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <h2>数据库模板</h2>
+            <p>保存记录的属性、页面正文和私有附件，之后一键创建完整副本。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>
+            ×
+          </button>
+        </header>
+        <div className="database-template-list">
+          {snapshot.templates.map((template) => (
+            <article key={template.id}>
+              <span className="database-template-icon">
+                <LayoutTemplate size={16} />
+              </span>
+              <div>
+                <strong>{template.name}</strong>
+                <small>{template.description || '包含属性和页面内容'}</small>
+              </div>
+              {template.isDefault ? (
+                <span className="database-template-default">
+                  <Star size={12} /> 默认
+                </span>
+              ) : (
+                <button type="button" disabled={busy} onClick={() => void makeDefault(template)}>
+                  设为默认
+                </button>
+              )}
+              <a href={`/p/${encodeURIComponent(template.pageId)}`}>编辑内容</a>
+              <button
+                className="danger"
+                type="button"
+                aria-label={`删除模板${template.name}`}
+                disabled={busy}
+                onClick={() => void remove(template)}
+              >
+                <Trash2 size={14} />
+              </button>
+            </article>
+          ))}
+          {!snapshot.templates.length ? <p>还没有模板。先选择一条记录作为样板。</p> : null}
+        </div>
+        <form onSubmit={(event) => void create(event)}>
+          <h3>从现有记录创建</h3>
+          <div className="database-template-fields">
+            <label>
+              模板名称
+              <input
+                value={name}
+                maxLength={100}
+                required
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label>
+              源记录
+              <select
+                value={sourceRowId}
+                required
+                onChange={(event) => setSourceRowId(event.target.value)}
+              >
+                <option value="">请选择</option>
+                {snapshot.rows.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {rowTitle(row, snapshot.properties)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label>
+            说明
+            <input
+              value={description}
+              maxLength={500}
+              placeholder="例如：新项目默认结构"
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          <label className="database-dialog-checkbox">
+            <input
+              type="checkbox"
+              checked={isDefault}
+              onChange={(event) => setIsDefault(event.target.checked)}
+            />
+            设为默认模板
+          </label>
+          {error ? <p className="dialog-error">{error}</p> : null}
+          <div className="dialog-actions">
+            <button type="button" onClick={onClose} disabled={busy}>
+              完成
+            </button>
+            <button className="primary-button" type="submit" disabled={busy || !sourceRowId}>
+              {busy ? '保存中…' : '创建模板'}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function DatabaseTrashDialog({
   snapshot,
   busyRowId,
@@ -2766,6 +3134,8 @@ export function DatabaseCanvas({
   );
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [archivedSnapshot, setArchivedSnapshot] = useState<DatabaseSnapshot | null>(null);
   const [restoringRowId, setRestoringRowId] = useState<string | null>(null);
@@ -2812,7 +3182,28 @@ export function DatabaseCanvas({
     }
   };
 
-  const addRow = async () => {
+  const addRow = async (templateId?: string | null) => {
+    const selectedTemplateId =
+      templateId === undefined
+        ? snapshot.templates.find((template) => template.isDefault)?.id
+        : templateId;
+    if (selectedTemplateId) {
+      if (!editable || busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const { row } = await createDatabaseRowFromTemplate(
+          snapshot.database.id,
+          selectedTemplateId,
+        );
+        if (row) setSnapshot((current) => ({ ...current, rows: [...current.rows, row] }));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '无法从模板新建记录');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const title = titleProperty(snapshot.properties);
     await createRow(title ? { [title.id]: '未命名' } : {});
   };
@@ -3049,6 +3440,58 @@ export function DatabaseCanvas({
             </button>
           ) : null}
           {editable ? (
+            <div className="database-new-split">
+              <button type="button" disabled={busy} onClick={() => void addRow()}>
+                <Plus size={14} /> 新建
+              </button>
+              <button
+                type="button"
+                aria-label="选择数据库模板"
+                aria-expanded={templateMenuOpen}
+                onClick={() => setTemplateMenuOpen((open) => !open)}
+              >
+                <ChevronDown size={13} />
+              </button>
+              {templateMenuOpen ? (
+                <div className="database-template-menu">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTemplateMenuOpen(false);
+                      void addRow(null);
+                    }}
+                  >
+                    <FileText size={14} /> 空白记录
+                  </button>
+                  {snapshot.templates.map((template) => (
+                    <button
+                      type="button"
+                      key={template.id}
+                      onClick={() => {
+                        setTemplateMenuOpen(false);
+                        void addRow(template.id);
+                      }}
+                    >
+                      <LayoutTemplate size={14} />
+                      <span>{template.name}</span>
+                      {template.isDefault ? <small>默认</small> : null}
+                    </button>
+                  ))}
+                  <hr />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTemplateMenuOpen(false);
+                      setTemplateDialogOpen(true);
+                    }}
+                  >
+                    <Settings2 size={14} /> 管理模板
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {editable ? (
             <button type="button" title="已归档记录" onClick={() => void openTrash()}>
               <Archive size={14} />
             </button>
@@ -3109,6 +3552,13 @@ export function DatabaseCanvas({
           busyRowId={restoringRowId}
           onRestore={restoreRow}
           onClose={() => setTrashOpen(false)}
+        />
+      ) : null}
+      {templateDialogOpen ? (
+        <DatabaseTemplateDialog
+          snapshot={snapshot}
+          onChanged={refresh}
+          onClose={() => setTemplateDialogOpen(false)}
         />
       ) : null}
     </section>

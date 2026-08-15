@@ -287,3 +287,46 @@ export function moveDatabaseDate(value: JsonValue | undefined, date: string): Js
   const movedEnd = end ? new Date(new Date(end).getTime() + shift).toISOString() : null;
   return { ...value, start: movedStart, end: movedEnd };
 }
+
+export function databaseDateRange(
+  value: JsonValue | undefined,
+): { start: string; end: string } | null {
+  const rawStart =
+    typeof value === 'string'
+      ? value
+      : value &&
+          !Array.isArray(value) &&
+          typeof value === 'object' &&
+          typeof value.start === 'string'
+        ? value.start
+        : '';
+  if (!/^\d{4}-\d{2}-\d{2}/.test(rawStart)) return null;
+  const rawEnd =
+    value && !Array.isArray(value) && typeof value === 'object' && typeof value.end === 'string'
+      ? value.end
+      : rawStart;
+  return {
+    start: rawStart.slice(0, 10),
+    end: /^\d{4}-\d{2}-\d{2}/.test(rawEnd) ? rawEnd.slice(0, 10) : rawStart.slice(0, 10),
+  };
+}
+
+export function resizeDatabaseDate(
+  value: JsonValue | undefined,
+  edge: 'start' | 'end',
+  date: string,
+): JsonValue {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return value ?? null;
+  const range = databaseDateRange(value);
+  if (!range) return edge === 'start' ? date : { start: date, end: date };
+  const objectValue =
+    value && !Array.isArray(value) && typeof value === 'object' ? value : { start: range.start };
+  const rawStart = typeof objectValue.start === 'string' ? objectValue.start : range.start;
+  const rawEnd = typeof objectValue.end === 'string' ? objectValue.end : rawStart;
+  if (edge === 'start') {
+    const nextStart = date <= range.end ? date : range.end;
+    return { ...objectValue, start: `${nextStart}${rawStart.slice(10)}`, end: rawEnd };
+  }
+  const nextEnd = date >= range.start ? date : range.start;
+  return { ...objectValue, start: rawStart, end: `${nextEnd}${rawEnd.slice(10)}` };
+}
