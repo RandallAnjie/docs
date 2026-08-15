@@ -5,9 +5,9 @@ import type {
   GroupSummary,
   OrganizationMemberSummary,
   PageAccessMode,
+  PageGrantRole,
   PageGrantSummary,
   PageSummary,
-  SpaceRole,
   SpaceGrantPrincipalType,
 } from '@rdocs/shared';
 
@@ -20,13 +20,6 @@ import {
   updatePageAccessMode,
 } from './api';
 import { ShareLinkSettings } from './ShareLinkSettings';
-
-const ROLE_LABEL: Record<SpaceRole, string> = {
-  space_admin: '管理',
-  editor: '可编辑',
-  commenter: '可评论',
-  viewer: '可查看',
-};
 
 function parsePrincipal(value: string): { type: SpaceGrantPrincipalType; id: string } | null {
   const separator = value.indexOf(':');
@@ -48,7 +41,7 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
   const [members, setMembers] = useState<OrganizationMemberSummary[]>([]);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [principal, setPrincipal] = useState('');
-  const [role, setRole] = useState<SpaceRole>('viewer');
+  const [role, setRole] = useState<PageGrantRole>('viewer');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,17 +124,37 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
     }
   };
 
+  const changeGrant = async (grant: PageGrantSummary, nextRole: PageGrantRole) => {
+    if (busy || nextRole === grant.role) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await putPageGrant(page.id, grant.principalType, grant.principalId, nextRole);
+      setMode(result.mode);
+      setGrants(result.grants);
+    } catch (reason) {
+      setError(failure(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section className="rdocs-dialog page-access-dialog" role="dialog" aria-modal="true">
+      <section
+        className="rdocs-dialog page-access-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="page-access-title"
+      >
         <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭">
           <X size={17} />
         </button>
         <div className="dialog-icon">
           <LockKeyhole size={19} />
         </div>
-        <h2>页面访问权限</h2>
-        <p>限制后，本页及子页面只对明确授权的成员可见。权限只能比所属空间更严格。</p>
+        <h2 id="page-access-title">页面访问权限</h2>
+        <p>限制后，本页及子页面使用独立权限。用户权限优先于用户组和整个组织。</p>
 
         {loading ? (
           <div className="settings-loading">
@@ -180,6 +193,7 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
               <>
                 <form className="page-grant-form" onSubmit={(event) => void addMember(event)}>
                   <select
+                    aria-label="授权成员或用户组"
                     value={principal}
                     onChange={(event) => setPrincipal(event.target.value)}
                     required
@@ -210,12 +224,14 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                     </optgroup>
                   </select>
                   <select
+                    aria-label="页面权限"
                     value={role}
-                    onChange={(event) => setRole(event.target.value as SpaceRole)}
+                    onChange={(event) => setRole(event.target.value as PageGrantRole)}
                   >
-                    <option value="editor">可编辑</option>
-                    <option value="commenter">可评论</option>
-                    <option value="viewer">可查看</option>
+                    <option value="none">无权限</option>
+                    <option value="viewer">只读</option>
+                    <option value="editor">读写</option>
+                    <option value="space_admin">管理员</option>
                   </select>
                   <button type="submit" disabled={busy}>
                     <UserPlus size={15} /> 添加
@@ -253,7 +269,22 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                                   : (member?.email ?? '成员')}
                             </small>
                           </div>
-                          <b>{ROLE_LABEL[grant.role]}</b>
+                          <select
+                            aria-label={`${label} 的页面权限`}
+                            value={grant.role}
+                            onChange={(event) =>
+                              void changeGrant(grant, event.target.value as PageGrantRole)
+                            }
+                            disabled={busy}
+                          >
+                            <option value="none">无权限</option>
+                            <option value="viewer">只读</option>
+                            <option value="editor">读写</option>
+                            <option value="space_admin">管理员</option>
+                            {grant.role === 'commenter' ? (
+                              <option value="commenter">只读（可评论）</option>
+                            ) : null}
+                          </select>
                           <button
                             type="button"
                             aria-label="移除权限"
@@ -266,7 +297,9 @@ export function PageAccessDialog({ page, onClose }: { page: PageSummary; onClose
                       );
                     })
                   ) : (
-                    <div className="no-page-grants">还没有授权成员。空间管理员始终可访问。</div>
+                    <div className="no-page-grants">
+                      还没有单独授权：所有人均为无权限，空间管理员始终可访问。
+                    </div>
                   )}
                 </div>
               </>

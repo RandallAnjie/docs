@@ -31,6 +31,8 @@ const AUTHENTICATOR_TRANSPORTS = new Set<AuthenticatorTransportFuture>([
   'smart-card',
   'usb',
 ]);
+const PHASE0_ORGANIZATION_ID = 'org_phase0';
+const PHASE0_SYSTEM_USER_ID = 'usr_phase0_system';
 
 interface SessionRow {
   session_id: string;
@@ -113,6 +115,13 @@ function passkeyConfiguration(env: Env): PasskeyConfiguration | null {
   } catch {
     return null;
   }
+}
+
+function isPasskeyMutationOrigin(request: Request, configuration: PasskeyConfiguration): boolean {
+  return (
+    request.headers.get('origin') === configuration.origin &&
+    new URL(request.url).origin === configuration.origin
+  );
 }
 
 function userFromSessionRow(row: SessionRow): AuthUserSummary {
@@ -332,7 +341,7 @@ async function sessionResponse(
 async function registrationOptions(request: Request, env: Env): Promise<Response> {
   const configuration = passkeyConfiguration(env);
   if (!configuration) return error('设备密钥尚未完成配置', 503);
-  if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+  if (!isPasskeyMutationOrigin(request, configuration)) return error('请求来源不允许', 403);
   const auth = await authenticateRequest(request, env);
   const body = await parseJson<{
     email?: unknown;
@@ -366,6 +375,12 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
         !(await secretsEqual(body.enrollmentSecret, configuration.enrollmentSecret))
       ) {
         return error('设备登记码无效', 403);
+      }
+      const existingCredential = await env.DB.prepare(
+        'SELECT 1 AS found FROM passkey_credentials LIMIT 1',
+      ).first<{ found: number }>();
+      if (existingCredential) {
+        return error('首位管理员已经登记，新成员请使用组织邀请', 409);
       }
     }
     const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?')
@@ -428,7 +443,7 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
 async function verifyRegistration(request: Request, env: Env): Promise<Response> {
   const configuration = passkeyConfiguration(env);
   if (!configuration) return error('设备密钥尚未完成配置', 503);
-  if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+  if (!isPasskeyMutationOrigin(request, configuration)) return error('请求来源不允许', 403);
   const body = await parseJson<{
     challengeId?: unknown;
     response?: RegistrationResponseJSON;
@@ -498,13 +513,34 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
   );
   try {
     if (createsUser) {
-      await env.DB.batch([
+      const statements: D1PreparedStatement[] = [
         env.DB.prepare(
           `INSERT INTO users(id, email, display_name, avatar_url, status, created_at, updated_at)
            VALUES (?, ?, ?, NULL, 'active', ?, ?)`,
         ).bind(userId, challenge.pending_email, challenge.pending_display_name, now, now),
         credentialInsert,
-      ]);
+      ];
+      if (!challenge.invitation_id) {
+        statements.push(
+          env.DB.prepare(
+            `UPDATE organizations SET created_by = ?, updated_at = ?
+              WHERE id = ? AND created_by = ?`,
+          ).bind(userId, now, PHASE0_ORGANIZATION_ID, PHASE0_SYSTEM_USER_ID),
+          env.DB.prepare(
+            `UPDATE organization_members SET role = 'admin', updated_at = ?
+              WHERE organization_id = ? AND user_id = ? AND role = 'owner'`,
+          ).bind(now, PHASE0_ORGANIZATION_ID, PHASE0_SYSTEM_USER_ID),
+          env.DB.prepare(
+            `INSERT INTO organization_members(
+               organization_id, user_id, role, status, joined_at, updated_at
+             ) VALUES (?, ?, 'owner', 'active', ?, ?)
+             ON CONFLICT(organization_id, user_id) DO UPDATE SET
+               role = 'owner', status = 'active', joined_at = excluded.joined_at,
+               updated_at = excluded.updated_at`,
+          ).bind(PHASE0_ORGANIZATION_ID, userId, now, now),
+        );
+      }
+      await env.DB.batch(statements);
     } else {
       await credentialInsert.run();
     }
@@ -522,7 +558,7 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
 async function authenticationOptions(request: Request, env: Env): Promise<Response> {
   const configuration = passkeyConfiguration(env);
   if (!configuration) return error('设备密钥尚未完成配置', 503);
-  if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+  if (!isPasskeyMutationOrigin(request, configuration)) return error('请求来源不允许', 403);
   const options = await generateAuthenticationOptions({
     rpID: configuration.rpId,
     userVerification: 'required',
@@ -573,7 +609,7 @@ async function findUser(env: Env, userId: string): Promise<AuthUserSummary | nul
 async function verifyAuthentication(request: Request, env: Env): Promise<Response> {
   const configuration = passkeyConfiguration(env);
   if (!configuration) return error('设备密钥尚未完成配置', 503);
-  if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+  if (!isPasskeyMutationOrigin(request, configuration)) return error('请求来源不允许', 403);
   const body = await parseJson<{
     challengeId?: unknown;
     response?: AuthenticationResponseJSON;
@@ -638,7 +674,7 @@ async function verifyAuthentication(request: Request, env: Env): Promise<Respons
 async function logout(request: Request, env: Env): Promise<Response> {
   const configuration = passkeyConfiguration(env);
   if (!configuration) return error('设备密钥尚未完成配置', 503);
-  if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+  if (!isPasskeyMutationOrigin(request, configuration)) return error('请求来源不允许', 403);
   const token = parseCookies(request).get(SESSION_COOKIE);
   if (token) {
     await env.DB.prepare(
@@ -659,7 +695,15 @@ export async function handleAuthApi(
   if (path === '/api/auth/session' && request.method === 'GET') {
     return sessionResponse(request, env, context);
   }
+  const bootstrapRegistration =
+    path === '/api/auth/passkey/registration/options' ||
+    path === '/api/auth/passkey/registration/verify';
   if (authMode(env) !== 'passkey') {
+    if (bootstrapRegistration && request.method === 'POST') {
+      return path.endsWith('/options')
+        ? registrationOptions(request, env)
+        : verifyRegistration(request, env);
+    }
     if (path.startsWith('/api/auth/')) return error('设备密钥登录尚未启用', 409);
     return null;
   }

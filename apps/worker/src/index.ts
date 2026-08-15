@@ -8,8 +8,6 @@ import {
   type AuthUserSummary,
   type AttachmentSummary,
   type FavoritePageResult,
-  type PageAccessMode,
-  type PageGrantSummary,
   type PageSearchResult,
   type PageSummary,
   type RecentPageResult,
@@ -43,6 +41,7 @@ import {
   yjsSnapshotToMarkdown,
 } from './markdown';
 import { listPages } from './page-tree';
+import { pageAccessSnapshot } from './page-access';
 import { ftsMatchQuery, normalizeSearchText, searchIndexText } from './search-projection';
 import { handleTenancyApi } from './tenancy';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
@@ -80,16 +79,6 @@ interface PageRow {
 
 interface TrashedPageRow extends PageRow {
   deleted_at: number;
-}
-
-interface PageGrantRow {
-  id: string;
-  organization_id: string;
-  page_id: string;
-  principal_type: SpaceGrantPrincipalType;
-  principal_id: string;
-  role: SpaceRole;
-  created_at: number;
 }
 
 interface SearchPageRow extends PageRow {
@@ -2027,39 +2016,11 @@ async function restorePage(env: Env, pageId: string, actorId: string): Promise<R
   return json({ page: restored });
 }
 
-function pageGrantFromRow(row: PageGrantRow): PageGrantSummary {
-  return {
-    id: row.id,
-    organizationId: row.organization_id,
-    pageId: row.page_id,
-    principalType: row.principal_type,
-    principalId: row.principal_id,
-    role: row.role,
-    createdAt: Number(row.created_at),
-  };
-}
-
-async function pageAccessMode(env: Env, pageId: string): Promise<PageAccessMode | null> {
-  const row = await env.DB.prepare('SELECT access_mode FROM page_access_state WHERE page_id = ?')
-    .bind(pageId)
-    .first<{ access_mode: PageAccessMode }>();
-  return row?.access_mode ?? null;
-}
-
 async function listPageAccess(env: Env, page: PageSummary, actorId: string): Promise<Response> {
   if (!(await requirePageAction(env, page.id, actorId, 'manage_access'))) {
     return error('无权查看页面权限', 403);
   }
-  const [mode, rows] = await Promise.all([
-    pageAccessMode(env, page.id),
-    env.DB.prepare(
-      `SELECT id, organization_id, page_id, principal_type, principal_id, role, created_at
-         FROM page_grants WHERE page_id = ? ORDER BY created_at ASC, id ASC`,
-    )
-      .bind(page.id)
-      .all<PageGrantRow>(),
-  ]);
-  return json({ mode: mode ?? 'inherit', grants: rows.results.map(pageGrantFromRow) });
+  return pageAccessSnapshot(env, page.id);
 }
 
 async function bumpPageSubtreeAcl(
@@ -2139,7 +2100,7 @@ async function updatePageAccessMode(
     .run();
   await pageAudit(env, page, actorId, 'page.access.mode.updated', { mode: input.mode });
   await bumpPageSubtreeAcl(env, page.id, context);
-  return listPageAccess(env, page, actorId);
+  return pageAccessSnapshot(env, page.id);
 }
 
 async function validPageGrantPrincipal(
@@ -2180,6 +2141,7 @@ async function putPageGrant(
   }
   const input = (await request.json().catch(() => null)) as { role?: unknown } | null;
   if (
+    input?.role !== 'none' &&
     input?.role !== 'space_admin' &&
     input?.role !== 'editor' &&
     input?.role !== 'commenter' &&
@@ -2214,7 +2176,7 @@ async function putPageGrant(
     role: input.role,
   });
   await bumpPageSubtreeAcl(env, page.id, context);
-  return listPageAccess(env, page, actorId);
+  return pageAccessSnapshot(env, page.id);
 }
 
 async function deletePageGrant(
@@ -2237,7 +2199,7 @@ async function deletePageGrant(
   if (!result.meta.changes) return error('页面授权不存在', 404);
   await pageAudit(env, page, actorId, 'page.grant.removed', { principalType, principalId });
   await bumpPageSubtreeAcl(env, page.id, context);
-  return listPageAccess(env, page, actorId);
+  return pageAccessSnapshot(env, page.id);
 }
 
 function pageGrantPrincipalType(value: string): SpaceGrantPrincipalType | null {

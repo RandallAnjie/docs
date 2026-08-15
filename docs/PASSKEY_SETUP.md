@@ -1,6 +1,6 @@
 # Rdocs 设备密钥启用手册
 
-更新时间：2026-08-14 UTC
+更新时间：2026-08-15 UTC
 
 Rdocs 使用 WebAuthn 设备密钥，不走 GitHub OAuth，不保存密码，也不会获得设备的私钥或生物识别数据。正式 RP ID 固定为 `docs.bigrandall.io`，Origin 固定为 `https://docs.bigrandall.io`。
 
@@ -18,7 +18,7 @@ Rdocs 使用 WebAuthn 设备密钥，不走 GitHub OAuth，不保存密码，也
 
 所有命令只操作 Rdocs Worker 或 Rdocs 自有数据库，不修改 RandallFlare 平台代码。
 
-1. 构建并应用 `migrations/0003_passkey_authentication.sql`：
+1. 构建并确认设备密钥、邀请登记和页面 ACL migrations 已应用：
 
    ```bash
    npm run build
@@ -38,9 +38,9 @@ Rdocs 使用 WebAuthn 设备密钥，不走 GitHub OAuth，不保存密码，也
    PASSKEY_ORIGIN=https://docs.bigrandall.io
    ```
 
-4. 在一个可控的短窗口把 Rdocs 的 `AUTH_MODE` 改为 `passkey`，打开 `https://docs.bigrandall.io`，选择“首次使用？登记这台设备”，输入显示名称、邮箱和登记码，然后完成系统设备验证。
+4. 保持 `AUTH_MODE=phase0`，打开 `https://docs.bigrandall.io/setup/passkey`，输入显示名称、邮箱和登记码，然后完成系统设备验证。首位管理员会自动接管现有 `org_phase0` 组织和文档；此阶段即使登记失败也不会锁住现网。
 
-5. 登记完成后立即验证：刷新仍保持登录、退出后需要设备密钥、重新登录成功、非正式域名无法发起登记。随后把仓库中的 `AUTH_MODE` 固定为 `passkey`，避免后续 Git build 又切回技术预览。切换后等待旧协作票据最长 5 分钟的有效期结束，再把环境视为完全关闭匿名访问。
+5. 页面显示“首位管理员已经就绪”后，再把 Rdocs 的 `AUTH_MODE` 改为 `passkey`。登记响应已经写入安全会话 Cookie，刷新应直接进入组织工作台；随后验证退出、重新登录、组织切换、页面四档权限和非正式域名拒绝登记。把仓库中的 `AUTH_MODE` 固定为 `passkey`，避免后续 Git build 又切回技术预览。切换后等待旧协作票据最长 5 分钟的有效期结束，再把环境视为完全关闭匿名访问。
 
 6. 不再需要给未登录用户创建新账号时，删除 bootstrap 登记码以关闭入口；已有设备密钥登录不依赖这个 secret：
 

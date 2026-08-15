@@ -15,6 +15,7 @@ import type {
   OrganizationMemberSummary,
   OrganizationSummary,
   PageAccessMode,
+  PageGrantRole,
   PageGrantSummary,
   PageSearchResult,
   PageSummary,
@@ -372,7 +373,7 @@ export function putPageGrant(
   pageId: string,
   principalType: SpaceGrantPrincipalType,
   principalId: string,
-  role: SpaceRole,
+  role: PageGrantRole,
 ): Promise<{ mode: PageAccessMode; grants: PageGrantSummary[] }> {
   return request(
     `/api/pages/${encodeURIComponent(pageId)}/grants/${principalType}/${encodeURIComponent(principalId)}`,

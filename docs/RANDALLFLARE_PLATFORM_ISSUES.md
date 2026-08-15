@@ -1,6 +1,6 @@
 # RandallFlare 平台问题：Rdocs 修复清单
 
-更新时间：2026-08-14 UTC
+更新时间：2026-08-15 UTC
 
 本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。原 WebSocket 与发布链路问题已于 2026-08-14 修复并完成现网复验；Rdocs v0.1 迁移时又发现一项独立的 CLI migration 账本问题（RF-7）。现网验证使用：
 
@@ -22,7 +22,7 @@
 | RF-4 | P1        | 已修复、已复验 | Git build 成功不等于边缘版本已激活                         |
 | RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值               |
 | RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
-| RF-7 | P1        | 待修复         | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
+| RF-7 | P1        | 仍可复现       | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
 | RF-8 | P1        | 待修复         | 顺序产品 smoke 的不同写端点间歇返回边缘 502                |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
@@ -55,9 +55,26 @@ params: [file, timestamp]
 1. 先导出 31 张表到本地临时备份。
 2. 对 `0004`–`0007` 做 schema 前置检查后，用 `d1 execute --file` 精确执行。
 3. 验证 `page_grants`、`notifications`、editor schema v2 和 `pragma_foreign_key_check=0`。
-4. 用 SQL 字面量重建 Rdocs 自己的 `d1_migrations` 账本；当前 7 个迁移均显示为已应用。
+4. 用 SQL 字面量重建 Rdocs 自己的 `d1_migrations` 账本；后续迁移继续使用相同的精确执行与账本校验流程。
 
 没有修改 RandallFlare 代码。临时方案只作用于 `rdocs-db`。
+
+### 2026-08-15 复验
+
+执行 `0008_page_acl_roles.sql` 时，CLI 输出：
+
+```text
+✔ applied 0008_page_acl_roles.sql
+1 migration(s) applied
+```
+
+但紧接着执行 `d1 migrations list` 仍把 `0008` 标记为未应用。生产导出确认页面权限表已经成功重建并支持 `none`，同时账本新增了以下空记录：
+
+```sql
+INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
+```
+
+因此 RF-7 在当前环境仍未修复。Rdocs 已先保存迁移前的 33 表完整导出，然后只在 `rdocs-db` 内把该空记录更新为 `0008_page_acl_roles.sql`；再次执行 migration list 后 `0001`–`0008` 全部显示已应用。迁移前后均有 79 个页面，未发生页面数据丢失。
 
 ### 建议修复与验收
 

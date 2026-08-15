@@ -1516,9 +1516,15 @@ button {
   font-size: 9px;
   text-overflow: ellipsis;
 }
-.page-grant-list b {
-  color: #6d6962;
-  font-size: 10px;
+.page-grant-list select {
+  width: 112px;
+  min-height: 32px;
+  border: 1px solid #d9d5cd;
+  border-radius: 7px;
+  background: #fff;
+  padding: 0 7px;
+  color: #5f5b54;
+  font-size: 9px;
 }
 .page-grant-list button {
   display: grid;

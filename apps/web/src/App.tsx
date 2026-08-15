@@ -141,6 +141,10 @@ function currentShareToken(): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
+function passkeySetupRequested(): boolean {
+  return window.location.pathname === '/setup/passkey';
+}
+
 function navigateToPage(pageId: string): void {
   window.location.assign(`/p/${encodeURIComponent(pageId)}`);
 }
@@ -160,6 +164,7 @@ export function App() {
   const pageId = currentPageId();
   const invitationToken = currentInvitationToken();
   const shareToken = currentShareToken();
+  const setupPasskey = passkeySetupRequested();
   const localIdentity = useMemo(getLocalIdentity, []);
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -205,6 +210,16 @@ export function App() {
       <LoadingScreen message="正在检查设备密钥…" />
     );
   }
+  if (setupPasskey && session.mode === 'phase0') {
+    return (
+      <PasskeyGate
+        session={session}
+        invitationToken={null}
+        onAuthenticated={refreshSession}
+        bootstrapPhase0
+      />
+    );
+  }
   if (session.mode === 'passkey' && !session.authenticated) {
     return (
       <PasskeyGate
@@ -229,6 +244,7 @@ export function App() {
       <Welcome
         identity={identity}
         authenticated={session.authenticated}
+        enrollmentConfigured={session.enrollmentConfigured}
         onLogout={session.authenticated ? signOut : undefined}
       />
     );
@@ -292,12 +308,15 @@ function PasskeyGate({
   session,
   invitationToken,
   onAuthenticated,
+  bootstrapPhase0 = false,
 }: {
   session: AuthSessionResponse;
   invitationToken: string | null;
   onAuthenticated: () => Promise<void>;
+  bootstrapPhase0?: boolean;
 }) {
-  const [registering, setRegistering] = useState(Boolean(invitationToken));
+  const [registering, setRegistering] = useState(Boolean(invitationToken) || bootstrapPhase0);
+  const [registrationComplete, setRegistrationComplete] = useState(false);
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
@@ -337,7 +356,8 @@ function PasskeyGate({
       });
       const response = await startRegistration({ optionsJSON: options });
       await finishPasskeyRegistration(challengeId, response);
-      await onAuthenticated();
+      if (bootstrapPhase0) setRegistrationComplete(true);
+      else await onAuthenticated();
     } catch (reason) {
       setError(passkeyErrorMessage(reason));
     } finally {
@@ -357,6 +377,28 @@ function PasskeyGate({
     );
   } else if (!supported) {
     unavailable = <p className="auth-warning">当前浏览器不支持 WebAuthn 设备密钥。</p>;
+  }
+
+  if (registrationComplete) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <div className="auth-key-mark">
+            <Check size={24} />
+          </div>
+          <span className="auth-eyebrow">设备密钥登记完成</span>
+          <h1>首位管理员已经就绪</h1>
+          <p>现有 Rdocs 组织和文档已经转交给这个账号。现在可以安全关闭 phase0。</p>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => window.location.assign('/')}
+          >
+            返回 Rdocs
+          </button>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -438,7 +480,7 @@ function PasskeyGate({
             {error}
           </p>
         ) : null}
-        {!unavailable && (session.enrollmentConfigured || invitationToken) ? (
+        {!bootstrapPhase0 && !unavailable && (session.enrollmentConfigured || invitationToken) ? (
           <button
             className="auth-switch"
             type="button"
@@ -916,10 +958,12 @@ function TenantHome({
 function Welcome({
   identity,
   authenticated,
+  enrollmentConfigured,
   onLogout,
 }: {
   identity: LocalIdentity;
   authenticated: boolean;
+  enrollmentConfigured: boolean;
   onLogout?: () => Promise<void>;
 }) {
   const [creating, setCreating] = useState(false);
@@ -971,6 +1015,11 @@ function Welcome({
           <a className="quiet-link" href="https://github.com/RandallAnjie/docs">
             查看源码 <span aria-hidden="true">↗</span>
           </a>
+          {enrollmentConfigured ? (
+            <a className="quiet-link" href="/setup/passkey">
+              登记管理员设备密钥 <span aria-hidden="true">→</span>
+            </a>
+          ) : null}
         </div>
         {error && <p className="error-message">{error}</p>}
         <div className="preview-note">
@@ -1525,6 +1574,15 @@ function DocumentWorkspace({
               <span style={{ background: identity.color }}>{identityMonogram(identity)}</span>
               {onlineCount > 1 && <b>+{onlineCount - 1}</b>}
             </div>
+            {page.role === 'space_admin' && !renewTicket ? (
+              <button
+                className="header-button"
+                type="button"
+                onClick={() => setAccessDialogOpen(true)}
+              >
+                <LockKeyhole size={16} /> 权限
+              </button>
+            ) : null}
             <button className="header-button" onClick={share}>
               {copied ? <Check size={16} /> : <Share2 size={16} />}
               {copied ? '已复制' : '分享'}
