@@ -923,13 +923,84 @@ async function snapshot(
       archivedAt: row.archived_at === null ? null : Number(row.archived_at),
     };
   });
+  const hiddenProperties = await hiddenDatabasePropertyIds(
+    env,
+    authorization.database.id,
+    authorization.database.organization_id,
+    actorId,
+  );
+  const visibleProperties = properties.filter(
+    (property) => property.type === 'title' || !hiddenProperties.has(property.id),
+  );
+  const visiblePropertyIds = new Set(visibleProperties.map((property) => property.id));
   return {
     database: databaseSummary(authorization.database, authorization.role),
-    properties,
+    properties: visibleProperties,
     views,
-    rows: rowSummaries,
+    rows: rowSummaries.map((row) => ({
+      ...row,
+      values: Object.fromEntries(
+        Object.entries(row.values).filter(([propertyId]) => visiblePropertyIds.has(propertyId)),
+      ),
+    })),
     templates: templateRecords.results.map((record) => templateSummary(record)),
   };
+}
+
+async function hiddenDatabasePropertyIds(
+  env: Env,
+  databaseId: string,
+  organizationId: string,
+  actorId: string,
+): Promise<Set<string>> {
+  const grants = (
+    await env.DB.prepare(
+      `SELECT property_id, principal_type, principal_id, role
+         FROM database_property_grants WHERE database_id = ?`,
+    )
+      .bind(databaseId)
+      .all<{
+        property_id: string;
+        principal_type: 'user' | 'group' | 'organization';
+        principal_id: string;
+        role: 'none' | 'viewer' | 'editor';
+      }>()
+  ).results;
+  if (!grants.length) return new Set();
+  const groups = (
+    await env.DB.prepare(
+      `SELECT gm.group_id FROM group_members gm
+         JOIN groups g ON g.id = gm.group_id
+        WHERE gm.user_id = ? AND g.organization_id = ?`,
+    )
+      .bind(actorId, organizationId)
+      .all<{ group_id: string }>()
+  ).results.map((row) => row.group_id);
+  const groupSet = new Set(groups);
+  const byProperty = new Map<string, typeof grants>();
+  for (const grant of grants) {
+    const current = byProperty.get(grant.property_id) ?? [];
+    current.push(grant);
+    byProperty.set(grant.property_id, current);
+  }
+  const hidden = new Set<string>();
+  for (const [propertyId, propertyGrants] of byProperty) {
+    const applicable = propertyGrants.filter((grant) => {
+      if (grant.principal_type === 'user') return grant.principal_id === actorId;
+      if (grant.principal_type === 'group') return groupSet.has(grant.principal_id);
+      return grant.principal_id === organizationId || grant.principal_type === 'organization';
+    });
+    if (!applicable.length) {
+      hidden.add(propertyId);
+      continue;
+    }
+    if (applicable.some((grant) => grant.principal_type === 'user' && grant.role === 'none')) {
+      hidden.add(propertyId);
+      continue;
+    }
+    if (applicable.every((grant) => grant.role === 'none')) hidden.add(propertyId);
+  }
+  return hidden;
 }
 
 async function createDatabase(
@@ -2051,6 +2122,68 @@ async function runDatabaseAutomations(
       .run();
     if (!inserted.meta.changes) continue;
     try {
+      const condition = parsedObject(automation.trigger_config_json).condition;
+      if (condition && typeof condition === 'object' && !Array.isArray(condition)) {
+        const cells = (
+          await env.DB.prepare(
+            'SELECT property_id, value_json FROM database_cells WHERE row_id = ?',
+          )
+            .bind(rowId)
+            .all<{ property_id: string; value_json: string }>()
+        ).results;
+        const values: Record<string, JsonValue> = {};
+        for (const cell of cells) values[cell.property_id] = parsedValue(cell.value_json);
+        const propertyId = (condition as Record<string, JsonValue>).propertyId;
+        const op = (condition as Record<string, JsonValue>).op;
+        const expected = (condition as Record<string, JsonValue>).value;
+        const current = typeof propertyId === 'string' ? values[propertyId] : undefined;
+        const matches =
+          op === 'is_empty'
+            ? current === null || current === undefined || current === '' || current === false
+            : op === 'not_empty'
+              ? !(current === null || current === undefined || current === '' || current === false)
+              : op === 'neq'
+                ? JSON.stringify(current) !== JSON.stringify(expected ?? null)
+                : op === 'contains'
+                  ? typeof current === 'string' && typeof expected === 'string'
+                    ? current.includes(expected)
+                    : Array.isArray(current) && current.includes(expected as never)
+                  : JSON.stringify(current) === JSON.stringify(expected ?? null);
+        if (!matches) {
+          await env.DB.prepare(
+            `UPDATE database_automation_runs
+                SET status = 'skipped', completed_at = ? WHERE id = ?`,
+          )
+            .bind(Date.now(), runId)
+            .run();
+          continue;
+        }
+      }
+      const extraSteps = parsedObject(automation.action_config_json).steps;
+      if (Array.isArray(extraSteps)) {
+        for (const step of extraSteps) {
+          if (!step || typeof step !== 'object' || Array.isArray(step)) continue;
+          const stepType = (step as Record<string, JsonValue>).type;
+          const stepConfig = (step as Record<string, JsonValue>).config;
+          if (typeof stepType !== 'string' || !AUTOMATION_ACTIONS.has(stepType as never)) continue;
+          await runDatabaseAutomationAction(
+            env,
+            authorization,
+            {
+              ...automation,
+              action_type: stepType as DatabaseAutomationAction,
+              action_config_json: JSON.stringify(
+                stepConfig && typeof stepConfig === 'object' && !Array.isArray(stepConfig)
+                  ? stepConfig
+                  : {},
+              ),
+            },
+            rowId,
+            triggerType,
+            actor,
+          );
+        }
+      }
       const responseCode = await runDatabaseAutomationAction(
         env,
         authorization,

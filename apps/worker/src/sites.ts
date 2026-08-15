@@ -1,7 +1,9 @@
 import type {
   AuthUserSummary,
   PageSummary,
+  PublishedSiteDatabaseView,
   SiteAnalyticsDay,
+  SiteDomainSummary,
   SitePageSummary,
   SiteSearchResult,
   SiteSummary,
@@ -126,7 +128,14 @@ function sitePageFromRow(row: SitePageRow): SitePageSummary {
   };
 }
 
-function siteFromRow(row: SiteRow, pages: SitePageSummary[]): SiteSummary {
+function siteFromRow(
+  row: SiteRow,
+  pages: SitePageSummary[],
+  extras: {
+    domains?: SiteDomainSummary[];
+    publishedDatabaseViews?: PublishedSiteDatabaseView[];
+  } = {},
+): SiteSummary {
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -150,6 +159,8 @@ function siteFromRow(row: SiteRow, pages: SitePageSummary[]): SiteSummary {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     pages,
+    domains: extras.domains ?? [],
+    publishedDatabaseViews: extras.publishedDatabaseViews ?? [],
   };
 }
 
@@ -306,8 +317,66 @@ function publiclyVisiblePages(site: SiteRow, pages: readonly SitePageSummary[]):
   return pages.filter(isVisible);
 }
 
+async function siteDomains(env: Env, siteId: string): Promise<SiteDomainSummary[]> {
+  const rows = (
+    await env.DB.prepare(
+      `SELECT id, site_id, hostname, verification_token, status, last_checked_at, error_message,
+              created_at, updated_at
+         FROM site_domains WHERE site_id = ? ORDER BY created_at DESC`,
+    )
+      .bind(siteId)
+      .all<{
+        id: string;
+        site_id: string;
+        hostname: string;
+        verification_token: string;
+        status: SiteDomainSummary['status'];
+        last_checked_at: number | null;
+        error_message: string | null;
+        created_at: number;
+        updated_at: number;
+      }>()
+  ).results;
+  return rows.map((row) => ({
+    id: row.id,
+    siteId: row.site_id,
+    hostname: row.hostname,
+    verificationToken: row.verification_token,
+    status: row.status,
+    lastCheckedAt: row.last_checked_at,
+    errorMessage: row.error_message,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  }));
+}
+
+async function publishedDatabaseViews(
+  env: Env,
+  siteId: string,
+): Promise<PublishedSiteDatabaseView[]> {
+  const rows = (
+    await env.DB.prepare(
+      `SELECT site_id, database_id, view_id, published
+         FROM site_database_views WHERE site_id = ?`,
+    )
+      .bind(siteId)
+      .all<{ site_id: string; database_id: string; view_id: string; published: number }>()
+  ).results;
+  return rows.map((row) => ({
+    siteId: row.site_id,
+    databaseId: row.database_id,
+    viewId: row.view_id,
+    published: Boolean(row.published),
+  }));
+}
+
 async function siteSummary(env: Env, row: SiteRow): Promise<SiteSummary> {
-  return siteFromRow(row, await sitePages(env, row.id));
+  const [pages, domains, views] = await Promise.all([
+    sitePages(env, row.id),
+    siteDomains(env, row.id),
+    publishedDatabaseViews(env, row.id),
+  ]);
+  return siteFromRow(row, pages, { domains, publishedDatabaseViews: views });
 }
 
 async function audit(
@@ -823,7 +892,139 @@ export async function handleSitesApi(
         : error('站点取消发布结果丢失', 500);
     }
   }
+
+  const domainVerifyMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domains\/([^/]+)\/verify$/);
+  if (domainVerifyMatch?.[1] && domainVerifyMatch[2] && request.method === 'POST') {
+    const site = await findSiteById(env, decodeURIComponent(domainVerifyMatch[1]));
+    if (!site || !(await requirePageAction(env, site.root_page_id, actor.id, 'manage_access'))) {
+      return error('站点不存在或无权管理域名', 404);
+    }
+    return verifySiteDomain(env, site, decodeURIComponent(domainVerifyMatch[2]));
+  }
+
+  const domainsMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domains$/);
+  if (domainsMatch?.[1]) {
+    const site = await findSiteById(env, decodeURIComponent(domainsMatch[1]));
+    if (!site || !(await requirePageAction(env, site.root_page_id, actor.id, 'manage_access'))) {
+      return error('站点不存在或无权管理域名', 404);
+    }
+    if (request.method === 'GET') return json({ domains: await siteDomains(env, site.id) });
+    if (request.method === 'POST') {
+      const input = (await request.json().catch(() => null)) as { hostname?: unknown } | null;
+      const hostname =
+        typeof input?.hostname === 'string' ? input.hostname.trim().toLowerCase() : '';
+      if (
+        !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
+          hostname,
+        )
+      ) {
+        return error('域名无效', 400);
+      }
+      const id = crypto.randomUUID();
+      const token = `rdocs-site=${crypto.randomUUID().replace(/-/g, '')}`;
+      const now = Date.now();
+      try {
+        await env.DB.prepare(
+          `INSERT INTO site_domains(id, site_id, hostname, verification_token, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+        )
+          .bind(id, site.id, hostname, token, now, now)
+          .run();
+      } catch {
+        return error('该域名已被占用', 409);
+      }
+      await audit(env, site, actor.id, 'site.domain.created', { hostname });
+      return json(
+        { domain: (await siteDomains(env, site.id)).find((item) => item.id === id) },
+        { status: 201 },
+      );
+    }
+  }
+
+  const domainMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domains\/([^/]+)$/);
+  if (domainMatch?.[1] && domainMatch[2] && request.method === 'DELETE') {
+    const site = await findSiteById(env, decodeURIComponent(domainMatch[1]));
+    if (!site || !(await requirePageAction(env, site.root_page_id, actor.id, 'manage_access'))) {
+      return error('站点不存在或无权管理域名', 404);
+    }
+    const result = await env.DB.prepare('DELETE FROM site_domains WHERE id = ? AND site_id = ?')
+      .bind(decodeURIComponent(domainMatch[2]), site.id)
+      .run();
+    if (!result.meta.changes) return error('域名不存在', 404);
+    return json({ ok: true });
+  }
+
+  const databaseViewsMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/database-views$/);
+  if (databaseViewsMatch?.[1] && request.method === 'PUT') {
+    const site = await findSiteById(env, decodeURIComponent(databaseViewsMatch[1]));
+    if (!site || !(await requirePageAction(env, site.root_page_id, actor.id, 'manage_access'))) {
+      return error('站点不存在或无权发布数据库视图', 404);
+    }
+    const input = (await request.json().catch(() => null)) as {
+      databaseId?: unknown;
+      viewId?: unknown;
+      published?: unknown;
+    } | null;
+    const databaseId = typeof input?.databaseId === 'string' ? input.databaseId : '';
+    const viewId = typeof input?.viewId === 'string' ? input.viewId : '';
+    if (!databaseId || !viewId) return error('数据库或视图无效', 400);
+    const view = await env.DB.prepare(
+      `SELECT v.id, v.database_id, d.organization_id
+         FROM database_views v JOIN databases d ON d.id = v.database_id
+        WHERE v.id = ? AND v.database_id = ? AND d.organization_id = ?`,
+    )
+      .bind(viewId, databaseId, site.organization_id)
+      .first<{ id: string }>();
+    if (!view) return error('数据库视图不存在或不属于当前组织', 404);
+    if (input?.published === false) {
+      await env.DB.prepare('DELETE FROM site_database_views WHERE site_id = ? AND view_id = ?')
+        .bind(site.id, viewId)
+        .run();
+    } else {
+      await env.DB.prepare(
+        `INSERT INTO site_database_views(site_id, database_id, view_id, published, created_at)
+         VALUES (?, ?, ?, 1, ?)
+         ON CONFLICT(site_id, view_id) DO UPDATE SET published = 1, database_id = excluded.database_id`,
+      )
+        .bind(site.id, databaseId, viewId, Date.now())
+        .run();
+    }
+    return json({ site: await siteSummary(env, site) });
+  }
+
   return null;
+}
+
+async function verifySiteDomain(env: Env, site: SiteRow, domainId: string): Promise<Response> {
+  const domain = await env.DB.prepare(
+    `SELECT id, hostname, verification_token FROM site_domains WHERE id = ? AND site_id = ?`,
+  )
+    .bind(domainId, site.id)
+    .first<{ id: string; hostname: string; verification_token: string }>();
+  if (!domain) return error('域名不存在', 404);
+  const wellKnown = `https://${domain.hostname}/.well-known/rdocs-site-verify`;
+  let status: SiteDomainSummary['status'] = 'failed';
+  let message = '未读取到验证文件';
+  try {
+    const response = await fetch(wellKnown, { method: 'GET', redirect: 'manual' });
+    const body = response.ok ? (await response.text()).trim() : '';
+    if (body.includes(domain.verification_token)) {
+      status = 'verified';
+      message = '';
+    } else {
+      message = `验证文件内容不匹配（HTTP ${response.status}）`;
+    }
+  } catch (reason) {
+    message = reason instanceof Error ? reason.message : '无法访问自定义域名';
+  }
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE site_domains SET status = ?, last_checked_at = ?, error_message = ?, updated_at = ?
+      WHERE id = ?`,
+  )
+    .bind(status, now, message || null, now, domain.id)
+    .run();
+  return json({ domains: await siteDomains(env, site.id) });
 }
 
 async function publicSitePageResponse(
@@ -1018,6 +1219,15 @@ async function issuePublicSiteSyncedBlockTicket(
 
 export async function handlePublicSitesApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
+  const databaseViewMatch = url.pathname.match(
+    /^\/api\/public\/sites\/([^/]+)\/database-views\/([^/]+)$/,
+  );
+  if (databaseViewMatch?.[1] && databaseViewMatch[2] && request.method === 'GET') {
+    const site = await findLiveSiteBySlug(env, decodeURIComponent(databaseViewMatch[1]));
+    return site
+      ? publicDatabaseView(env, site, decodeURIComponent(databaseViewMatch[2]))
+      : error('站点不存在', 404);
+  }
   const searchMatch = url.pathname.match(/^\/api\/public\/sites\/([^/]+)\/search$/);
   if (searchMatch?.[1] && request.method === 'GET') {
     const site = await findLiveSiteBySlug(env, decodeURIComponent(searchMatch[1]));
@@ -1103,6 +1313,7 @@ export async function canPubliclyDownloadSiteAttachment(
 export interface SiteHtmlMetadata {
   site: SiteRow;
   page: SitePageSummary;
+  excerpt: string;
 }
 
 export async function siteHtmlMetadata(
@@ -1116,7 +1327,113 @@ export async function siteHtmlMetadata(
   const page = pageSlug
     ? visible.find((candidate) => !candidate.isHome && candidate.slug === pageSlug)
     : visible.find((candidate) => candidate.isHome);
-  return page ? { site, page } : null;
+  if (!page) return null;
+  const projection = await env.DB.prepare(
+    'SELECT normalized_body FROM page_search_projection WHERE page_id = ?',
+  )
+    .bind(page.page.id)
+    .first<{ normalized_body: string }>();
+  const excerpt = (projection?.normalized_body ?? '').slice(0, 1200);
+  await env.DB.prepare(
+    `INSERT INTO site_prerender(site_id, page_id, excerpt, generated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(site_id, page_id) DO UPDATE SET excerpt = excluded.excerpt, generated_at = excluded.generated_at`,
+  )
+    .bind(site.id, page.page.id, excerpt, Date.now())
+    .run()
+    .catch(() => undefined);
+  return { site, page, excerpt };
+}
+
+export async function findLiveSiteByHostname(env: Env, hostname: string): Promise<SiteRow | null> {
+  const row = await env.DB.prepare(
+    `SELECT s.id, s.organization_id, s.root_page_id, s.slug, s.name, s.theme,
+            s.favicon_attachment_id, s.share_image_attachment_id, s.seo_title,
+            s.seo_description, s.search_enabled, s.breadcrumbs_enabled,
+            s.watermark_enabled, s.search_engine_indexing, s.google_analytics_id,
+            s.published_at, s.unpublished_at, s.created_by, s.updated_by, s.created_at, s.updated_at
+       FROM site_domains d
+       JOIN sites s ON s.id = d.site_id
+      WHERE d.hostname = ? COLLATE NOCASE AND d.status = 'verified' AND s.unpublished_at IS NULL`,
+  )
+    .bind(hostname)
+    .first<SiteRow>();
+  return row;
+}
+
+async function publicDatabaseView(env: Env, site: SiteRow, viewId: string): Promise<Response> {
+  const published = await env.DB.prepare(
+    `SELECT database_id, view_id FROM site_database_views
+      WHERE site_id = ? AND view_id = ? AND published = 1`,
+  )
+    .bind(site.id, viewId)
+    .first<{ database_id: string; view_id: string }>();
+  if (!published) return error('数据库视图未发布', 404);
+  const view = await env.DB.prepare(
+    `SELECT id, database_id, name, type, config_json FROM database_views WHERE id = ? AND database_id = ?`,
+  )
+    .bind(published.view_id, published.database_id)
+    .first<{ id: string; database_id: string; name: string; type: string; config_json: string }>();
+  const properties = (
+    await env.DB.prepare(
+      `SELECT id, name, type, config_json, sort_order
+         FROM database_properties WHERE database_id = ? ORDER BY sort_order`,
+    )
+      .bind(published.database_id)
+      .all<{ id: string; name: string; type: string; config_json: string; sort_order: number }>()
+  ).results;
+  const rows = (
+    await env.DB.prepare(
+      `SELECT r.id, r.page_id, r.sort_key
+         FROM database_rows r
+         JOIN pages p ON p.id = r.page_id AND p.deleted_at IS NULL
+         JOIN page_access_state a ON a.page_id = p.id
+        WHERE r.database_id = ? AND r.archived_at IS NULL
+          AND COALESCE(a.access_mode, 'inherit') != 'restricted'
+        ORDER BY r.sort_key LIMIT 200`,
+    )
+      .bind(published.database_id)
+      .all<{ id: string; page_id: string; sort_key: string }>()
+  ).results;
+  const cells = (
+    await env.DB.prepare(
+      `SELECT row_id, property_id, value_json FROM database_cells WHERE database_id = ?`,
+    )
+      .bind(published.database_id)
+      .all<{ row_id: string; property_id: string; value_json: string }>()
+  ).results;
+  const values = new Map<string, Record<string, unknown>>();
+  for (const cell of cells) {
+    const current = values.get(cell.row_id) ?? {};
+    try {
+      current[cell.property_id] = JSON.parse(cell.value_json) as unknown;
+    } catch {
+      current[cell.property_id] = null;
+    }
+    values.set(cell.row_id, current);
+  }
+  return json({
+    view: view
+      ? {
+          id: view.id,
+          databaseId: view.database_id,
+          name: view.name,
+          type: view.type,
+          config: JSON.parse(view.config_json) as Record<string, unknown>,
+        }
+      : null,
+    properties: properties.map((property) => ({
+      id: property.id,
+      name: property.name,
+      type: property.type,
+      config: JSON.parse(property.config_json) as Record<string, unknown>,
+    })),
+    rows: rows.map((row) => ({
+      id: row.id,
+      pageId: row.page_id,
+      values: values.get(row.id) ?? {},
+    })),
+  });
 }
 
 function escapedXml(value: string): string {
@@ -1134,6 +1451,17 @@ export async function publicSiteDiscoveryResponse(
 ): Promise<Response | null> {
   if (request.method !== 'GET' && request.method !== 'HEAD') return null;
   const url = new URL(request.url);
+  if (url.pathname === '/.well-known/rdocs-site-verify') {
+    const domain = await env.DB.prepare(
+      'SELECT verification_token FROM site_domains WHERE hostname = ? COLLATE NOCASE',
+    )
+      .bind(url.hostname)
+      .first<{ verification_token: string }>();
+    if (!domain) return null;
+    return new Response(request.method === 'HEAD' ? null : domain.verification_token, {
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+    });
+  }
   const match = url.pathname.match(/^\/site\/([^/]+)\/(sitemap\.xml|robots\.txt)$/);
   if (!match?.[1] || !match[2]) return null;
   const site = await findLiveSiteBySlug(env, decodeURIComponent(match[1]));

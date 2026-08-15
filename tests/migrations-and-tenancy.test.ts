@@ -21,6 +21,7 @@ import {
   handleCommentsAndNotificationsApi,
 } from '../apps/worker/src/comments';
 import { handleDatabasesApi, handlePublicDatabaseFormsApi } from '../apps/worker/src/databases';
+import { handlePlatformApi, handlePublicApi, pagesOnLegalHold } from '../apps/worker/src/platform';
 import {
   handlePublicSitesApi,
   handleSitesApi,
@@ -108,6 +109,7 @@ const MIGRATIONS = [
   '0026_page_reminders_and_inbox_groups.sql',
   '0027_reminder_sources.sql',
   '0028_sites.sql',
+  '0029_notion_parity_platform.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -213,7 +215,7 @@ describe('database migrations', () => {
           "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
         )
         .get(),
-    ).toMatchObject({ total: 12 });
+    ).toMatchObject({ total: 13 });
     const rolloutOwner = seedTenant(database, 'rollout-guard');
     const seed = {
       id: 'page_rollout_parent',
@@ -2604,6 +2606,177 @@ describe('tenant boundary integration', () => {
       testContext(),
     );
     expect(memberResponse?.status).toBe(403);
+    database.close();
+  });
+});
+
+describe('Notion parity platform', () => {
+  const pageId = '11111111-1111-4111-8111-111111111111';
+  const propertyId = '22222222-2222-4222-8222-222222222222';
+  const databaseId = '33333333-3333-4333-8333-333333333333';
+
+  function seedPage(database: DatabaseSync, owner: AuthUserSummary, suffix = 'parity') {
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES (?, ?, ?, NULL, 'Parity page', '1', ?, ?, ?, ?)`,
+      )
+      .run(pageId, `org_${suffix}`, `spc_${suffix}`, owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+         VALUES (?, 1, 1, 'inherit', ?)`,
+      )
+      .run(pageId, now);
+    database
+      .prepare(
+        `INSERT INTO page_search_projection(
+           page_id, organization_id, space_id, generation, collab_seq, title, normalized_body, updated_at
+         ) VALUES (?, ?, ?, 1, 0, 'Parity page', 'secret body', ?)`,
+      )
+      .run(pageId, `org_${suffix}`, `spc_${suffix}`, now);
+  }
+
+  it('issues a scoped API token that cannot read another tenant page', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'parity');
+    const outsider = seedTenant(database, 'parity-out');
+    seedPage(database, owner);
+    const env = testEnv(database);
+    const created = await handlePlatformApi(
+      new Request('https://docs.test/api/organizations/org_parity/api-tokens', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'CI', scopes: ['pages:read', 'search:read'] }),
+      }),
+      env,
+      owner,
+    );
+    expect(created?.status).toBe(201);
+    const payload = (await created?.json()) as { token: { token: string } };
+    const allowed = await handlePublicApi(
+      new Request(`https://docs.test/api/v1/pages/${pageId}`, {
+        headers: { authorization: `Bearer ${payload.token.token}` },
+      }),
+      env,
+      testContext(),
+    );
+    expect(allowed?.status).toBe(200);
+    const outsiderToken = await handlePlatformApi(
+      new Request('https://docs.test/api/organizations/org_parity-out/api-tokens', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Out', scopes: ['pages:read'] }),
+      }),
+      env,
+      outsider,
+    );
+    const outsiderPayload = (await outsiderToken?.json()) as { token: { token: string } };
+    const denied = await handlePublicApi(
+      new Request(`https://docs.test/api/v1/pages/${pageId}`, {
+        headers: { authorization: `Bearer ${outsiderPayload.token.token}` },
+      }),
+      env,
+      testContext(),
+    );
+    expect(denied?.status).toBe(404);
+    database.close();
+  });
+
+  it('blocks delete when a page is on legal hold and degrades AI without a model key', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'parity');
+    seedPage(database, owner);
+    const env = testEnv(database);
+    const hold = await handlePlatformApi(
+      new Request('https://docs.test/api/organizations/org_parity/legal-holds', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pageId, reason: '诉讼保全' }),
+      }),
+      env,
+      owner,
+    );
+    expect(hold?.status).toBe(201);
+    await expect(pagesOnLegalHold(env, [pageId])).resolves.toEqual([pageId]);
+    const ai = await handlePlatformApi(
+      new Request(`https://docs.test/api/pages/${pageId}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'summarize', prompt: '总结这一页' }),
+      }),
+      env,
+      owner,
+    );
+    expect(ai?.status).toBe(503);
+    await expect(ai?.json()).resolves.toMatchObject({
+      job: { status: 'degraded', citations: [{ pageId }] },
+    });
+    const exported = await handlePlatformApi(
+      new Request('https://docs.test/api/organizations/org_parity/exports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'workspace', format: 'markdown' }),
+      }),
+      env,
+      owner,
+    );
+    expect(exported?.status).toBe(201);
+    await expect(exported?.json()).resolves.toMatchObject({
+      job: { status: 'succeeded', pageCount: 1, format: 'markdown' },
+    });
+    database.close();
+  });
+
+  it('hides a column from members who only have a none grant', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'parity');
+    const member = seedTenant(database, 'parity-col');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_parity', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    database.prepare(`UPDATE spaces SET visibility = 'organization' WHERE id = 'spc_parity'`).run();
+    seedPage(database, owner);
+    database
+      .prepare(
+        `INSERT INTO databases(
+           id, organization_id, page_id, is_locked, created_by, updated_by, created_at, updated_at
+         ) VALUES (?, 'org_parity', ?, 0, ?, ?, ?, ?)`,
+      )
+      .run(databaseId, pageId, owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO database_properties(
+           id, organization_id, database_id, name, type, config_json, sort_order,
+           created_by, created_at, updated_at
+         ) VALUES (?, 'org_parity', ?, '薪资', 'number', '{}', 1, ?, ?, ?)`,
+      )
+      .run(propertyId, databaseId, owner.id, now, now);
+    const grant = await handlePlatformApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties/${propertyId}/grants`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ principalType: 'user', principalId: member.id, role: 'none' }),
+      }),
+      testEnv(database),
+      owner,
+    );
+    expect(grant?.status).toBe(200);
+    const snapshot = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      testEnv(database),
+      member,
+    );
+    expect(snapshot?.status).toBe(200);
+    const body = (await snapshot?.json()) as { properties: Array<{ id: string }> };
+    expect(body.properties.map((property) => property.id)).not.toContain(propertyId);
     database.close();
   });
 });

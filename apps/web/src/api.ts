@@ -1386,3 +1386,144 @@ export function deleteSpaceGrant(
     { method: 'DELETE' },
   );
 }
+
+export function listApiTokens(organizationId: string) {
+  return request<{ tokens: import('@rdocs/shared').ApiTokenSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/api-tokens`,
+  );
+}
+
+export function createApiToken(
+  organizationId: string,
+  input: { name: string; scopes: import('@rdocs/shared').ApiTokenScope[] },
+) {
+  return request<{ token: import('@rdocs/shared').CreatedApiToken }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/api-tokens`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function revokeApiToken(organizationId: string, tokenId: string) {
+  return request<{ ok: true }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/api-tokens/${encodeURIComponent(tokenId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function createExportJob(
+  organizationId: string,
+  input: {
+    kind: 'workspace' | 'space' | 'page';
+    format: 'markdown' | 'json' | 'csv';
+    scopeId?: string;
+  },
+) {
+  return request<{ job: import('@rdocs/shared').ExportJobSummary }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/exports`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function listExportJobs(organizationId: string) {
+  return request<{ jobs: import('@rdocs/shared').ExportJobSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/exports`,
+  );
+}
+
+export function getEnterpriseSettings(organizationId: string) {
+  return request<{ settings: import('@rdocs/shared').EnterpriseSettingsSummary }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/enterprise`,
+  );
+}
+
+export function updateEnterpriseSettings(
+  organizationId: string,
+  input: Partial<import('@rdocs/shared').EnterpriseSettingsSummary> & {
+    samlCertificate?: string;
+    siemSecret?: string;
+  },
+) {
+  return request<{ settings: import('@rdocs/shared').EnterpriseSettingsSummary }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/enterprise`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function createScimToken(organizationId: string) {
+  return request<{ token: string; prefix: string }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/enterprise/scim-token`,
+    { method: 'POST' },
+  );
+}
+
+export function listLegalHolds(organizationId: string) {
+  return request<{ holds: import('@rdocs/shared').LegalHoldSummary[] }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/legal-holds`,
+  );
+}
+
+export function createLegalHold(organizationId: string, input: { pageId: string; reason: string }) {
+  return request<{ ok: true; id: string }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/legal-holds`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function releaseLegalHold(organizationId: string, holdId: string) {
+  return request<{ ok: true }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/legal-holds/${encodeURIComponent(holdId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function getAiSettings(organizationId: string) {
+  return request<{ settings: import('@rdocs/shared').AiSettingsSummary }>(
+    `/api/organizations/${encodeURIComponent(organizationId)}/ai`,
+  );
+}
+
+export function runPageAi(
+  pageId: string,
+  input: { kind: import('@rdocs/shared').AiJobKind; prompt: string },
+) {
+  return request<{ job: import('@rdocs/shared').AiJobSummary }>(
+    `/api/pages/${encodeURIComponent(pageId)}/ai`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+export function listOfflinePins(organizationId: string) {
+  return request<{ pins: import('@rdocs/shared').OfflinePinSummary[] }>(
+    `/api/offline-pins?organizationId=${encodeURIComponent(organizationId)}`,
+  );
+}
+
+export function setOfflinePin(pageId: string, pinned: boolean) {
+  return request<{ ok: true }>(`/api/pages/${encodeURIComponent(pageId)}/offline-pin`, {
+    method: pinned ? 'PUT' : 'DELETE',
+  });
+}
+
+export function addSiteDomain(siteId: string, hostname: string) {
+  return request<{ domain: import('@rdocs/shared').SiteDomainSummary }>(
+    `/api/sites/${encodeURIComponent(siteId)}/domains`,
+    { method: 'POST', body: JSON.stringify({ hostname }) },
+  );
+}
+
+export function verifySiteDomain(siteId: string, domainId: string) {
+  return request<{ domains: import('@rdocs/shared').SiteDomainSummary[] }>(
+    `/api/sites/${encodeURIComponent(siteId)}/domains/${encodeURIComponent(domainId)}/verify`,
+    { method: 'POST' },
+  );
+}
+
+export function publishSiteDatabaseView(
+  siteId: string,
+  input: { databaseId: string; viewId: string; published?: boolean },
+) {
+  return request<{ site: import('@rdocs/shared').SiteSummary }>(
+    `/api/sites/${encodeURIComponent(siteId)}/database-views`,
+    { method: 'PUT', body: JSON.stringify(input) },
+  );
+}

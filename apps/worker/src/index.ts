@@ -62,7 +62,15 @@ import { bumpSyncedBlocksForPageSubtree } from './synced-block-acl';
 import { handleTenancyApi } from './tenancy';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
 import {
+  handlePlatformApi,
+  handlePublicApi,
+  pagesOnLegalHold,
+  serviceWorkerScript,
+  webManifest,
+} from './platform';
+import {
   canPubliclyDownloadSiteAttachment,
+  findLiveSiteByHostname,
   handlePublicSitesApi,
   handleSitesApi,
   publicSiteDiscoveryResponse,
@@ -2697,6 +2705,11 @@ async function deletePage(
       .all<PageRow>()
   ).results.map(pageFromRow);
   if (subtreeRows.length > MAX_PAGE_TREE_SIZE) return error('页面子树过大，无法一次删除', 409);
+  const held = await pagesOnLegalHold(
+    env,
+    subtreeRows.map((row) => row.id),
+  );
+  if (held.length) return error('子树包含处于法务保全的页面，不能删除', 409);
   for (const descendant of subtreeRows) {
     if (!(await requirePageAction(env, descendant.id, actorId, 'delete'))) {
       return error('子树包含无权删除的限制页面', 403);
@@ -3810,6 +3823,9 @@ async function openCollaborationSocket(
 async function handleApi(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
+  const publicApiResponse = await handlePublicApi(request, env, context);
+  if (publicApiResponse) return publicApiResponse;
+
   if (url.pathname === '/api/health' && request.method === 'GET') {
     const database = await env.DB.prepare('SELECT 1 AS ok').first<{ ok: number }>();
     return json({
@@ -3902,6 +3918,8 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
 
   const tenancyResponse = await handleTenancyApi(request, env, actor, context);
   if (tenancyResponse) return tenancyResponse;
+  const platformResponse = await handlePlatformApi(request, env, actor);
+  if (platformResponse) return platformResponse;
   const commentsResponse = await handleCommentsAndNotificationsApi(request, env, actor);
   if (commentsResponse) return commentsResponse;
   const databasesResponse = await handleDatabasesApi(request, env, actor);
@@ -4330,9 +4348,19 @@ function escapedHtml(value: string): string {
 async function publicSiteHtmlResponse(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
   const match = url.pathname.match(/^\/site\/([^/]+)(?:\/([^/]+))?\/?$/);
-  if (!match?.[1]) return null;
-  const siteSlug = decodeURIComponent(match[1]);
-  const pageSlug = match[2] ? decodeURIComponent(match[2]) : null;
+  let siteSlug = match?.[1] ? decodeURIComponent(match[1]) : '';
+  let pageSlug = match?.[2] ? decodeURIComponent(match[2]) : null;
+  if (!siteSlug) {
+    const appHost = env.APP_ORIGIN ? new URL(env.APP_ORIGIN).hostname : '';
+    if (url.hostname && url.hostname !== appHost && url.hostname !== 'localhost') {
+      const custom = await findLiveSiteByHostname(env, url.hostname);
+      if (!custom) return null;
+      siteSlug = custom.slug;
+      pageSlug = url.pathname === '/' ? null : url.pathname.replace(/^\/+|\/+$/g, '') || null;
+    } else {
+      return null;
+    }
+  }
   const metadata = await siteHtmlMetadata(env, siteSlug, pageSlug);
   if (!metadata) {
     return new Response('Site not found', {
@@ -4340,9 +4368,10 @@ async function publicSiteHtmlResponse(request: Request, env: Env): Promise<Respo
       headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
     });
   }
-  const { site, page } = metadata;
+  const { site, page, excerpt } = metadata;
   const title = site.seo_title || `${page.page.title} · ${site.name}`;
-  const description = site.seo_description || `${site.name} 发布的 Rdocs 站点页面`;
+  const description =
+    site.seo_description || excerpt.slice(0, 180) || `${site.name} 发布的 Rdocs 站点页面`;
   const canonical = `${url.origin}/site/${encodeURIComponent(site.slug)}${
     page.isHome ? '' : `/${encodeURIComponent(page.slug)}`
   }`;
@@ -4364,9 +4393,13 @@ async function publicSiteHtmlResponse(request: Request, env: Env): Promise<Respo
     ...(shareImage ? [`<meta property="og:image" content="${escapedHtml(shareImage)}">`] : []),
     ...(favicon ? [`<link rel="icon" href="${escapedHtml(favicon)}">`] : []),
   ].join('');
+  const prerender = excerpt
+    ? `<noscript><article><h1>${escapedHtml(page.page.title)}</h1><p>${escapedHtml(excerpt)}</p></article></noscript>`
+    : '';
   const html = appHtml
     .replace(/<title>[^<]*<\/title>/, `<title>${escapedHtml(title)}</title>`)
-    .replace('</head>', `${meta}</head>`);
+    .replace('</head>', `${meta}</head>`)
+    .replace('<div id="root"></div>', `<div id="root"></div>${prerender}`);
   return htmlResponse(html, {
     embeddable: true,
     analytics: Boolean(site.google_analytics_id),
@@ -4395,10 +4428,16 @@ export default {
             ? await openCollaborationSocket(request, env, pageId)
             : error('页面 ID 无效', 400);
         } else if (request.method === 'GET' || request.method === 'HEAD') {
-          response =
-            (await publicSiteDiscoveryResponse(request, env)) ??
-            (await publicSiteHtmlResponse(request, env)) ??
-            htmlResponse();
+          if (url.pathname === '/manifest.webmanifest') {
+            response = webManifest();
+          } else if (url.pathname === '/sw.js') {
+            response = serviceWorkerScript();
+          } else {
+            response =
+              (await publicSiteDiscoveryResponse(request, env)) ??
+              (await publicSiteHtmlResponse(request, env)) ??
+              htmlResponse();
+          }
         } else {
           response = error('Method not allowed', 405);
         }
