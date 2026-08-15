@@ -24,6 +24,7 @@
 | RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
 | RF-7 | P1        | 仍可复现       | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
 | RF-8 | P1        | 待修复         | 顺序产品 smoke 的不同写端点间歇返回边缘 502                |
+| RF-9 | P1        | 待平台确认     | 自定义域名转发后的 Worker `request.url` 不是公开 Origin    |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
 
@@ -82,6 +83,30 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 - `d1_migrations.name` 应为 `TEXT NOT NULL UNIQUE`，避免参数丢失静默成功。
 - 增加测试：迁移 SQL 成功后账本记录非 NULL；二次 apply 必须输出 `already up to date`，不能重跑 `ALTER TABLE`。
 - 用包含单引号、Unicode 和长文件名的 migration 名验证参数编码。
+
+## RF-9：自定义域名转发后的 Worker URL 与公开 Origin 不一致
+
+### 现象
+
+Rdocs Git build `a5f6dd5` 激活后，从正式地址请求设备密钥登记接口：
+
+```text
+POST https://docs.bigrandall.io/api/auth/passkey/registration/options
+Origin: https://docs.bigrandall.io
+→ 403 请求来源不允许
+```
+
+Rdocs 会话接口同时确认配置的 WebAuthn Origin 正是 `https://docs.bigrandall.io`。原校验要求浏览器 `Origin` 和 Worker 内的 `new URL(request.url).origin` 都等于正式域名；正式请求仍失败，说明自定义域名转发后的 Worker URL 没有保留同一公开 Origin（或等价的公开 URL 信息未进入 Request URL）。协作 Origin 校验此前之所以可用，是因为它额外允许显式配置的 `APP_ORIGIN`。
+
+### Rdocs 安全处理
+
+Rdocs 改为精确校验浏览器不可由跨站脚本伪造的 `Origin` 头；缺失或不等于 `https://docs.bigrandall.io` 仍返回 403。会话 Cookie 继续使用 `HttpOnly; Secure; SameSite=Lax`，WebAuthn 注册和认证响应仍由库对预期 RP ID 与 Origin 做密码学验证。因此该兼容处理没有信任任意转发头，也没有放宽到其他域名。
+
+### 建议平台确认
+
+- Worker 的 `request.url` 应保留浏览器访问的 scheme、host 和 path，内部 upstream 地址不应暴露为应用 URL。
+- 若必须内部重写，应提供不可伪造且由平台规范化的原始 URL 元数据，并覆盖自定义域名、自动域名关闭和多层转发测试。
+- 用一个回显 `request.url`、`Host`、`Forwarded` 元数据的最小 Worker 验证 `docs.bigrandall.io`，不要在生产 Rdocs 增加永久诊断端点。
 
 ## RF-8：低并发顺序 API 仍会间歇返回 502
 
