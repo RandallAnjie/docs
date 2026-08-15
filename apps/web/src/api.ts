@@ -255,6 +255,12 @@ export function getDatabase(databaseId: string): Promise<DatabaseSnapshot> {
   return request(`/api/databases/${encodeURIComponent(databaseId)}`);
 }
 
+export function listOrganizationDatabases(
+  organizationId: string,
+): Promise<{ databases: DatabaseSummary[] }> {
+  return request(`/api/organizations/${encodeURIComponent(organizationId)}/databases`);
+}
+
 export function updateDatabase(
   databaseId: string,
   input: { title?: string; isLocked?: boolean },

@@ -14,7 +14,6 @@ import {
   ListPlus,
   Lock,
   MapPinned,
-  MoreHorizontal,
   Plus,
   Rss,
   Search,
@@ -33,6 +32,7 @@ import {
 } from 'react';
 
 import type {
+  AttachmentSummary,
   DatabasePropertySummary,
   DatabasePropertyType,
   DatabaseRowSummary,
@@ -40,6 +40,7 @@ import type {
   DatabaseViewSummary,
   DatabaseViewType,
   JsonValue,
+  OrganizationMemberSummary,
 } from '@rdocs/shared';
 
 import {
@@ -50,11 +51,21 @@ import {
   deleteDatabaseRow,
   deleteDatabaseView,
   getDatabase,
+  listAttachments,
+  listOrganizationDatabases,
+  listOrganizationMembers,
   updateDatabase,
   updateDatabaseProperty,
   updateDatabaseRow,
   updateDatabaseView,
+  uploadAttachment,
 } from './api';
+import {
+  applyDatabaseView,
+  databaseViewFilters,
+  databaseViewSorts,
+  type DatabaseFilterOperator,
+} from './database-view';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   title: '标题',
@@ -200,18 +211,362 @@ function fromInputValue(property: DatabasePropertySummary, value: string): JsonV
   return value;
 }
 
+function RelationCell({
+  property,
+  value,
+  disabled,
+  onSave,
+}: {
+  property: DatabasePropertySummary;
+  value: JsonValue | undefined;
+  disabled: boolean;
+  onSave: (value: JsonValue) => Promise<void>;
+}) {
+  const targetDatabaseId =
+    typeof property.config.targetDatabaseId === 'string' ? property.config.targetDatabaseId : '';
+  const selected = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  const [open, setOpen] = useState(false);
+  const [target, setTarget] = useState<DatabaseSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const openPicker = async () => {
+    if (disabled || !targetDatabaseId) return;
+    setOpen(true);
+    if (target || loading) return;
+    setLoading(true);
+    try {
+      setTarget(await getDatabase(targetDatabaseId));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取关系数据库');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const toggle = async (rowId: string) => {
+    const next = selected.includes(rowId)
+      ? selected.filter((candidate) => candidate !== rowId)
+      : [...selected, rowId];
+    try {
+      await onSave(next);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法保存关系');
+    }
+  };
+  return (
+    <div className="database-relation-cell">
+      <button type="button" disabled={disabled} onClick={() => void openPicker()}>
+        {selected.length ? `${selected.length} 个关联页面` : '添加关联'}
+      </button>
+      {open ? (
+        <div className="database-relation-picker">
+          <header>
+            <strong>{target?.database.title ?? '选择关联页面'}</strong>
+            <button type="button" onClick={() => setOpen(false)}>
+              ×
+            </button>
+          </header>
+          {loading ? <p>正在加载…</p> : null}
+          {error ? <p className="dialog-error">{error}</p> : null}
+          {target?.rows.map((row) => (
+            <label key={row.id}>
+              <input
+                type="checkbox"
+                checked={selected.includes(row.id)}
+                onChange={() => void toggle(row.id)}
+              />
+              <span>{rowTitle(row, target.properties)}</span>
+            </label>
+          ))}
+          {target && !target.rows.length ? <p>目标数据库还没有记录。</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PersonCell({
+  organizationId,
+  value,
+  disabled,
+  onSave,
+}: {
+  organizationId: string;
+  value: JsonValue | undefined;
+  disabled: boolean;
+  onSave: (value: JsonValue) => Promise<void>;
+}) {
+  const selected = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  const [open, setOpen] = useState(false);
+  const [members, setMembers] = useState<OrganizationMemberSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const openPicker = async () => {
+    if (disabled) return;
+    setOpen(true);
+    if (members.length || loading) return;
+    setLoading(true);
+    try {
+      const result = await listOrganizationMembers(organizationId);
+      setMembers(result.members.filter((member) => member.status === 'active'));
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取成员');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const toggle = async (userId: string) => {
+    try {
+      await onSave(
+        selected.includes(userId)
+          ? selected.filter((candidate) => candidate !== userId)
+          : [...selected, userId],
+      );
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法保存人员');
+    }
+  };
+  return (
+    <div className="database-relation-cell">
+      <button type="button" disabled={disabled} onClick={() => void openPicker()}>
+        {selected.length ? `${selected.length} 位成员` : '选择成员'}
+      </button>
+      {open ? (
+        <div className="database-relation-picker">
+          <header>
+            <strong>选择成员</strong>
+            <button type="button" onClick={() => setOpen(false)}>
+              ×
+            </button>
+          </header>
+          {loading ? <p>正在加载…</p> : null}
+          {error ? <p className="dialog-error">{error}</p> : null}
+          {members.map((member) => (
+            <label key={member.userId}>
+              <input
+                type="checkbox"
+                checked={selected.includes(member.userId)}
+                onChange={() => void toggle(member.userId)}
+              />
+              <span>{member.displayName}</span>
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FileCell({
+  pageId,
+  value,
+  disabled,
+  onSave,
+}: {
+  pageId: string;
+  value: JsonValue | undefined;
+  disabled: boolean;
+  onSave: (value: JsonValue) => Promise<void>;
+}) {
+  const selected = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  const [open, setOpen] = useState(false);
+  const [attachments, setAttachments] = useState<AttachmentSummary[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const openPicker = async () => {
+    if (disabled) return;
+    setOpen(true);
+    if (attachments.length) return;
+    try {
+      setAttachments((await listAttachments(pageId)).attachments);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取文件');
+    }
+  };
+  const upload = async (file: File | undefined) => {
+    if (!file || busy) return;
+    setBusy(true);
+    try {
+      const { attachment } = await uploadAttachment(pageId, file);
+      setAttachments((current) => [attachment, ...current]);
+      await onSave([...selected, attachment.id]);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法上传文件');
+    } finally {
+      setBusy(false);
+      if (input.current) input.current.value = '';
+    }
+  };
+  const toggle = async (attachmentId: string) => {
+    try {
+      await onSave(
+        selected.includes(attachmentId)
+          ? selected.filter((candidate) => candidate !== attachmentId)
+          : [...selected, attachmentId],
+      );
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法保存文件属性');
+    }
+  };
+  return (
+    <div className="database-relation-cell">
+      <input
+        ref={input}
+        hidden
+        type="file"
+        onChange={(event) => void upload(event.target.files?.[0])}
+      />
+      <button type="button" disabled={disabled} onClick={() => void openPicker()}>
+        {selected.length ? `${selected.length} 个文件` : '添加文件'}
+      </button>
+      {open ? (
+        <div className="database-relation-picker database-file-picker">
+          <header>
+            <strong>文件与媒体</strong>
+            <button type="button" onClick={() => setOpen(false)}>
+              ×
+            </button>
+          </header>
+          {error ? <p className="dialog-error">{error}</p> : null}
+          <button
+            type="button"
+            className="database-upload-file"
+            onClick={() => input.current?.click()}
+          >
+            <Plus size={13} /> {busy ? '上传中…' : '上传文件'}
+          </button>
+          {attachments.map((attachment) => (
+            <label key={attachment.id}>
+              <input
+                type="checkbox"
+                checked={selected.includes(attachment.id)}
+                onChange={() => void toggle(attachment.id)}
+              />
+              <span>{attachment.originalName}</span>
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PlaceCell({
+  value,
+  disabled,
+  onSave,
+}: {
+  value: JsonValue | undefined;
+  disabled: boolean;
+  onSave: (value: JsonValue) => Promise<void>;
+}) {
+  const current = value && !Array.isArray(value) && typeof value === 'object' ? value : {};
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(typeof current.name === 'string' ? current.name : '');
+  const [address, setAddress] = useState(
+    typeof current.address === 'string' ? current.address : '',
+  );
+  const [latitude, setLatitude] = useState(
+    typeof current.latitude === 'number' ? String(current.latitude) : '',
+  );
+  const [longitude, setLongitude] = useState(
+    typeof current.longitude === 'number' ? String(current.longitude) : '',
+  );
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    try {
+      await onSave({
+        name,
+        ...(address ? { address } : {}),
+        latitude: Number(latitude),
+        longitude: Number(longitude),
+      });
+      setError(null);
+      setOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法保存地点');
+    }
+  };
+  return (
+    <div className="database-relation-cell">
+      <button type="button" disabled={disabled} onClick={() => setOpen(true)}>
+        {typeof current.name === 'string' ? current.name : '添加地点'}
+      </button>
+      {open ? (
+        <div className="database-relation-picker database-place-picker">
+          <header>
+            <strong>地点</strong>
+            <button type="button" onClick={() => setOpen(false)}>
+              ×
+            </button>
+          </header>
+          {error ? <p className="dialog-error">{error}</p> : null}
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="地点名称"
+          />
+          <input
+            value={address}
+            onChange={(event) => setAddress(event.target.value)}
+            placeholder="地址（可选）"
+          />
+          <div>
+            <input
+              value={latitude}
+              onChange={(event) => setLatitude(event.target.value)}
+              placeholder="纬度"
+              inputMode="decimal"
+            />
+            <input
+              value={longitude}
+              onChange={(event) => setLongitude(event.target.value)}
+              placeholder="经度"
+              inputMode="decimal"
+            />
+          </div>
+          <button
+            type="button"
+            className="database-upload-file"
+            disabled={!name || !latitude || !longitude}
+            onClick={() => void save()}
+          >
+            保存地点
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DatabaseCell({
   property,
   value,
   disabled,
   onSave,
   openPage,
+  organizationId,
+  rowPageId,
 }: {
   property: DatabasePropertySummary;
   value: JsonValue | undefined;
   disabled: boolean;
   onSave: (value: JsonValue) => Promise<void>;
   openPage?: string;
+  organizationId?: string;
+  rowPageId?: string;
 }) {
   const [draft, setDraft] = useState(() => toInputValue(property, value));
   const [saving, setSaving] = useState(false);
@@ -284,11 +639,27 @@ function DatabaseCell({
       </select>
     );
   }
-  if (property.type === 'relation' || property.type === 'person' || property.type === 'files') {
+  if (property.type === 'relation') {
+    return <RelationCell property={property} value={value} disabled={disabled} onSave={onSave} />;
+  }
+  if (property.type === 'person' && organizationId) {
+    return (
+      <PersonCell
+        organizationId={organizationId}
+        value={value}
+        disabled={disabled}
+        onSave={onSave}
+      />
+    );
+  }
+  if (property.type === 'files' && rowPageId) {
+    return <FileCell pageId={rowPageId} value={value} disabled={disabled} onSave={onSave} />;
+  }
+  if (property.type === 'person' || property.type === 'files') {
     return <span className="database-reference-value">{valueText(value) || '—'}</span>;
   }
   if (property.type === 'place') {
-    return <span className="database-reference-value">{valueText(value) || '—'}</span>;
+    return <PlaceCell value={value} disabled={disabled} onSave={onSave} />;
   }
   const inputType =
     property.type === 'number' ? 'number' : property.type === 'date' ? 'date' : 'text';
@@ -337,6 +708,7 @@ function EmptyDatabase({ onCreate, disabled }: { onCreate: () => void; disabled:
 }
 
 function TableDatabaseView({
+  organizationId,
   rows,
   properties,
   canEdit,
@@ -373,6 +745,8 @@ function TableDatabaseView({
                     value={row.values[property.id]}
                     disabled={!canEdit}
                     openPage={property.type === 'title' ? row.pageId : undefined}
+                    organizationId={organizationId}
+                    rowPageId={row.pageId}
                     onSave={(value) => saveCell(row, property, value)}
                   />
                 </td>
@@ -403,6 +777,7 @@ function TableDatabaseView({
 }
 
 interface DatabaseViewProps {
+  organizationId: string;
   rows: DatabaseRowSummary[];
   properties: DatabasePropertySummary[];
   view: DatabaseViewSummary;
@@ -413,7 +788,7 @@ interface DatabaseViewProps {
     value: JsonValue,
   ) => Promise<void>;
   addRow: () => void;
-  createRow: (values: Record<string, JsonValue>) => Promise<void>;
+  createRow: (values: Record<string, JsonValue>) => Promise<boolean>;
   removeRow: (row: DatabaseRowSummary) => void;
   updateViewConfig: (config: Record<string, JsonValue>) => Promise<void>;
 }
@@ -500,6 +875,8 @@ function BoardDatabaseView(props: DatabaseViewProps) {
                         property={property}
                         value={row.values[property.id]}
                         disabled={!props.canEdit}
+                        organizationId={props.organizationId}
+                        rowPageId={row.pageId}
                         onSave={(value) => props.saveCell(row, property, value)}
                       />
                     </div>
@@ -688,7 +1065,7 @@ function FormDatabaseView(props: DatabaseViewProps) {
     if (busy || !props.canEdit) return;
     setBusy(true);
     try {
-      await props.createRow(values);
+      if (!(await props.createRow(values))) return;
       setValues({});
       setSubmitted(true);
       window.setTimeout(() => setSubmitted(false), 2_000);
@@ -859,13 +1236,226 @@ function renderView(
   }
 }
 
+function ViewOptionsPanel({
+  view,
+  properties,
+  canEdit,
+  canLock,
+  locked,
+  canDelete,
+  onUpdate,
+  onToggleLock,
+  onDelete,
+}: {
+  view: DatabaseViewSummary;
+  properties: DatabasePropertySummary[];
+  canEdit: boolean;
+  canLock: boolean;
+  locked: boolean;
+  canDelete: boolean;
+  onUpdate: (config: Record<string, JsonValue>) => Promise<void>;
+  onToggleLock: () => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  const [filterPropertyId, setFilterPropertyId] = useState(properties[0]?.id ?? '');
+  const [filterOperator, setFilterOperator] = useState<DatabaseFilterOperator>('equals');
+  const [filterValue, setFilterValue] = useState('');
+  const [sortPropertyId, setSortPropertyId] = useState(properties[0]?.id ?? '');
+  const [sortDirection, setSortDirection] = useState<'ascending' | 'descending'>('ascending');
+  const filters = databaseViewFilters(view.config);
+  const sorts = databaseViewSorts(view.config);
+  const propertyNames = new Map(properties.map((property) => [property.id, property.name]));
+  const addFilter = async () => {
+    if (!filterPropertyId) return;
+    const next = [
+      ...filters,
+      {
+        propertyId: filterPropertyId,
+        operator: filterOperator,
+        value:
+          filterOperator === 'is_empty' || filterOperator === 'is_not_empty' ? null : filterValue,
+      },
+    ];
+    await onUpdate({
+      ...view.config,
+      filters: next.map(({ propertyId, operator, value }) => ({ propertyId, operator, value })),
+    });
+    setFilterValue('');
+  };
+  const addSort = async () => {
+    if (!sortPropertyId) return;
+    const next = [
+      ...sorts.filter((sort) => sort.propertyId !== sortPropertyId),
+      { propertyId: sortPropertyId, direction: sortDirection },
+    ];
+    await onUpdate({
+      ...view.config,
+      sorts: next.map(({ propertyId, direction }) => ({ propertyId, direction })),
+    });
+  };
+  return (
+    <div className="database-view-options">
+      <section>
+        <header>
+          <strong>筛选</strong>
+          <select
+            value={view.config.filterMode === 'or' ? 'or' : 'and'}
+            disabled={!canEdit}
+            onChange={(event) =>
+              void onUpdate({ ...view.config, filterMode: event.target.value as 'and' | 'or' })
+            }
+          >
+            <option value="and">满足全部</option>
+            <option value="or">满足任一</option>
+          </select>
+        </header>
+        {filters.map((filter, index) => (
+          <div className="database-view-rule" key={`${filter.propertyId}:${index}`}>
+            <span>{propertyNames.get(filter.propertyId) ?? '已删除属性'}</span>
+            <small>{filter.operator}</small>
+            <b>{valueText(filter.value) || '空'}</b>
+            {canEdit ? (
+              <button
+                type="button"
+                aria-label="删除筛选"
+                onClick={() =>
+                  void onUpdate({
+                    ...view.config,
+                    filters: filters
+                      .filter((_, candidateIndex) => candidateIndex !== index)
+                      .map(({ propertyId, operator, value }) => ({
+                        propertyId,
+                        operator,
+                        value,
+                      })),
+                  })
+                }
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+        ))}
+        {canEdit ? (
+          <div className="database-rule-builder">
+            <select
+              value={filterPropertyId}
+              onChange={(event) => setFilterPropertyId(event.target.value)}
+            >
+              {properties.map((property) => (
+                <option key={property.id} value={property.id}>
+                  {property.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={filterOperator}
+              onChange={(event) => setFilterOperator(event.target.value as DatabaseFilterOperator)}
+            >
+              <option value="equals">等于</option>
+              <option value="not_equals">不等于</option>
+              <option value="contains">包含</option>
+              <option value="not_contains">不包含</option>
+              <option value="greater_than">大于</option>
+              <option value="less_than">小于</option>
+              <option value="on_or_before">不晚于</option>
+              <option value="on_or_after">不早于</option>
+              <option value="is_empty">为空</option>
+              <option value="is_not_empty">不为空</option>
+            </select>
+            {filterOperator !== 'is_empty' && filterOperator !== 'is_not_empty' ? (
+              <input
+                value={filterValue}
+                onChange={(event) => setFilterValue(event.target.value)}
+                placeholder="值"
+              />
+            ) : null}
+            <button type="button" onClick={() => void addFilter()}>
+              <Plus size={13} />
+            </button>
+          </div>
+        ) : null}
+      </section>
+      <section>
+        <header>
+          <strong>排序</strong>
+        </header>
+        {sorts.map((sort, index) => (
+          <div className="database-view-rule" key={`${sort.propertyId}:${index}`}>
+            <span>{propertyNames.get(sort.propertyId) ?? '已删除属性'}</span>
+            <b>{sort.direction === 'ascending' ? '升序' : '降序'}</b>
+            {canEdit ? (
+              <button
+                type="button"
+                aria-label="删除排序"
+                onClick={() =>
+                  void onUpdate({
+                    ...view.config,
+                    sorts: sorts
+                      .filter((_, candidateIndex) => candidateIndex !== index)
+                      .map(({ propertyId, direction }) => ({ propertyId, direction })),
+                  })
+                }
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+        ))}
+        {canEdit ? (
+          <div className="database-rule-builder">
+            <select
+              value={sortPropertyId}
+              onChange={(event) => setSortPropertyId(event.target.value)}
+            >
+              {properties.map((property) => (
+                <option key={property.id} value={property.id}>
+                  {property.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={sortDirection}
+              onChange={(event) =>
+                setSortDirection(event.target.value as 'ascending' | 'descending')
+              }
+            >
+              <option value="ascending">升序</option>
+              <option value="descending">降序</option>
+            </select>
+            <button type="button" onClick={() => void addSort()}>
+              <Plus size={13} />
+            </button>
+          </div>
+        ) : null}
+      </section>
+      <footer>
+        {canLock ? (
+          <button type="button" onClick={() => void onToggleLock()}>
+            <Lock size={14} /> {locked ? '解锁数据库' : '锁定数据库'}
+          </button>
+        ) : null}
+        {canDelete ? (
+          <button className="danger" type="button" onClick={() => void onDelete()}>
+            <Trash2 size={14} /> 删除当前视图
+          </button>
+        ) : null}
+      </footer>
+    </div>
+  );
+}
+
 function PropertyDialog({
   databaseId,
+  organizationId,
+  properties,
   property,
   onClose,
   onChanged,
 }: {
   databaseId: string;
+  organizationId: string;
+  properties: DatabasePropertySummary[];
   property?: DatabasePropertySummary;
   onClose: () => void;
   onChanged: () => Promise<void>;
@@ -895,8 +1485,46 @@ function PropertyDialog({
   const [calculation, setCalculation] = useState(
     typeof property?.config.calculation === 'string' ? property.config.calculation : 'count_all',
   );
+  const [databases, setDatabases] = useState<DatabaseSnapshot['database'][]>([]);
+  const [targetSnapshot, setTargetSnapshot] = useState<DatabaseSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const relationProperties = useMemo(
+    () => properties.filter((candidate) => candidate.type === 'relation'),
+    [properties],
+  );
+
+  useEffect(() => {
+    let active = true;
+    listOrganizationDatabases(organizationId)
+      .then((result) => {
+        if (active) setDatabases(result.databases);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [organizationId]);
+
+  useEffect(() => {
+    if (type !== 'rollup' || !relationPropertyId) return;
+    const relation = relationProperties.find((candidate) => candidate.id === relationPropertyId);
+    const targetId =
+      typeof relation?.config.targetDatabaseId === 'string'
+        ? relation.config.targetDatabaseId
+        : targetDatabaseId;
+    if (!targetId) return;
+    setTargetDatabaseId(targetId);
+    let active = true;
+    getDatabase(targetId)
+      .then((snapshot) => {
+        if (active) setTargetSnapshot(snapshot);
+      })
+      .catch(() => active && setTargetSnapshot(null));
+    return () => {
+      active = false;
+    };
+  }, [relationProperties, relationPropertyId, targetDatabaseId, type]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy) return;
@@ -998,35 +1626,49 @@ function PropertyDialog({
         ) : null}
         {type === 'relation' ? (
           <label>
-            目标数据库 ID
-            <input
+            目标数据库
+            <select
               value={targetDatabaseId}
               onChange={(event) => setTargetDatabaseId(event.target.value)}
-            />
+            >
+              <option value="">选择数据库</option>
+              {databases.map((database) => (
+                <option key={database.id} value={database.id}>
+                  {database.title}
+                </option>
+              ))}
+            </select>
           </label>
         ) : null}
         {type === 'rollup' ? (
           <>
             <label>
-              关系属性 ID
-              <input
+              关系属性
+              <select
                 value={relationPropertyId}
                 onChange={(event) => setRelationPropertyId(event.target.value)}
-              />
+              >
+                <option value="">选择关系</option>
+                {relationProperties.map((relation) => (
+                  <option key={relation.id} value={relation.id}>
+                    {relation.name}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
-              目标数据库 ID
-              <input
-                value={targetDatabaseId}
-                onChange={(event) => setTargetDatabaseId(event.target.value)}
-              />
-            </label>
-            <label>
-              目标属性 ID
-              <input
+              目标属性
+              <select
                 value={targetPropertyId}
                 onChange={(event) => setTargetPropertyId(event.target.value)}
-              />
+              >
+                <option value="">选择属性</option>
+                {targetSnapshot?.properties.map((targetProperty) => (
+                  <option key={targetProperty.id} value={targetProperty.id}>
+                    {targetProperty.name}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               计算方式
@@ -1176,24 +1818,27 @@ export function DatabaseCanvas({
   }, [snapshot.database.id]);
 
   const filteredRows = useMemo(() => {
+    const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {});
     const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return snapshot.rows;
-    return snapshot.rows.filter((row) =>
+    if (!normalized) return viewed;
+    return viewed.filter((row) =>
       snapshot.properties.some((property) =>
         valueText(row.values[property.id]).toLocaleLowerCase().includes(normalized),
       ),
     );
-  }, [query, snapshot.properties, snapshot.rows]);
+  }, [activeView?.config, query, snapshot.properties, snapshot.rows]);
 
   const createRow = async (values: Record<string, JsonValue>) => {
-    if (!editable || busy) return;
+    if (!editable || busy) return false;
     setBusy(true);
     setError(null);
     try {
       const { row } = await createDatabaseRow(snapshot.database.id, values);
       if (row) setSnapshot((current) => ({ ...current, rows: [...current.rows, row] }));
+      return Boolean(row);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法新建记录');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1293,6 +1938,7 @@ export function DatabaseCanvas({
   if (!activeView)
     return <ViewRequirement icon={<Table2 size={24} />} text="数据库没有可用视图。" />;
   const viewProps: DatabaseViewProps = {
+    organizationId: snapshot.database.organizationId,
     rows: filteredRows,
     properties: snapshot.properties,
     view: activeView,
@@ -1363,18 +2009,17 @@ export function DatabaseCanvas({
             <Settings2 size={15} />
           </button>
           {viewMenuOpen ? (
-            <div className="database-view-menu">
-              {snapshot.database.role === 'space_admin' ? (
-                <button type="button" onClick={() => void toggleLock()}>
-                  <Lock size={14} /> {snapshot.database.isLocked ? '解锁数据库' : '锁定数据库'}
-                </button>
-              ) : null}
-              {editable && snapshot.views.length > 1 ? (
-                <button className="danger" type="button" onClick={() => void removeActiveView()}>
-                  <Trash2 size={14} /> 删除当前视图
-                </button>
-              ) : null}
-            </div>
+            <ViewOptionsPanel
+              view={activeView}
+              properties={snapshot.properties}
+              canEdit={editable}
+              canLock={snapshot.database.role === 'space_admin'}
+              locked={snapshot.database.isLocked}
+              canDelete={editable && snapshot.views.length > 1}
+              onUpdate={updateViewConfig}
+              onToggleLock={toggleLock}
+              onDelete={removeActiveView}
+            />
           ) : null}
         </div>
       </div>
@@ -1389,6 +2034,8 @@ export function DatabaseCanvas({
       {propertyDialog ? (
         <PropertyDialog
           databaseId={snapshot.database.id}
+          organizationId={snapshot.database.organizationId}
+          properties={snapshot.properties}
           property={propertyDialog === 'new' ? undefined : propertyDialog}
           onClose={() => setPropertyDialog(null)}
           onChanged={refresh}

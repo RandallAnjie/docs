@@ -13,7 +13,7 @@ import {
   type SpaceRole,
 } from '@rdocs/shared';
 
-import { requirePageAction } from './access';
+import { effectivePageGrantRole, findActiveMembership, requirePageAction } from './access';
 import { evaluateDatabaseFormula } from './database-formulas';
 import { isComputedDatabaseProperty, normalizeDatabaseCellValue } from './database-values';
 import type { Env } from './env';
@@ -121,6 +121,12 @@ interface CellRecord {
 interface DatabaseAuthorization {
   database: DatabaseRecord;
   role: SpaceRole;
+}
+
+interface RowGrantRecord {
+  page_id: string;
+  principal_type: 'user' | 'group' | 'organization';
+  role: 'none' | SpaceRole;
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -240,6 +246,34 @@ async function findDatabaseByPage(env: Env, pageId: string): Promise<DatabaseRec
     .first<DatabaseRecord>();
 }
 
+async function listOrganizationDatabases(
+  env: Env,
+  organizationId: string,
+  actorId: string,
+): Promise<Response> {
+  if (!(await findActiveMembership(env, organizationId, actorId))) {
+    return error('组织不存在或无权访问', 404);
+  }
+  const records = (
+    await env.DB.prepare(
+      `SELECT d.id, d.organization_id, d.page_id, p.title, d.is_locked,
+              d.created_by, d.updated_by, d.created_at, d.updated_at
+         FROM databases d JOIN pages p ON p.id = d.page_id
+        WHERE d.organization_id = ? AND p.deleted_at IS NULL
+        ORDER BY d.updated_at DESC LIMIT 200`,
+    )
+      .bind(organizationId)
+      .all<DatabaseRecord>()
+  ).results;
+  const authorized = await Promise.all(
+    records.map(async (database) => {
+      const access = await requirePageAction(env, database.page_id, actorId, 'view');
+      return access ? databaseSummary(database, access.spaceRole) : null;
+    }),
+  );
+  return json({ databases: authorized.filter((database) => database !== null) });
+}
+
 async function authorizeDatabase(
   env: Env,
   databaseId: string,
@@ -266,6 +300,79 @@ async function authorizeDatabasePage(
   return access && access.organizationId === database.organization_id
     ? { database, role: access.spaceRole }
     : null;
+}
+
+async function visibleDatabaseRows(
+  env: Env,
+  authorization: DatabaseAuthorization,
+  rows: RowRecord[],
+  actorId: string,
+): Promise<RowRecord[]> {
+  if (!rows.length || authorization.role === 'space_admin') return rows;
+  const pageIds = rows.map((row) => row.page_id);
+  const placeholders = pageIds.map(() => '?').join(', ');
+  const restricted = (
+    await env.DB.prepare(
+      `SELECT page_id FROM page_access_state
+        WHERE access_mode = 'restricted' AND page_id IN (${placeholders})`,
+    )
+      .bind(...pageIds)
+      .all<{ page_id: string }>()
+  ).results;
+  if (!restricted.length) return rows;
+  const restrictedIds = new Set(restricted.map((row) => row.page_id));
+  const restrictedPlaceholders = restricted.map(() => '?').join(', ');
+  const membership = await findActiveMembership(
+    env,
+    authorization.database.organization_id,
+    actorId,
+  );
+  if (!membership) return [];
+  const grants = (
+    await env.DB.prepare(
+      `SELECT pg.page_id, pg.principal_type, pg.role
+         FROM page_grants pg
+        WHERE pg.organization_id = ? AND pg.page_id IN (${restrictedPlaceholders})
+          AND (
+            (pg.principal_type = 'user' AND pg.principal_id = ?)
+            OR (
+              pg.principal_type = 'organization'
+              AND pg.principal_id = ? AND ? <> 'guest'
+            )
+            OR (
+              pg.principal_type = 'group' AND EXISTS (
+                SELECT 1 FROM group_members gm
+                 WHERE gm.group_id = pg.principal_id AND gm.user_id = ?
+              )
+            )
+          )`,
+    )
+      .bind(
+        authorization.database.organization_id,
+        ...restricted.map((row) => row.page_id),
+        actorId,
+        authorization.database.organization_id,
+        membership.role,
+        actorId,
+      )
+      .all<RowGrantRecord>()
+  ).results;
+  const grantsByPage = new Map<string, RowGrantRecord[]>();
+  for (const grant of grants) {
+    grantsByPage.set(grant.page_id, [...(grantsByPage.get(grant.page_id) ?? []), grant]);
+  }
+  return rows.filter(
+    (row) =>
+      !restrictedIds.has(row.page_id) ||
+      Boolean(
+        effectivePageGrantRole(
+          (grantsByPage.get(row.page_id) ?? []).map((grant) => ({
+            principalType: grant.principal_type,
+            role: grant.role,
+          })),
+        ),
+      ),
+  );
 }
 
 async function databaseAudit(
@@ -357,11 +464,11 @@ function rollup(values: JsonValue[], calculation: string): JsonValue {
   }
 }
 
-async function relationDatabaseVisibility(
+async function relationDatabaseAuthorizations(
   env: Env,
   properties: DatabasePropertySummary[],
   actorId: string,
-): Promise<Map<string, boolean>> {
+): Promise<Map<string, DatabaseAuthorization | null>> {
   const databaseIds = [
     ...new Set(
       properties.flatMap((property) => {
@@ -370,16 +477,68 @@ async function relationDatabaseVisibility(
       }),
     ),
   ];
-  const visibility = new Map<string, boolean>();
+  const visibility = new Map<string, DatabaseAuthorization | null>();
   await Promise.all(
     databaseIds.map(async (databaseId) => {
-      visibility.set(
-        databaseId,
-        Boolean(await authorizeDatabase(env, databaseId, actorId, 'view')),
-      );
+      visibility.set(databaseId, await authorizeDatabase(env, databaseId, actorId, 'view'));
     }),
   );
   return visibility;
+}
+
+async function visibleRelatedRowIds(
+  env: Env,
+  properties: DatabasePropertySummary[],
+  rows: RowRecord[],
+  rawValues: ReadonlyMap<string, Record<string, JsonValue>>,
+  authorizations: ReadonlyMap<string, DatabaseAuthorization | null>,
+  actorId: string,
+): Promise<Map<string, Set<string>>> {
+  const result = new Map<string, Set<string>>();
+  await Promise.all(
+    [...authorizations].map(async ([targetDatabaseId, authorization]) => {
+      if (!authorization) {
+        result.set(targetDatabaseId, new Set());
+        return;
+      }
+      const relationPropertyIds = properties
+        .filter(
+          (property) =>
+            property.type === 'relation' && property.config.targetDatabaseId === targetDatabaseId,
+        )
+        .map((property) => property.id);
+      const rowIds = [
+        ...new Set(
+          rows.flatMap((row) =>
+            relationPropertyIds.flatMap((propertyId) => {
+              const value = rawValues.get(row.id)?.[propertyId];
+              return Array.isArray(value)
+                ? value.filter((item): item is string => typeof item === 'string')
+                : [];
+            }),
+          ),
+        ),
+      ].slice(0, MAX_DATABASE_ROWS);
+      if (!rowIds.length) {
+        result.set(targetDatabaseId, new Set());
+        return;
+      }
+      const placeholders = rowIds.map(() => '?').join(', ');
+      const targetRows = (
+        await env.DB.prepare(
+          `SELECT id, database_id, page_id, sort_key, created_by, updated_by,
+                  created_at, updated_at, archived_at
+             FROM database_rows
+            WHERE database_id = ? AND archived_at IS NULL AND id IN (${placeholders})`,
+        )
+          .bind(targetDatabaseId, ...rowIds)
+          .all<RowRecord>()
+      ).results;
+      const visible = await visibleDatabaseRows(env, authorization, targetRows, actorId);
+      result.set(targetDatabaseId, new Set(visible.map((row) => row.id)));
+    }),
+  );
+  return result;
 }
 
 async function relatedValues(
@@ -387,7 +546,8 @@ async function relatedValues(
   properties: DatabasePropertySummary[],
   rows: RowRecord[],
   rawValues: Map<string, Record<string, JsonValue>>,
-  visibility: ReadonlyMap<string, boolean>,
+  visibility: ReadonlyMap<string, DatabaseAuthorization | null>,
+  relatedRowIds: ReadonlyMap<string, ReadonlySet<string>>,
 ): Promise<Map<string, Record<string, JsonValue>>> {
   const result = new Map<string, Record<string, JsonValue>>();
   for (const property of properties.filter((candidate) => candidate.type === 'rollup')) {
@@ -404,6 +564,7 @@ async function relatedValues(
     ) {
       continue;
     }
+    const allowedTargetRows = relatedRowIds.get(targetDatabaseId) ?? new Set<string>();
     const targetRowIds = [
       ...new Set(
         rows.flatMap((row) => {
@@ -413,8 +574,17 @@ async function relatedValues(
             : [];
         }),
       ),
-    ].slice(0, MAX_DATABASE_ROWS);
-    if (!targetRowIds.length) continue;
+    ]
+      .filter((rowId) => allowedTargetRows.has(rowId))
+      .slice(0, MAX_DATABASE_ROWS);
+    if (!targetRowIds.length) {
+      for (const row of rows) {
+        const rowValues = result.get(row.id) ?? {};
+        rowValues[property.id] = rollup([], calculation);
+        result.set(row.id, rowValues);
+      }
+      continue;
+    }
     const placeholders = targetRowIds.map(() => '?').join(', ');
     const targetCells = (
       await env.DB.prepare(
@@ -481,24 +651,46 @@ async function snapshot(
   ]);
   const properties = propertyRecords.results.map(propertySummary);
   const views = viewRecords.results.map(viewSummary);
+  const visibleRows = await visibleDatabaseRows(env, authorization, rows.results, actorId);
   const rawValues = new Map<string, Record<string, JsonValue>>();
   for (const cell of cells.results) {
     const values = rawValues.get(cell.row_id) ?? {};
     values[cell.property_id] = parsedValue(cell.value_json);
     rawValues.set(cell.row_id, values);
   }
-  const visibility = await relationDatabaseVisibility(env, properties, actorId);
+  const visibility = await relationDatabaseAuthorizations(env, properties, actorId);
+  const allowedRelatedRows = await visibleRelatedRowIds(
+    env,
+    properties,
+    visibleRows,
+    rawValues,
+    visibility,
+    actorId,
+  );
   for (const property of properties.filter((candidate) => candidate.type === 'relation')) {
     const targetDatabaseId = property.config.targetDatabaseId;
-    if (typeof targetDatabaseId === 'string' && !visibility.get(targetDatabaseId)) {
-      for (const row of rows.results) {
-        const values = rawValues.get(row.id);
-        if (values && property.id in values) values[property.id] = [];
+    if (typeof targetDatabaseId !== 'string') continue;
+    const allowed = allowedRelatedRows.get(targetDatabaseId) ?? new Set<string>();
+    for (const row of visibleRows) {
+      const values = rawValues.get(row.id);
+      const relation = values?.[property.id];
+      if (values && Array.isArray(relation)) {
+        values[property.id] = relation.filter(
+          (targetRowId): targetRowId is string =>
+            typeof targetRowId === 'string' && allowed.has(targetRowId),
+        );
       }
     }
   }
-  const rollups = await relatedValues(env, properties, rows.results, rawValues, visibility);
-  const rowSummaries: DatabaseRowSummary[] = rows.results.map((row) => {
+  const rollups = await relatedValues(
+    env,
+    properties,
+    visibleRows,
+    rawValues,
+    visibility,
+    allowedRelatedRows,
+  );
+  const rowSummaries: DatabaseRowSummary[] = visibleRows.map((row) => {
     const values = { ...(rawValues.get(row.id) ?? {}), ...(rollups.get(row.id) ?? {}) };
     for (const property of properties) {
       if (property.type === 'created_time') values[property.id] = Number(row.created_at);
@@ -1303,6 +1495,9 @@ async function updateRow(
     .bind(rowId, authorization.database.id)
     .first<RowRecord>();
   if (!row) return error('数据行不存在', 404);
+  if (!(await requirePageAction(env, row.page_id, actor.id, 'edit_content'))) {
+    return error('数据行不存在或无权编辑', 404);
+  }
   const input = await requestBody(request);
   if (!input) return error('请求格式无效', 400);
   const normalized = await normalizedRowValues(
@@ -1385,6 +1580,17 @@ export async function handleDatabasesApi(
   actor: AuthUserSummary,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+
+  const organizationDatabasesMatch = url.pathname.match(
+    /^\/api\/organizations\/([^/]+)\/databases$/,
+  );
+  if (organizationDatabasesMatch?.[1] && request.method === 'GET') {
+    return listOrganizationDatabases(
+      env,
+      decodeURIComponent(organizationDatabasesMatch[1]),
+      actor.id,
+    );
+  }
 
   const pageDatabaseMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/database$/);
   if (pageDatabaseMatch?.[1]) {

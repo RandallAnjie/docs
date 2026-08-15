@@ -4504,6 +4504,111 @@ button {
 .database-view-menu button.danger {
   color: #d44c47;
 }
+.database-view-options {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: calc(100% + 5px);
+  width: min(430px, calc(100vw - 24px));
+  max-height: min(620px, calc(100vh - 120px));
+  overflow: auto;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e4e3e0;
+  border-radius: 9px;
+  box-shadow: 0 10px 30px rgb(15 15 15 / 14%);
+}
+.database-view-options section {
+  padding: 6px;
+  border-bottom: 1px solid #efefed;
+}
+.database-view-options section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  font-size: 12px;
+}
+.database-view-options section > header select,
+.database-rule-builder select,
+.database-rule-builder input {
+  border: 1px solid #e1e0dd;
+  border-radius: 5px;
+  background: #fff;
+  padding: 5px 6px;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+}
+.database-view-rule {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) auto minmax(60px, 1fr) 22px;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  font-size: 11px;
+}
+.database-view-rule span,
+.database-view-rule b {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.database-view-rule small {
+  color: #898781;
+}
+.database-view-rule b {
+  font-weight: 500;
+}
+.database-view-rule button,
+.database-rule-builder button {
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #898781;
+}
+.database-view-rule button:hover,
+.database-rule-builder button:hover {
+  background: #f0efed;
+  color: #37352f;
+}
+.database-rule-builder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+}
+.database-rule-builder input {
+  width: 80px;
+}
+.database-rule-builder button {
+  display: inline-flex;
+  padding: 5px;
+}
+.database-view-options footer {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+.database-view-options footer button {
+  border: 0;
+  background: transparent;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-view-options footer button:hover {
+  background: #f2f2f0;
+}
+.database-view-options footer button.danger {
+  color: #d44c47;
+}
 .database-error {
   padding: 8px 10px;
   margin: 8px 0;
@@ -4652,6 +4757,108 @@ button {
   width: 15px;
   height: 15px;
   accent-color: #2383e2;
+}
+.database-relation-cell {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}
+.database-relation-cell > button {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: #4f6f8f;
+  padding: 0 8px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-relation-cell > button:hover {
+  background: #f4f7f9;
+}
+.database-relation-picker {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 3px);
+  left: 0;
+  width: 280px;
+  max-height: 300px;
+  overflow: auto;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #e1e0dd;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(15 15 15 / 14%);
+}
+.database-relation-picker header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px 8px;
+  font-size: 12px;
+}
+.database-relation-picker header button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.database-relation-picker > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-relation-picker > label:hover {
+  background: #f3f3f1;
+}
+.database-relation-picker > p {
+  margin: 7px;
+  color: #898781;
+  font-size: 11px;
+}
+.database-file-picker .database-upload-file {
+  width: calc(100% - 12px);
+  margin: 3px 6px 6px;
+  border: 1px solid #dfdedb;
+  border-radius: 5px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.database-file-picker .database-upload-file:hover {
+  background: #f5f5f3;
+}
+.database-place-picker > input,
+.database-place-picker > div {
+  width: calc(100% - 12px);
+  box-sizing: border-box;
+  margin: 3px 6px;
+}
+.database-place-picker > input,
+.database-place-picker > div input {
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #dfdedb;
+  border-radius: 5px;
+  padding: 7px;
+  font: inherit;
+  font-size: 11px;
+}
+.database-place-picker > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
 }
 .database-row-actions-heading,
 .database-row-actions {

@@ -223,6 +223,16 @@ describe('structured database integration', () => {
     const titlePropertyId = created.properties.find((property) => property.type === 'title')?.id;
     expect(titlePropertyId).toBeTruthy();
 
+    const listed = await handleDatabasesApi(
+      new Request('https://docs.test/api/organizations/org_database-owner/databases'),
+      env,
+      owner,
+    );
+    expect(listed?.status).toBe(200);
+    await expect(listed?.json()).resolves.toMatchObject({
+      databases: [expect.objectContaining({ id: databaseId, title: 'Tasks' })],
+    });
+
     const numberResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
         method: 'POST',
@@ -264,7 +274,7 @@ describe('structured database integration', () => {
     );
     expect(rowResponse?.status).toBe(201);
     const rowResult = (await rowResponse?.json()) as {
-      row: { pageId: string; values: Record<string, unknown> };
+      row: { id: string; pageId: string; values: Record<string, unknown> };
     };
     expect(rowResult.row.values[formulaProperty.property.id]).toBe(6);
     expect(
@@ -277,6 +287,170 @@ describe('structured database integration', () => {
       outsider,
     );
     expect(hidden?.status).toBe(404);
+    const hiddenList = await handleDatabasesApi(
+      new Request('https://docs.test/api/organizations/org_database-owner/databases'),
+      env,
+      outsider,
+    );
+    expect(hiddenList?.status).toBe(404);
+
+    database
+      .prepare(
+        `INSERT INTO organization_members(
+           organization_id, user_id, role, status, joined_at, updated_at
+         ) VALUES ('org_database-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(outsider.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id,
+           role, created_by, created_at
+         ) VALUES ('grant_database_editor', 'org_database-owner', 'spc_database-owner',
+                   'user', ?, 'editor', ?, ?)`,
+      )
+      .run(outsider.id, owner.id, now);
+    const visibleRowsResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      env,
+      outsider,
+    );
+    await expect(visibleRowsResponse?.json()).resolves.toMatchObject({
+      rows: [expect.objectContaining({ id: rowResult.row.id })],
+    });
+
+    database
+      .prepare("UPDATE page_access_state SET access_mode = 'restricted' WHERE page_id = ?")
+      .run(rowResult.row.pageId);
+    const restrictedRowsResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      env,
+      outsider,
+    );
+    await expect(restrictedRowsResponse?.json()).resolves.toMatchObject({ rows: [] });
+    const forbiddenRowUpdate = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [titlePropertyId!]: '越权修改' } }),
+      }),
+      env,
+      outsider,
+    );
+    expect(forbiddenRowUpdate?.status).toBe(404);
+
+    database
+      .prepare("UPDATE page_access_state SET access_mode = 'inherit' WHERE page_id = ?")
+      .run(rowResult.row.pageId);
+    const targetPageId = '22222222-2222-4222-8222-222222222222';
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES (?, 'org_database-owner', 'spc_database-owner', NULL,
+                   'Private targets', '2', ?, ?, ?, ?)`,
+      )
+      .run(targetPageId, owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+         VALUES (?, 1, 1, 'inherit', ?)`,
+      )
+      .run(targetPageId, now);
+    database
+      .prepare(
+        `INSERT INTO page_search_projection(
+           page_id, organization_id, space_id, generation, collab_seq,
+           title, normalized_body, updated_at
+         ) VALUES (?, 'org_database-owner', 'spc_database-owner', 1, 0,
+                   'Private targets', '', ?)`,
+      )
+      .run(targetPageId, now);
+    const targetDatabaseResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/pages/${targetPageId}/database`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ titlePropertyName: '名称' }),
+      }),
+      env,
+      owner,
+    );
+    const targetDatabase = (await targetDatabaseResponse?.json()) as {
+      database: { id: string };
+      properties: Array<{ id: string; type: string }>;
+    };
+    const targetTitleId = targetDatabase.properties.find(
+      (property) => property.type === 'title',
+    )!.id;
+    const targetRowResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${targetDatabase.database.id}/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [targetTitleId]: '机密目标' } }),
+      }),
+      env,
+      owner,
+    );
+    const targetRow = (await targetRowResponse?.json()) as {
+      row: { id: string; pageId: string };
+    };
+    const relationResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '关联目标',
+          type: 'relation',
+          config: { targetDatabaseId: targetDatabase.database.id },
+        }),
+      }),
+      env,
+      owner,
+    );
+    const relation = (await relationResponse?.json()) as { property: { id: string } };
+    const rollupResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '目标名称',
+          type: 'rollup',
+          config: {
+            relationPropertyId: relation.property.id,
+            targetDatabaseId: targetDatabase.database.id,
+            targetPropertyId: targetTitleId,
+            calculation: 'show_original',
+          },
+        }),
+      }),
+      env,
+      owner,
+    );
+    const rollupProperty = (await rollupResponse?.json()) as { property: { id: string } };
+    await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [relation.property.id]: [targetRow.row.id] } }),
+      }),
+      env,
+      owner,
+    );
+    database
+      .prepare("UPDATE page_access_state SET access_mode = 'restricted' WHERE page_id = ?")
+      .run(targetRow.row.pageId);
+    const censoredRelationResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      env,
+      outsider,
+    );
+    const censoredRelation = (await censoredRelationResponse?.json()) as {
+      rows: Array<{ values: Record<string, unknown> }>;
+    };
+    expect(censoredRelation.rows[0]?.values[relation.property.id]).toEqual([]);
+    expect(censoredRelation.rows[0]?.values[rollupProperty.property.id]).toEqual([]);
+
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     database.close();
   });
