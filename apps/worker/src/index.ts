@@ -42,6 +42,7 @@ import {
   rewriteYjsAttachmentReferences,
   yjsSnapshotToMarkdown,
 } from './markdown';
+import { listPages } from './page-tree';
 import { ftsMatchQuery, normalizeSearchText, searchIndexText } from './search-projection';
 import { handleTenancyApi } from './tenancy';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
@@ -243,31 +244,6 @@ async function requirePageAction(
   const access = await requireEffectivePageAction(env, pageId, userId, action);
   if (!access || access.organizationId !== page.organizationId) return null;
   return { page, role: access.spaceRole };
-}
-
-async function listPages(env: Env, spaceId: string, userId: string): Promise<Response> {
-  const access = await requireSpaceAction(env, spaceId, userId, 'view');
-  if (!access) return error('空间不存在或无权访问', 404);
-  const rows = (
-    await env.DB.prepare(
-      `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-            p.current_generation, p.editor_schema_version, p.updated_at,
-            a.collaboration_enabled, a.acl_version
-       FROM pages p
-       JOIN page_access_state a ON a.page_id = p.id
-      WHERE p.organization_id = ? AND p.space_id = ? AND p.deleted_at IS NULL
-      ORDER BY p.sort_key ASC, p.id ASC
-      LIMIT ?`,
-    )
-      .bind(access.organizationId, spaceId, MAX_PAGE_TREE_SIZE)
-      .all<PageRow>()
-  ).results;
-  const pages: PageSummary[] = [];
-  for (const row of rows) {
-    const page = pageFromRow(row);
-    if (await requireEffectivePageAction(env, page.id, userId, 'view')) pages.push(page);
-  }
-  return json({ pages });
 }
 
 function escapedLike(value: string): string {
