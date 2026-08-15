@@ -8,6 +8,7 @@ import type { AuthUserSummary } from '@rdocs/shared';
 
 import type { Env } from '../apps/worker/src/env';
 import { resolvePageAccess } from '../apps/worker/src/access';
+import { listPages } from '../apps/worker/src/page-tree';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
 import { handleCommentsAndNotificationsApi } from '../apps/worker/src/comments';
 
@@ -40,9 +41,12 @@ class TestStatement {
 }
 
 class TestD1 {
+  prepareCalls = 0;
+
   constructor(readonly sqlite: DatabaseSync) {}
 
   prepare(sql: string): TestStatement {
+    this.prepareCalls += 1;
     return new TestStatement(this.sqlite.prepare(sql));
   }
 
@@ -112,8 +116,7 @@ function seedTenant(database: DatabaseSync, suffix: string): AuthUserSummary {
   return user;
 }
 
-function testEnv(database: DatabaseSync): Env {
-  const d1 = new TestD1(database);
+function testEnv(database: DatabaseSync, d1 = new TestD1(database)): Env {
   return {
     DB: d1,
     COLLAB_TICKET_SECRET: 'test-secret-that-is-at-least-32-characters-long',
@@ -320,6 +323,90 @@ describe('tenant boundary integration', () => {
     await expect(resolvePageAccess(env, 'page_restricted', owner.id)).resolves.toMatchObject({
       spaceRole: 'space_admin',
     });
+    database.close();
+  });
+
+  it('lists a large page tree with a fixed number of permission queries', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'tree-owner');
+    const member = seedTenant(database, 'tree-member');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_tree-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_tree_member', 'org_tree-owner', 'spc_tree-owner', 'user', ?, 'editor', ?, ?)`,
+      )
+      .run(member.id, owner.id, now);
+
+    const insertPage = database.prepare(
+      `INSERT INTO pages(
+         id, organization_id, space_id, parent_id, title, sort_key,
+         created_by, updated_by, created_at, updated_at
+       ) VALUES (?, 'org_tree-owner', 'spc_tree-owner', ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertState = database.prepare(
+      `INSERT INTO page_access_state(
+         page_id, collaboration_enabled, acl_version, access_mode, updated_at
+       ) VALUES (?, 1, 1, ?, ?)`,
+    );
+    for (let index = 0; index < 120; index += 1) {
+      const id = `page_public_${index.toString().padStart(3, '0')}`;
+      insertPage.run(id, null, `Public ${index}`, id, owner.id, owner.id, now, now);
+      insertState.run(id, 'inherit', now);
+    }
+    insertPage.run('page_hidden_root', null, 'Hidden root', 'zz-1', owner.id, owner.id, now, now);
+    insertState.run('page_hidden_root', 'restricted', now);
+    insertPage.run(
+      'page_hidden_child',
+      'page_hidden_root',
+      'Hidden child',
+      'zz-2',
+      owner.id,
+      owner.id,
+      now,
+      now,
+    );
+    insertState.run('page_hidden_child', 'inherit', now);
+    insertPage.run('page_granted_root', null, 'Granted root', 'zz-3', owner.id, owner.id, now, now);
+    insertState.run('page_granted_root', 'restricted', now);
+    insertPage.run(
+      'page_granted_child',
+      'page_granted_root',
+      'Granted child',
+      'zz-4',
+      owner.id,
+      owner.id,
+      now,
+      now,
+    );
+    insertState.run('page_granted_child', 'inherit', now);
+    database
+      .prepare(
+        `INSERT INTO page_grants(
+           id, organization_id, page_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('page_grant_tree_member', 'org_tree-owner', 'page_granted_root',
+                   'user', ?, 'viewer', ?, ?)`,
+      )
+      .run(member.id, owner.id, now);
+
+    const d1 = new TestD1(database);
+    const response = await listPages(testEnv(database, d1), 'spc_tree-owner', member.id);
+    expect(response.status).toBe(200);
+    const result = (await response.json()) as { pages: Array<{ id: string }> };
+    const ids = new Set(result.pages.map((page) => page.id));
+    expect(ids.size).toBe(122);
+    expect(ids.has('page_hidden_root')).toBe(false);
+    expect(ids.has('page_hidden_child')).toBe(false);
+    expect(ids.has('page_granted_root')).toBe(true);
+    expect(ids.has('page_granted_child')).toBe(true);
+    expect(d1.prepareCalls).toBe(5);
     database.close();
   });
 
