@@ -8,7 +8,7 @@
 - 正式 URL：`https://docs.bigrandall.io`
 - 旧自动域名：`https://rdocs-randall.edge.bigrandall.io`（已按产品配置禁用，返回 404 属预期）
 - 初始复现 Rdocs commit：`44542e24d752f2f9cafb57743728ce212c68a3e2`
-- 最终复验 Rdocs commit：`b8d5a4a999d598853640c99020b724e543d7d2fa`
+- 最新权限发布 Rdocs commit：`6085569d81b047c00efce29eb5dbc87af6539cb4`
 - RandallFlare `main`：`4997d919e4ead4d32d4d5a2e9f75c7d5ab791130`
 - 边缘 agent：`2026.08.14.4997d91`（15/15 READY）
 
@@ -23,7 +23,7 @@
 | RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值               |
 | RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
 | RF-7 | P1        | 仍可复现       | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
-| RF-8 | P1        | 待修复         | 顺序产品 smoke 的不同写端点间歇返回边缘 502                |
+| RF-8 | P1        | 待修复         | 低并发顺序请求间歇返回边缘 502/503                         |
 | RF-9 | P1        | 待平台确认     | 自定义域名转发后的 Worker `request.url` 不是公开 Origin    |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
@@ -77,6 +77,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 因此 RF-7 在当前环境仍未修复。Rdocs 已先保存迁移前的 33 表完整导出，然后只在 `rdocs-db` 内把该空记录更新为 `0008_page_acl_roles.sql`；再次执行 migration list 后 `0001`–`0008` 全部显示已应用。迁移前后均有 79 个页面，未发生页面数据丢失。
 
+发布完整权限系统时，`0009_complete_permissions.sql` 再次复现相同行为：CLI 报告 migration 已应用，schema 和数据变更也已生效，但生产导出显示第 9 行仍为 `(9, NULL, NULL)`。Rdocs 在迁移前保存了完整 33 表备份，只把 `rdocs-db.d1_migrations` 第 9 行修复为实际文件名；随后 `migrations list` 显示 `0001`–`0009` 全部已应用，Owner、真实设备密钥和页面均保留，系统账号组织成员关系已删除，`pragma_foreign_key_check` 为 0。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
@@ -108,7 +110,7 @@ Rdocs 改为精确校验浏览器不可由跨站脚本伪造的 `Origin` 头；�
 - 若必须内部重写，应提供不可伪造且由平台规范化的原始 URL 元数据，并覆盖自定义域名、自动域名关闭和多层转发测试。
 - 用一个回显 `request.url`、`Host`、`Forwarded` 元数据的最小 Worker 验证 `docs.bigrandall.io`，不要在生产 Rdocs 增加永久诊断端点。
 
-## RF-8：低并发顺序 API 仍会间歇返回 502
+## RF-8：低并发顺序 API 仍会间歇返回 502/503
 
 ### 现象
 
@@ -130,6 +132,18 @@ upstream peer unreachable
 ```
 
 该请求在校验错误登记码后不会创建 challenge 或修改业务数据，因此这次复现排除了并发写入、重复提交和 Rdocs 数据副作用。RF-8 在当前 RandallFlare 版本仍可稳定以低并发顺序请求复现。
+
+完整权限系统 commit `6085569d` 的 Git build 成功激活后，正式域名验收同时请求健康、会话、组织和旧页面树入口。其中 `GET /api/organizations` 没有到达 Rdocs 的预期 401，而由平台返回：
+
+```text
+HTTP/2 503
+retry-after: 1
+x-rf-edge-failover: 1
+x-request-id: 1b4f9e8603cd609723800a362ded5a7d
+edge node is at capacity; retry shortly
+```
+
+紧接着对同一只读端点做 10 次严格顺序请求，10/10 均按预期返回 Rdocs JSON 401，耗时 0.27–0.90 秒。这次复现不涉及 D1 写入、DO 或 R2，也没有并发洪泛，说明 RF-8 还包括 front door / edge capacity 与 failover 路径，不只发生在复杂写端点。
 
 Rdocs 没有自动重放创建分享、评论、邀请等非幂等写请求，因为响应丢失后盲目重试可能制造重复数据。产品 smoke 已增加 20 秒单请求超时，并在失败信息中输出 `x-request-id` 和最多 500 字节的原始错误体，供后续关联平台日志。
 
