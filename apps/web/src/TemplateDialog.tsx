@@ -1,9 +1,15 @@
 import { BookOpen, CalendarDays, FileText, FolderKanban, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import type { SpaceSummary } from '@rdocs/shared';
+import type { SpaceSummary, WorkspaceTemplateSummary } from '@rdocs/shared';
 
-import { createProjectWorkspace, importMarkdown } from './api';
+import {
+  createProjectWorkspace,
+  copyPage,
+  importMarkdown,
+  instantiateWorkspaceTemplate,
+  listWorkspaceTemplates,
+} from './api';
 import { navigateToPage } from './navigation';
 
 const TEMPLATES = [
@@ -43,6 +49,13 @@ const TEMPLATES = [
 export function TemplateDialog({ space, onClose }: { space: SpaceSummary; onClose: () => void }) {
   const [creatingId, setCreatingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceTemplates, setWorkspaceTemplates] = useState<WorkspaceTemplateSummary[]>([]);
+
+  useEffect(() => {
+    void listWorkspaceTemplates(space.organizationId)
+      .then((result) => setWorkspaceTemplates(result.templates))
+      .catch(() => undefined);
+  }, [space.organizationId]);
 
   const create = async (template: (typeof TEMPLATES)[number]) => {
     if (creatingId) return;
@@ -99,6 +112,34 @@ export function TemplateDialog({ space, onClose }: { space: SpaceSummary; onClos
                 : '关联的项目、任务、Sprint、看板、日历与时间线'}
             </small>
           </button>
+          {workspaceTemplates.map((template) => (
+            <button
+              type="button"
+              key={template.id}
+              disabled={Boolean(creatingId)}
+              onClick={() => {
+                if (creatingId) return;
+                setCreatingId(template.id);
+                void instantiateWorkspaceTemplate(template.id)
+                  .then(async (result) => {
+                    const copied = await copyPage(result.sourcePageId, { title: result.title });
+                    navigateToPage(copied.page.id);
+                  })
+                  .catch((reason: unknown) => {
+                    setError(reason instanceof Error ? reason.message : '无法使用组织模板');
+                    setCreatingId(null);
+                  });
+              }}
+            >
+              <span>
+                <BookOpen size={18} />
+              </span>
+              <strong>{template.name}</strong>
+              <small>
+                {creatingId === template.id ? '正在创建…' : template.description || '组织模板'}
+              </small>
+            </button>
+          ))}
           {TEMPLATES.map((template) => {
             const Icon = template.icon;
             return (

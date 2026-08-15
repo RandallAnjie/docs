@@ -91,6 +91,7 @@ import {
   uploadAttachment,
   runDatabaseAutomation,
   revokeDatabaseFormLink,
+  importDatabaseCsv,
 } from './api';
 import {
   applyDatabaseView,
@@ -3982,6 +3983,7 @@ export function DatabaseCanvas({
   const [restoringRowId, setRestoringRowId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const csvInput = useRef<HTMLInputElement>(null);
   const viewSaveQueue = useRef(new Map<string, Promise<void>>());
   const viewSaveVersion = useRef(new Map<string, number>());
   const activeView = snapshot.views.find((view) => view.id === activeViewId) ?? snapshot.views[0];
@@ -4324,6 +4326,33 @@ export function DatabaseCanvas({
             <span className="database-locked">
               <Lock size={13} /> 已锁定
             </span>
+          ) : null}
+          {editable ? (
+            <>
+              <input
+                ref={csvInput}
+                type="file"
+                accept=".csv,text/csv"
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  setBusy(true);
+                  void importDatabaseCsv(snapshot.database.id, file)
+                    .then(() => refresh())
+                    .catch((reason: unknown) =>
+                      setError(reason instanceof Error ? reason.message : '无法导入 CSV'),
+                    )
+                    .finally(() => {
+                      setBusy(false);
+                      if (csvInput.current) csvInput.current.value = '';
+                    });
+                }}
+              />
+              <button type="button" onClick={() => csvInput.current?.click()}>
+                导入 CSV
+              </button>
+            </>
           ) : null}
           {editable ? (
             <button type="button" onClick={() => setPropertyDialog('new')}>

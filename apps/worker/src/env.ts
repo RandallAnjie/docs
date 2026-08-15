@@ -1,7 +1,8 @@
 export interface Env {
   DB: D1Database;
   ATTACHMENTS: R2Bucket;
-  DocumentRoom: DurableObjectNamespace;
+  DOCUMENTROOM?: DurableObjectNamespace;
+  DocumentRoom?: DurableObjectNamespace;
   COLLAB_TICKET_SECRET: string;
   PHASE0_ADMIN_SECRET: string;
   PASSKEY_ENROLLMENT_SECRET?: string;

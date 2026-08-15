@@ -30,6 +30,7 @@ import {
 } from '@rdocs/shared';
 
 import { DocumentRoom, documentContainsSyncedBlock } from './document-room';
+import { durableRooms } from './durable-rooms';
 import type { Env } from './env';
 import {
   requirePageAction as requireEffectivePageAction,
@@ -70,6 +71,7 @@ import { ftsMatchQuery, normalizeSearchText, searchIndexText } from './search-pr
 import { syncedBlockTicketRole } from './synced-block-access';
 import { bumpSyncedBlocksForPageSubtree } from './synced-block-acl';
 import { handleTenancyApi } from './tenancy';
+import { handleWorkspaceExtrasApi } from './workspace-extras';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
 import {
   handlePlatformApi,
@@ -326,15 +328,13 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 function documentRoom(env: Env, pageId: string, generation: number): DurableObjectStub {
-  return env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(`document:${pageId}:generation:${generation}`),
-  );
+  const rooms = durableRooms(env);
+  return rooms.get(rooms.idFromName(`document:${pageId}:generation:${generation}`));
 }
 
 function syncedBlockRoom(env: Env, blockId: string, generation: number): DurableObjectStub {
-  return env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(`synced-block:${blockId}:generation:${generation}`),
-  );
+  const rooms = durableRooms(env);
+  return rooms.get(rooms.idFromName(`synced-block:${blockId}:generation:${generation}`));
 }
 
 function syncedBlockFromRow(row: SyncedBlockRow): SyncedBlockSummary {
@@ -3961,8 +3961,9 @@ async function setCollaborationAccess(
     .run();
   invalidateCollaborationPage(pageId);
 
-  const room = env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(`document:${pageId}:generation:${page.currentGeneration}`),
+  const rooms = durableRooms(env);
+  const room = rooms.get(
+    rooms.idFromName(`document:${pageId}:generation:${page.currentGeneration}`),
   );
   await room.fetch('https://rdocs.internal/internal/access', {
     method: 'POST',
@@ -4226,6 +4227,8 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
 
   const tenancyResponse = await handleTenancyApi(request, env, actor, context);
   if (tenancyResponse) return tenancyResponse;
+  const extrasResponse = await handleWorkspaceExtrasApi(request, env, actor, auth.sessionId);
+  if (extrasResponse) return extrasResponse;
   const platformResponse = await handlePlatformApi(request, env, actor);
   if (platformResponse) return platformResponse;
   const commentsResponse = await handleCommentsAndNotificationsApi(request, env, actor);

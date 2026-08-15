@@ -26,8 +26,8 @@ export function appOrigin(env: Env, request?: Request): string {
 }
 
 export function mailFromAddress(env: Env): string | undefined {
-  const from = env.MAIL_FROM?.trim();
-  return from && from.includes('@') ? from : undefined;
+  const from = env.MAIL_FROM?.trim() || 'noreply@rf.bigrandall.io';
+  return from.includes('@') ? from : undefined;
 }
 
 export async function emailUsers(

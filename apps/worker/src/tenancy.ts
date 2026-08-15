@@ -24,6 +24,7 @@ import {
 } from './access';
 import { invalidateCollaborationPage } from './collaboration-access-cache';
 import type { Env } from './env';
+import { durableRooms } from './durable-rooms';
 import { appOrigin, invitationEmailBodies, queueOutboundEmail } from './email';
 import { bumpSyncedBlocksForSpace } from './synced-block-acl';
 
@@ -1497,10 +1498,9 @@ async function bumpSpaceAcl(env: Env, spaceId: string, context: ExecutionContext
   ).results;
   const notifications = pages.map(async (page) => {
     invalidateCollaborationPage(page.id);
-    const room = env.DocumentRoom.get(
-      env.DocumentRoom.idFromName(
-        `document:${page.id}:generation:${Number(page.current_generation)}`,
-      ),
+    const rooms = durableRooms(env);
+    const room = rooms.get(
+      rooms.idFromName(`document:${page.id}:generation:${Number(page.current_generation)}`),
     );
     await room.fetch('https://rdocs.internal/internal/access', {
       method: 'POST',

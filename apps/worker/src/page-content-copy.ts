@@ -1,5 +1,6 @@
 import { MAX_REVISION_SNAPSHOT_BYTES } from '@rdocs/shared';
 
+import { durableRooms } from './durable-rooms';
 import type { Env } from './env';
 import { rewriteYjsAttachmentReferences } from './markdown';
 import { searchIndexText } from './search-projection';
@@ -43,9 +44,8 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 function documentRoom(env: Env, pageId: string, generation: number): DurableObjectStub {
-  return env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(`document:${pageId}:generation:${generation}`),
-  );
+  const rooms = durableRooms(env);
+  return rooms.get(rooms.idFromName(`document:${pageId}:generation:${generation}`));
 }
 
 async function deleteCopiedObjects(env: Env, keys: readonly string[]): Promise<void> {
