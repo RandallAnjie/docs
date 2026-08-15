@@ -2,10 +2,13 @@ import type {
   AuthUserSummary,
   CommentSummary,
   CommentThreadSummary,
+  NotificationGroupSummary,
   NotificationSummary,
   NotificationType,
   PageNotificationMode,
   PageNotificationSettings,
+  PageReminderStatus,
+  PageReminderSummary,
 } from '@rdocs/shared';
 
 import { findActiveMembership, requirePageAction, resolvePageAccess } from './access';
@@ -14,6 +17,9 @@ import type { Env } from './env';
 const MAX_COMMENT_LENGTH = 5_000;
 const MAX_QUOTE_LENGTH = 500;
 const MAX_ANCHOR_LENGTH = 2_000;
+const MAX_REMINDER_MESSAGE_LENGTH = 500;
+const MAX_SCHEDULED_REMINDERS_PER_PAGE = 100;
+const MAX_REMINDER_FUTURE_MS = 10 * 365 * 24 * 60 * 60 * 1_000;
 
 interface ThreadRow {
   id: string;
@@ -64,11 +70,41 @@ interface PageSubscriptionRow {
   mode: PageNotificationMode;
 }
 
+interface PageReminderRow {
+  id: string;
+  organization_id: string;
+  page_id: string;
+  created_by: string;
+  recipient_id: string;
+  recipient_email: string;
+  recipient_display_name: string;
+  recipient_avatar_url: string | null;
+  message: string;
+  due_at: number;
+  remind_at: number;
+  timezone: string;
+  status: PageReminderStatus;
+  delivered_at: number | null;
+  cancelled_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ReminderInput {
+  recipientId: string;
+  message: string;
+  dueAt: number;
+  remindAt: number;
+  timezone: string;
+}
+
 const PAGE_NOTIFICATION_MODES = new Set<PageNotificationMode>([
   'all_updates',
   'all_comments',
   'replies_mentions',
 ]);
+
+const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
 
 function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
@@ -142,9 +178,13 @@ async function listThreads(env: Env, pageId: string): Promise<Response> {
               u.avatar_url AS author_avatar_url
          FROM comment_threads t
          JOIN comments c ON c.thread_id = t.id AND c.deleted_at IS NULL
+         JOIN (
+           SELECT thread_id, MAX(created_at) AS latest_at
+             FROM comments WHERE deleted_at IS NULL GROUP BY thread_id
+         ) latest ON latest.thread_id = t.id
          JOIN users u ON u.id = c.author_id
         WHERE t.page_id = ?
-        ORDER BY t.created_at DESC, c.created_at ASC`,
+        ORDER BY latest.latest_at DESC, t.id ASC, c.created_at ASC`,
     )
       .bind(pageId)
       .all<CommentRow>()
@@ -167,6 +207,106 @@ function normalizedComment(value: unknown): string | null {
 function optionalBounded(value: unknown, maximum: number): string | null | undefined {
   if (value === undefined || value === null || value === '') return null;
   return typeof value === 'string' && value.length <= maximum ? value : undefined;
+}
+
+function validTimezone(value: string): boolean {
+  if (!value || value.length > 100) return false;
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizedReminderInput(
+  value: {
+    recipientId?: unknown;
+    message?: unknown;
+    dueAt?: unknown;
+    remindAt?: unknown;
+    timezone?: unknown;
+  } | null,
+  now = Date.now(),
+): ReminderInput | null {
+  const recipientId = typeof value?.recipientId === 'string' ? value.recipientId.trim() : '';
+  const message = typeof value?.message === 'string' ? value.message.trim() : '';
+  const dueAt = Number(value?.dueAt);
+  const remindAt = Number(value?.remindAt);
+  const timezone = typeof value?.timezone === 'string' ? value.timezone.trim() : '';
+  if (
+    !recipientId ||
+    !message ||
+    message.length > MAX_REMINDER_MESSAGE_LENGTH ||
+    !Number.isSafeInteger(dueAt) ||
+    !Number.isSafeInteger(remindAt) ||
+    dueAt <= now ||
+    dueAt > now + MAX_REMINDER_FUTURE_MS ||
+    remindAt > dueAt ||
+    remindAt < now - 60_000 ||
+    !validTimezone(timezone)
+  ) {
+    return null;
+  }
+  return { recipientId, message, dueAt, remindAt, timezone };
+}
+
+function reminderFromRow(row: PageReminderRow): PageReminderSummary {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    pageId: row.page_id,
+    createdBy: row.created_by,
+    recipient: {
+      id: row.recipient_id,
+      email: row.recipient_email,
+      displayName: row.recipient_display_name,
+      avatarUrl: row.recipient_avatar_url,
+    },
+    message: row.message,
+    dueAt: Number(row.due_at),
+    remindAt: Number(row.remind_at),
+    timezone: row.timezone,
+    status: row.status,
+    deliveredAt: row.delivered_at === null ? null : Number(row.delivered_at),
+    cancelledAt: row.cancelled_at === null ? null : Number(row.cancelled_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+export function groupNotifications(
+  notifications: readonly NotificationSummary[],
+): NotificationGroupSummary[] {
+  const groups = new Map<string, NotificationGroupSummary>();
+  for (const notification of notifications) {
+    const key = notification.pageId
+      ? `page:${notification.pageId}:${notification.threadId ? `thread:${notification.threadId}` : 'updates'}`
+      : `organization:${notification.organizationId}:notification:${notification.id}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.notifications.push(notification);
+      existing.latestAt = Math.max(existing.latestAt, notification.createdAt);
+      if (notification.readAt === null) existing.unreadCount += 1;
+      continue;
+    }
+    groups.set(key, {
+      key,
+      organizationId: notification.organizationId,
+      pageId: notification.pageId,
+      pageTitle: notification.pageTitle,
+      threadId: notification.threadId,
+      latestAt: notification.createdAt,
+      unreadCount: notification.readAt === null ? 1 : 0,
+      notifications: [notification],
+    });
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      notifications: group.notifications.sort((left, right) => right.createdAt - left.createdAt),
+    }))
+    .sort((left, right) => right.latestAt - left.latestAt);
 }
 
 function notificationStatement(
@@ -200,6 +340,317 @@ function notificationStatement(
     eventKey,
     Date.now(),
   );
+}
+
+async function reminderRecipient(
+  env: Env,
+  organizationId: string,
+  pageId: string,
+  userId: string,
+): Promise<boolean> {
+  const membership = await env.DB.prepare(
+    `SELECT 1 AS found
+       FROM organization_members
+      WHERE organization_id = ? AND user_id = ? AND status = 'active' AND role <> 'guest'`,
+  )
+    .bind(organizationId, userId)
+    .first<{ found: number }>();
+  return Boolean(membership && (await resolvePageAccess(env, pageId, userId)));
+}
+
+export async function deliverDueReminders(
+  env: Env,
+  recipientId: string | null = null,
+  limit = 100,
+): Promise<number> {
+  const now = Date.now();
+  const boundedLimit = Math.min(Math.max(1, Math.floor(limit)), 500);
+  const due = (
+    await env.DB.prepare(
+      `SELECT r.id, r.organization_id, r.page_id, r.created_by, r.recipient_id,
+              u.email AS recipient_email, u.display_name AS recipient_display_name,
+              u.avatar_url AS recipient_avatar_url, r.message, r.due_at, r.remind_at,
+              r.timezone, r.status, r.delivered_at, r.cancelled_at,
+              r.created_at, r.updated_at
+         FROM page_reminders r
+         JOIN users u ON u.id = r.recipient_id
+        WHERE r.status = 'scheduled' AND r.remind_at <= ?
+          AND (? IS NULL OR r.recipient_id = ?)
+        ORDER BY r.remind_at ASC, r.id ASC
+        LIMIT ?`,
+    )
+      .bind(now, recipientId, recipientId, boundedLimit)
+      .all<PageReminderRow>()
+  ).results;
+  const access = await mapInBatches(due, 8, (reminder) =>
+    reminderRecipient(env, reminder.organization_id, reminder.page_id, reminder.recipient_id),
+  );
+  let delivered = 0;
+  for (let index = 0; index < due.length; index += 1) {
+    const reminder = due[index];
+    if (!reminder) continue;
+    if (!access[index]) {
+      await env.DB.prepare(
+        `UPDATE page_reminders
+            SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'scheduled'`,
+      )
+        .bind(now, now, reminder.id)
+        .run();
+      continue;
+    }
+    const result = await env.DB.batch([
+      notificationStatement(
+        env,
+        reminder.organization_id,
+        reminder.recipient_id,
+        reminder.created_by,
+        'reminder',
+        reminder.page_id,
+        null,
+        null,
+        {
+          reminderId: reminder.id,
+          message: reminder.message,
+          dueAt: Number(reminder.due_at),
+          remindAt: Number(reminder.remind_at),
+          timezone: reminder.timezone,
+        },
+        `reminder:${reminder.id}`,
+      ),
+      env.DB.prepare(
+        `UPDATE page_reminders
+            SET status = 'delivered', delivered_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'scheduled'`,
+      ).bind(now, now, reminder.id),
+    ]);
+    if (result[1]?.meta.changes) delivered += 1;
+  }
+  return delivered;
+}
+
+async function listPageReminders(
+  env: Env,
+  actor: AuthUserSummary,
+  pageId: string,
+): Promise<Response> {
+  const pageAccess = await resolvePageAccess(env, pageId, actor.id);
+  if (!pageAccess) {
+    return error('页面不存在或无权查看提醒', 404);
+  }
+  await deliverDueReminders(env, actor.id, 100);
+  const rows = (
+    await env.DB.prepare(
+      `SELECT r.id, r.organization_id, r.page_id, r.created_by, r.recipient_id,
+              u.email AS recipient_email, u.display_name AS recipient_display_name,
+              u.avatar_url AS recipient_avatar_url, r.message, r.due_at, r.remind_at,
+              r.timezone, r.status, r.delivered_at, r.cancelled_at,
+              r.created_at, r.updated_at
+         FROM page_reminders r
+         JOIN users u ON u.id = r.recipient_id
+        WHERE r.page_id = ? AND r.status = 'scheduled'
+          AND (r.created_by = ? OR r.recipient_id = ?)
+        ORDER BY r.remind_at ASC, r.id ASC
+        LIMIT 100`,
+    )
+      .bind(pageId, actor.id, actor.id)
+      .all<PageReminderRow>()
+  ).results;
+  const candidates = (
+    await env.DB.prepare(
+      `SELECT u.id, u.email, u.display_name, u.avatar_url
+         FROM organization_members m
+         JOIN users u ON u.id = m.user_id
+        WHERE m.organization_id = ? AND m.status = 'active' AND m.role <> 'guest'
+        ORDER BY u.display_name COLLATE NOCASE ASC, u.id ASC
+        LIMIT 500`,
+    )
+      .bind(pageAccess.organizationId)
+      .all<{ id: string; email: string; display_name: string; avatar_url: string | null }>()
+  ).results;
+  const recipientAccess = await mapInBatches(candidates, 8, (candidate) =>
+    resolvePageAccess(env, pageId, candidate.id),
+  );
+  const recipients: AuthUserSummary[] = candidates.flatMap((candidate, index) =>
+    recipientAccess[index]
+      ? [
+          {
+            id: candidate.id,
+            email: candidate.email,
+            displayName: candidate.display_name,
+            avatarUrl: candidate.avatar_url,
+          },
+        ]
+      : [],
+  );
+  return json({ reminders: rows.map(reminderFromRow), recipients });
+}
+
+async function createPageReminder(
+  request: Request,
+  env: Env,
+  actor: AuthUserSummary,
+  pageId: string,
+): Promise<Response> {
+  const access = await requirePageAction(env, pageId, actor.id, 'edit_content');
+  if (!access) return error('页面不存在或无权创建提醒', 404);
+  const input = normalizedReminderInput(
+    await requestBody<{
+      recipientId?: unknown;
+      message?: unknown;
+      dueAt?: unknown;
+      remindAt?: unknown;
+      timezone?: unknown;
+    }>(request),
+  );
+  if (!input) return error('提醒的对象、内容、日期、提前量或时区无效', 400);
+  if (!(await reminderRecipient(env, access.organizationId, pageId, input.recipientId))) {
+    return error('提醒对象不是有权查看此页面的正式成员', 400);
+  }
+  const existing = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM page_reminders
+      WHERE page_id = ? AND created_by = ? AND status = 'scheduled'`,
+  )
+    .bind(pageId, actor.id)
+    .first<{ count: number }>();
+  if (Number(existing?.count ?? 0) >= MAX_SCHEDULED_REMINDERS_PER_PAGE) {
+    return error('此页面的待触发提醒已达到上限', 409);
+  }
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO page_reminders(
+       id, organization_id, page_id, created_by, recipient_id, message,
+       due_at, remind_at, timezone, status, delivered_at, cancelled_at,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', NULL, NULL, ?, ?)`,
+  )
+    .bind(
+      id,
+      access.organizationId,
+      pageId,
+      actor.id,
+      input.recipientId,
+      input.message,
+      input.dueAt,
+      input.remindAt,
+      input.timezone,
+      now,
+      now,
+    )
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO audit_events(
+       id, organization_id, actor_id, event_type, target_type, target_id,
+       request_id, metadata_json, created_at
+     ) VALUES (?, ?, ?, 'page.reminder.created', 'page', ?, NULL, ?, ?)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      access.organizationId,
+      actor.id,
+      pageId,
+      JSON.stringify({
+        reminderId: id,
+        recipientId: input.recipientId,
+        dueAt: input.dueAt,
+        remindAt: input.remindAt,
+      }),
+      now,
+    )
+    .run()
+    .catch(() => undefined);
+  return listPageReminders(env, actor, pageId);
+}
+
+async function findPageReminder(env: Env, reminderId: string): Promise<PageReminderRow | null> {
+  return env.DB.prepare(
+    `SELECT r.id, r.organization_id, r.page_id, r.created_by, r.recipient_id,
+            u.email AS recipient_email, u.display_name AS recipient_display_name,
+            u.avatar_url AS recipient_avatar_url, r.message, r.due_at, r.remind_at,
+            r.timezone, r.status, r.delivered_at, r.cancelled_at,
+            r.created_at, r.updated_at
+       FROM page_reminders r
+       JOIN users u ON u.id = r.recipient_id
+      WHERE r.id = ?`,
+  )
+    .bind(reminderId)
+    .first<PageReminderRow>();
+}
+
+async function cancelPageReminder(
+  env: Env,
+  actor: AuthUserSummary,
+  reminderId: string,
+): Promise<Response> {
+  const reminder = await findPageReminder(env, reminderId);
+  if (
+    !reminder ||
+    (reminder.created_by !== actor.id && reminder.recipient_id !== actor.id) ||
+    !(await resolvePageAccess(env, reminder.page_id, actor.id))
+  ) {
+    return error('提醒不存在或无权取消', 404);
+  }
+  if (reminder.status !== 'scheduled') return error('提醒已经触发或取消', 409);
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE page_reminders
+        SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'scheduled'`,
+  )
+    .bind(now, now, reminderId)
+    .run();
+  return json({ ok: true });
+}
+
+async function updatePageReminder(
+  request: Request,
+  env: Env,
+  actor: AuthUserSummary,
+  reminderId: string,
+): Promise<Response> {
+  const reminder = await findPageReminder(env, reminderId);
+  if (!reminder || reminder.created_by !== actor.id) {
+    return error('提醒不存在或无权修改', 404);
+  }
+  if (reminder.status !== 'scheduled') return error('已经触发或取消的提醒不能修改', 409);
+  const pageAccess = await requirePageAction(env, reminder.page_id, actor.id, 'edit_content');
+  if (!pageAccess) return error('页面不存在或无权修改提醒', 404);
+  const input = normalizedReminderInput(
+    await requestBody<{
+      recipientId?: unknown;
+      message?: unknown;
+      dueAt?: unknown;
+      remindAt?: unknown;
+      timezone?: unknown;
+    }>(request),
+  );
+  if (!input) return error('提醒的对象、内容、日期、提前量或时区无效', 400);
+  if (
+    !(await reminderRecipient(env, reminder.organization_id, reminder.page_id, input.recipientId))
+  ) {
+    return error('提醒对象不是有权查看此页面的正式成员', 400);
+  }
+  const now = Date.now();
+  const updated = await env.DB.prepare(
+    `UPDATE page_reminders
+        SET recipient_id = ?, message = ?, due_at = ?, remind_at = ?,
+            timezone = ?, updated_at = ?
+      WHERE id = ? AND created_by = ? AND status = 'scheduled'`,
+  )
+    .bind(
+      input.recipientId,
+      input.message,
+      input.dueAt,
+      input.remindAt,
+      input.timezone,
+      now,
+      reminderId,
+      actor.id,
+    )
+    .run();
+  if (!updated.meta.changes) return error('提醒状态已变化，请重试', 409);
+  return listPageReminders(env, actor, reminder.page_id);
 }
 
 async function ensurePageSubscription(
@@ -597,6 +1048,7 @@ async function listNotifications(env: Env, actor: AuthUserSummary, url: URL): Pr
   if (organizationId && !(await findActiveMembership(env, organizationId, actor.id))) {
     return error('组织不存在或无权访问', 404);
   }
+  await deliverDueReminders(env, actor.id, 100);
   const rows = (
     await env.DB.prepare(
       `SELECT n.id, n.organization_id, n.actor_id, n.type, n.page_id,
@@ -650,7 +1102,57 @@ async function listNotifications(env: Env, actor: AuthUserSummary, url: URL): Pr
       return view !== 'unread' || notification.readAt === null;
     })
     .slice(0, 100);
-  return json({ notifications, unreadCount, resultCapReached: rows.length === 200 });
+  return json({
+    notifications,
+    groups: groupNotifications(notifications),
+    unreadCount,
+    resultCapReached: rows.length === 200,
+  });
+}
+
+async function updateNotificationSelection(
+  request: Request,
+  env: Env,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const input = await requestBody<{
+    ids?: unknown;
+    read?: unknown;
+    archived?: unknown;
+  }>(request);
+  if (
+    !Array.isArray(input?.ids) ||
+    input.ids.length < 1 ||
+    input.ids.length > 100 ||
+    input.ids.some((id) => typeof id !== 'string' || id.length < 1 || id.length > 100) ||
+    (input.read !== undefined && typeof input.read !== 'boolean') ||
+    (input.archived !== undefined && typeof input.archived !== 'boolean') ||
+    (input.read === undefined && input.archived === undefined)
+  ) {
+    return error('通知批量状态无效', 400);
+  }
+  const ids = [...new Set(input.ids as string[])];
+  const placeholders = ids.map(() => '?').join(', ');
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
+  if (typeof input.read === 'boolean') {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE notifications SET read_at = ?
+          WHERE user_id = ? AND id IN (${placeholders})`,
+      ).bind(input.read ? now : null, actor.id, ...ids),
+    );
+  }
+  if (typeof input.archived === 'boolean') {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE notifications SET archived_at = ?
+          WHERE user_id = ? AND id IN (${placeholders})`,
+      ).bind(input.archived ? now : null, actor.id, ...ids),
+    );
+  }
+  await env.DB.batch(statements);
+  return json({ ok: true });
 }
 
 async function bulkNotificationAction(
@@ -701,6 +1203,9 @@ export async function handleCommentsAndNotificationsApi(
   const url = new URL(request.url);
   if (url.pathname === '/api/notifications' && request.method === 'GET') {
     return listNotifications(env, actor, url);
+  }
+  if (url.pathname === '/api/notifications' && request.method === 'PATCH') {
+    return updateNotificationSelection(request, env, actor);
   }
   if (url.pathname === '/api/notifications/read-all' && request.method === 'POST') {
     return bulkNotificationAction(request, env, actor, 'read-all');
@@ -761,6 +1266,21 @@ export async function handleCommentsAndNotificationsApi(
     if (request.method === 'PUT') {
       return updatePageNotificationSettings(request, env, actor, pageId);
     }
+  }
+
+  const pageRemindersMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/reminders$/);
+  if (pageRemindersMatch?.[1]) {
+    const pageId = decodeURIComponent(pageRemindersMatch[1]);
+    if (request.method === 'GET') return listPageReminders(env, actor, pageId);
+    if (request.method === 'POST') return createPageReminder(request, env, actor, pageId);
+  }
+
+  const reminderMatch = url.pathname.match(/^\/api\/reminders\/([^/]+)$/);
+  if (reminderMatch?.[1]) {
+    const reminderId = decodeURIComponent(reminderMatch[1]);
+    if (!ID_PATTERN.test(reminderId)) return error('提醒 ID 无效', 400);
+    if (request.method === 'PATCH') return updatePageReminder(request, env, actor, reminderId);
+    if (request.method === 'DELETE') return cancelPageReminder(env, actor, reminderId);
   }
 
   const pageCommentsMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/comments$/);

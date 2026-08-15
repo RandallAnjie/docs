@@ -382,7 +382,8 @@ export type NotificationType =
   | 'page_updated'
   | 'page_shared'
   | 'permission_changed'
-  | 'invitation_accepted';
+  | 'invitation_accepted'
+  | 'reminder';
 
 export type PageNotificationMode = 'all_updates' | 'all_comments' | 'replies_mentions';
 
@@ -405,6 +406,36 @@ export interface NotificationSummary {
   createdAt: number;
   readAt: number | null;
   archivedAt: number | null;
+}
+
+export interface NotificationGroupSummary {
+  key: string;
+  organizationId: string;
+  pageId: string | null;
+  pageTitle: string | null;
+  threadId: string | null;
+  latestAt: number;
+  unreadCount: number;
+  notifications: NotificationSummary[];
+}
+
+export type PageReminderStatus = 'scheduled' | 'delivered' | 'cancelled';
+
+export interface PageReminderSummary {
+  id: string;
+  organizationId: string;
+  pageId: string;
+  createdBy: string;
+  recipient: AuthUserSummary;
+  message: string;
+  dueAt: number;
+  remindAt: number;
+  timezone: string;
+  status: PageReminderStatus;
+  deliveredAt: number | null;
+  cancelledAt: number | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface ShareLinkSummary {

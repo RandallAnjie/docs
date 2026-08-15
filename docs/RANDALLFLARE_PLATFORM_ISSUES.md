@@ -26,6 +26,7 @@
 | RF-8  | P1        | 待修复         | 低并发顺序请求间歇返回边缘 502/503                         |
 | RF-9  | P1        | 待平台确认     | 自定义域名转发后的 Worker `request.url` 不是公开 Origin    |
 | RF-10 | P1        | 待修复         | `d1 export` 产生无法直接恢复的 FTS5 影子表 SQL             |
+| RF-11 | P1 能力   | 缺少配置入口   | 应用无法声明或创建 cron schedule，后台提醒不能定时触发     |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
 
@@ -149,6 +150,30 @@ object name reserved for internal use: page_search_fts_config
 - 如果平台选择导出 BLOB，必须使用可逆的 SQLite blob literal（例如 `X'...'`），不能走 JavaScript 默认字符串化。
 - 导出命令返回成功前，应在空白 SQLite 中自动重放并运行 `PRAGMA integrity_check` 与 `PRAGMA foreign_key_check`。
 - 增加包含 Unicode 文本、空索引、删除后段合并和多 segment 的 FTS5 恢复测试。
+
+## RF-11：缺少应用 cron schedule 的配置入口
+
+### 现象与影响
+
+Rdocs 已实现标准 Worker `scheduled()` 处理器，可批量扫描到期页面提醒、重新校验正式成员关系和页面 ACL，并使用唯一事件键幂等写入收件箱。当前只读检查：
+
+```text
+rrangler worker cron rdocs --limit 20
+→ 空列表
+```
+
+`rrangler worker cron --help` 只提供 schedule 列表和既有事件 replay，没有创建、更新或删除 schedule 的命令；项目 `rrangler.json` 也没有可声明 schedule 的字段。因此 Rdocs 无法在不修改 RandallFlare 平台的前提下，把后台处理器绑定到定时触发器。
+
+应用内已提供安全退化路径：每次读取收件箱时补投当前用户的到期提醒，打开页面期间前端约每 30 秒刷新一次，所以活跃用户仍可无感收到提醒。但用户完全离线且无人打开 Rdocs 时，没有事件触发 Worker，无法承诺准点进入收件箱；邮件、移动推送发送器则是另一个尚未接入的外部能力，不与本项混为一谈。
+
+### 所需能力与验收
+
+- 提供应用级 declarative schedule，或 `rrangler worker cron set/list/delete`，并让 Git build 可随确切 commit 原子激活配置。
+- schedule 必须可查看下一次执行时间、最近执行结果、重试次数和关联 request/event ID。
+- 至少支持分钟级 UTC cron；重复或重试投递时不得破坏 Worker 自身的幂等键语义。
+- 测试覆盖新增、修改、删除、回滚、同 commit 重建以及边缘版本尚未激活时的状态显示。
+
+Rdocs 没有修改 RandallFlare 代码或配置。平台提供上述入口后，只需为现有 `scheduled()` 处理器声明 schedule，无需放宽权限或恢复匿名身份。
 
 ## RF-9：自定义域名转发后的 Worker URL 与公开 Origin 不一致
 

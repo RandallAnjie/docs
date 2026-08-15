@@ -16,6 +16,7 @@ import { listPages } from '../apps/worker/src/page-tree';
 import { pageAccessSnapshot } from '../apps/worker/src/page-access';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
 import {
+  deliverDueReminders,
   deliverPageUpdateNotifications,
   handleCommentsAndNotificationsApi,
 } from '../apps/worker/src/comments';
@@ -98,6 +99,8 @@ const MIGRATIONS = [
   '0022_synced_block_lifecycle.sql',
   '0023_page_discovery_and_links.sql',
   '0024_page_notifications_and_inbox.sql',
+  '0025_synced_block_delete_undo.sql',
+  '0026_page_reminders_and_inbox_groups.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -283,7 +286,9 @@ describe('database migrations', () => {
   });
 
   it('preserves existing notification rows while adding inbox state', () => {
-    const database = migratedDatabase(MIGRATIONS.slice(0, -1));
+    const database = migratedDatabase(
+      MIGRATIONS.slice(0, MIGRATIONS.indexOf('0024_page_notifications_and_inbox.sql')),
+    );
     const owner = seedTenant(database, 'notification-migration');
     const now = Date.now();
     database
@@ -1973,6 +1978,110 @@ describe('tenant boundary integration', () => {
       unreadCount: 0,
       notifications: [{ id: notificationId, type: 'page_updated' }],
     });
+    database.close();
+  });
+
+  it('creates permission-bound reminders, delivers them once, and groups the inbox by page', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'reminder-owner');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, title, sort_key, created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_reminder', 'org_reminder-owner', 'spc_reminder-owner',
+                   'Reminder page', '1', ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, updated_at)
+         VALUES ('page_reminder', 1, 1, ?)`,
+      )
+      .run(now);
+    const env = testEnv(database);
+
+    const created = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/pages/page_reminder/reminders', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          recipientId: owner.id,
+          message: 'Review the launch plan',
+          dueAt: now + 60 * 60_000,
+          remindAt: now + 30 * 60_000,
+          timezone: 'UTC',
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(created?.status).toBe(200);
+    const createdBody = (await created?.json()) as {
+      reminders: Array<{ id: string; recipient: { id: string } }>;
+    };
+    expect(createdBody.reminders).toHaveLength(1);
+    expect(createdBody.reminders[0]?.recipient.id).toBe(owner.id);
+    const reminderId = createdBody.reminders[0]?.id;
+    expect(reminderId).toBeTruthy();
+
+    const updated = await handleCommentsAndNotificationsApi(
+      new Request(`https://docs.test/api/reminders/${reminderId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          recipientId: owner.id,
+          message: 'Review the final launch plan',
+          dueAt: now + 2 * 60 * 60_000,
+          remindAt: now + 60 * 60_000,
+          timezone: 'UTC',
+        }),
+      }),
+      env,
+      owner,
+    );
+    await expect(updated?.json()).resolves.toMatchObject({
+      reminders: [{ id: reminderId, message: 'Review the final launch plan' }],
+    });
+
+    database
+      .prepare('UPDATE page_reminders SET remind_at = ? WHERE id = ?')
+      .run(now - 1, reminderId);
+    await expect(deliverDueReminders(env, owner.id)).resolves.toBe(1);
+    await expect(deliverDueReminders(env, owner.id)).resolves.toBe(0);
+
+    const inbox = await handleCommentsAndNotificationsApi(
+      new Request('https://docs.test/api/notifications?organizationId=org_reminder-owner'),
+      env,
+      owner,
+    );
+    const inboxBody = (await inbox?.json()) as {
+      notifications: Array<{
+        id: string;
+        type: string;
+        metadata: { reminderId: string; message: string };
+      }>;
+      groups: Array<{ pageId: string; unreadCount: number; notifications: unknown[] }>;
+    };
+    expect(inboxBody.notifications).toMatchObject([
+      {
+        type: 'reminder',
+        metadata: { reminderId, message: 'Review the final launch plan' },
+      },
+    ]);
+    expect(inboxBody.groups).toMatchObject([
+      { pageId: 'page_reminder', unreadCount: 1, notifications: [{}] },
+    ]);
+    expect(
+      database
+        .prepare('SELECT status, delivered_at FROM page_reminders WHERE id = ?')
+        .get(reminderId),
+    ).toMatchObject({ status: 'delivered', delivered_at: expect.any(Number) });
+    expect(
+      database
+        .prepare('SELECT COUNT(*) AS count FROM notifications WHERE event_key = ?')
+        .get(`reminder:${reminderId}`),
+    ).toEqual({ count: 1 });
     database.close();
   });
 
