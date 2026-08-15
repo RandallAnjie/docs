@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type { AttachmentSummary, SiteAnalyticsDay, SiteSummary } from '@rdocs/shared';
 
 import {
+  addSiteDomain,
   getPageSite,
   getSiteAnalytics,
   listAttachments,
@@ -23,6 +24,7 @@ import {
   unpublishSite,
   updateSite,
   updateSitePage,
+  verifySiteDomain,
 } from './api';
 
 function defaultSlug(title: string, pageId: string): string {
@@ -76,6 +78,7 @@ export function SitePublishingSettings({
   const [breadcrumbsEnabled, setBreadcrumbsEnabled] = useState(true);
   const [watermarkEnabled, setWatermarkEnabled] = useState(true);
   const [searchEngineIndexing, setSearchEngineIndexing] = useState(false);
+  const [domainHostname, setDomainHostname] = useState('');
 
   const populate = (next: SiteSummary | null) => {
     setSite(next);
@@ -549,6 +552,60 @@ export function SitePublishingSettings({
             <p>发布后会在这里显示匿名聚合趋势。</p>
           )}
         </div>
+      </div>
+
+      <div className="site-analytics">
+        <header>
+          <span>
+            <Globe2 size={15} /> 自定义域名
+          </span>
+        </header>
+        <p>
+          添加域名后，把 <code>/.well-known/rdocs-site-verify</code>{' '}
+          配成验证串，再点验证。证书绑定仍需 RandallFlare 已提供的自定义主机名接口。
+        </p>
+        <form
+          className="member-invite-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!site || !domainHostname.trim()) return;
+            setBusy(true);
+            void addSiteDomain(site.id, domainHostname.trim())
+              .then(async () => populate((await getPageSite(pageId)).site))
+              .catch((reason) => setError(failure(reason, '无法添加域名')))
+              .finally(() => setBusy(false));
+          }}
+        >
+          <input
+            value={domainHostname}
+            onChange={(event) => setDomainHostname(event.target.value)}
+            placeholder="docs.example.com"
+          />
+          <button className="primary-button" type="submit" disabled={busy}>
+            添加域名
+          </button>
+        </form>
+        {(site.domains ?? []).map((domain) => (
+          <div key={domain.id} className="invite-link-result">
+            <strong>{domain.hostname}</strong>
+            <small>
+              {domain.status} · {domain.verificationToken}
+            </small>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void verifySiteDomain(site.id, domain.id)
+                  .then(async () => populate((await getPageSite(pageId)).site))
+                  .catch((reason) => setError(failure(reason, '验证失败')))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              验证
+            </button>
+          </div>
+        ))}
       </div>
 
       <button

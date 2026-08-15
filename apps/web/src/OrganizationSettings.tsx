@@ -20,6 +20,7 @@ import {
 } from './api';
 import { GroupSettings } from './GroupSettings';
 import { OrganizationActivity } from './OrganizationActivity';
+import { PlatformSettings } from './PlatformSettings';
 
 const ROLE_LABELS: Record<OrganizationRole, string> = {
   owner: '所有者',
@@ -372,6 +373,7 @@ export function OrganizationSettings({
         canManage={canManage}
       />
       {canManage ? <OrganizationActivity organizationId={organization.id} /> : null}
+      <PlatformSettings organizationId={organization.id} canManage={canManage} />
 
       {error ? (
         <p className="tenant-error" role="alert">

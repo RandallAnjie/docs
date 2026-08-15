@@ -228,6 +228,154 @@ export interface DatabaseAutomationSummary {
   updatedAt: number;
 }
 
+export type ApiTokenScope =
+  'pages:read' | 'pages:write' | 'databases:read' | 'databases:write' | 'search:read' | 'admin';
+
+export interface ApiTokenSummary {
+  id: string;
+  organizationId: string;
+  name: string;
+  tokenPrefix: string;
+  scopes: ApiTokenScope[];
+  expiresAt: number | null;
+  lastUsedAt: number | null;
+  revokedAt: number | null;
+  createdAt: number;
+}
+
+export interface CreatedApiToken extends ApiTokenSummary {
+  token: string;
+}
+
+export interface IntegrationWebhookSummary {
+  id: string;
+  organizationId: string;
+  name: string;
+  url: string;
+  events: string[];
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ExportJobSummary {
+  id: string;
+  organizationId: string;
+  kind: 'workspace' | 'space' | 'page';
+  scopeId: string | null;
+  format: 'markdown' | 'json' | 'csv';
+  status: 'running' | 'succeeded' | 'failed';
+  pageCount: number;
+  result: Record<string, JsonValue> | null;
+  errorMessage: string | null;
+  createdAt: number;
+  completedAt: number | null;
+}
+
+export interface SiteDomainSummary {
+  id: string;
+  siteId: string;
+  hostname: string;
+  verificationToken: string;
+  status: 'pending' | 'verified' | 'failed';
+  lastCheckedAt: number | null;
+  errorMessage: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PublishedSiteDatabaseView {
+  siteId: string;
+  databaseId: string;
+  viewId: string;
+  published: boolean;
+}
+
+export type DatabasePropertyGrantRole = 'none' | 'viewer' | 'editor';
+
+export interface DatabasePropertyGrantSummary {
+  id: string;
+  databaseId: string;
+  propertyId: string;
+  principalType: SpaceGrantPrincipalType;
+  principalId: string;
+  role: DatabasePropertyGrantRole;
+  createdAt: number;
+}
+
+export type AiJobKind = 'write' | 'rewrite' | 'summarize' | 'ask' | 'autofill' | 'research';
+
+export interface AiSettingsSummary {
+  organizationId: string;
+  enabled: boolean;
+  model: string;
+  retention: 'none' | '30d' | 'indefinite';
+  configured: boolean;
+  updatedAt: number;
+}
+
+export interface AiJobSummary {
+  id: string;
+  organizationId: string;
+  pageId: string | null;
+  kind: AiJobKind;
+  status: 'running' | 'succeeded' | 'failed' | 'degraded';
+  prompt: string;
+  resultText: string | null;
+  citations: Array<{ pageId: string; title: string }>;
+  errorMessage: string | null;
+  createdAt: number;
+  completedAt: number | null;
+}
+
+export interface EnterpriseSettingsSummary {
+  organizationId: string;
+  samlEnabled: boolean;
+  samlEntityId: string | null;
+  samlSsoUrl: string | null;
+  samlCertificateConfigured: boolean;
+  scimEnabled: boolean;
+  scimTokenPrefix: string | null;
+  verifiedDomain: string | null;
+  domainVerificationToken: string | null;
+  domainVerifiedAt: number | null;
+  sessionMaxAgeHours: number;
+  ipAllowlist: string[];
+  retentionDays: number | null;
+  legalHold: boolean;
+  siemUrl: string | null;
+  siemConfigured: boolean;
+  updatedAt: number;
+}
+
+export interface LegalHoldSummary {
+  id: string;
+  organizationId: string;
+  pageId: string;
+  pageTitle: string;
+  reason: string;
+  createdBy: string;
+  createdAt: number;
+  releasedAt: number | null;
+}
+
+export interface OfflinePinSummary {
+  page: PageSummary;
+  createdAt: number;
+}
+
+export interface CalendarConnectionSummary {
+  id: string;
+  organizationId: string;
+  provider: 'ics' | 'caldav' | 'google' | 'microsoft';
+  name: string;
+  icsUrl: string | null;
+  status: 'configured' | 'error';
+  errorMessage: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface DatabaseAutomationRunSummary {
   id: string;
   databaseId: string;
@@ -485,6 +633,8 @@ export interface SiteSummary {
   createdAt: number;
   updatedAt: number;
   pages: SitePageSummary[];
+  domains?: SiteDomainSummary[];
+  publishedDatabaseViews?: PublishedSiteDatabaseView[];
 }
 
 export interface SiteSearchResult {

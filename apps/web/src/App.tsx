@@ -134,6 +134,8 @@ import {
   importMarkdown,
   movePage,
   recordPublicSiteEvent,
+  runPageAi,
+  setOfflinePin,
   updateSpace,
   updatePageAppearance,
   updatePageTitle,
@@ -2598,6 +2600,35 @@ function DocumentWorkspace({
             {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
             <ConnectionPill state={connection} offlineReady={offlineReady} />
             <CollaboratorStack collaborators={collaborators} />
+            {onLogout && !renewTicket ? (
+              <button
+                className="header-button"
+                type="button"
+                onClick={() => {
+                  const prompt = window.prompt('向 Rdocs AI 提问或要求改写', '总结这一页');
+                  if (!prompt) return;
+                  void runPageAi(page.id, { kind: 'ask', prompt })
+                    .then((result) => {
+                      window.alert(result.job.resultText || result.job.errorMessage || 'AI 已完成');
+                    })
+                    .catch((reason) =>
+                      window.alert(reason instanceof Error ? reason.message : 'AI 不可用'),
+                    );
+                }}
+              >
+                <Sparkles size={16} /> AI
+              </button>
+            ) : null}
+            {onLogout && !renewTicket ? (
+              <button
+                className="icon-button subtle"
+                type="button"
+                aria-label="离线保存此页"
+                onClick={() => void setOfflinePin(page.id, true)}
+              >
+                <Download size={16} />
+              </button>
+            ) : null}
             {onLogout && !renewTicket ? (
               <PageNotificationControl key={page.id} pageId={page.id} />
             ) : null}

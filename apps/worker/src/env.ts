@@ -11,4 +11,5 @@ export interface Env {
   PASSKEY_RP_ID?: string;
   ENVIRONMENT?: string;
   RELEASE_SHA?: string;
+  XAI_API_KEY?: string;
 }
