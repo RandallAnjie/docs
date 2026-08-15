@@ -4,6 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import type { AttachmentSummary } from '@rdocs/shared';
 
 import { attachmentDownloadUrl, deleteAttachment, listAttachments, uploadAttachment } from './api';
+import { confirmDialog } from './dialogs';
 
 function byteLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -76,7 +77,15 @@ export const AttachmentPanel = forwardRef<AttachmentPanelHandle, AttachmentPanel
     };
 
     const remove = async (attachment: AttachmentSummary) => {
-      if (!window.confirm(`从页面中删除“${attachment.originalName}”？`)) return;
+      if (
+        !(await confirmDialog({
+          title: '删除附件',
+          message: `从页面中删除“${attachment.originalName}”？`,
+          confirmLabel: '删除',
+          danger: true,
+        }))
+      )
+        return;
       setError(null);
       try {
         await deleteAttachment(attachment.id);

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import type { GroupSummary, OrganizationMemberSummary } from '@rdocs/shared';
 
 import { createGroup, deleteGroup, listGroupMembers, listGroups, setGroupMember } from './api';
+import { confirmDialog } from './dialogs';
 
 export function GroupSettings({
   organizationId,
@@ -112,7 +113,16 @@ export function GroupSettings({
   };
 
   const removeGroup = async () => {
-    if (!selectedId || busy || !window.confirm('删除此用户组及它的所有授权？')) return;
+    if (!selectedId || busy) return;
+    if (
+      !(await confirmDialog({
+        title: '删除用户组',
+        message: '删除此用户组及它的所有授权？',
+        confirmLabel: '删除用户组',
+        danger: true,
+      }))
+    )
+      return;
     setBusy(true);
     try {
       await deleteGroup(organizationId, selectedId);

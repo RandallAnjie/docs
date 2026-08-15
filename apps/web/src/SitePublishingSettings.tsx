@@ -26,6 +26,7 @@ import {
   updateSitePage,
   verifySiteDomain,
 } from './api';
+import { confirmDialog } from './dialogs';
 
 function defaultSlug(title: string, pageId: string): string {
   const normalized = title
@@ -200,7 +201,15 @@ export function SitePublishingSettings({
   };
 
   const takeOffline = async () => {
-    if (!site || busy || !window.confirm('取消发布后，所有站点页面会立即返回 404。继续吗？'))
+    if (!site || busy) return;
+    if (
+      !(await confirmDialog({
+        title: '取消发布',
+        message: '取消发布后，所有站点页面会立即返回 404。继续吗？',
+        confirmLabel: '取消发布',
+        danger: true,
+      }))
+    )
       return;
     setBusy(true);
     setError(null);

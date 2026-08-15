@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { RevisionKind, RevisionSummary } from '@rdocs/shared';
 
 import { createRevision, getRevisionSnapshot, listRevisions, restoreRevision } from './api';
+import { confirmDialog } from './dialogs';
 import { diffRevisionLines, textFromYjsSnapshot, type RevisionDiffLine } from './revision-diff';
 
 const revisionDateFormatter = new Intl.DateTimeFormat('zh-CN', {
@@ -83,7 +84,14 @@ export function RevisionPanel({
   const restore = async (revision: RevisionSummary) => {
     if (creating || restoringId) return;
     const name = revision.label || revisionKindLabels[revision.kind];
-    if (!window.confirm(`恢复到“${name}”？当前内容会先自动保存为一个新版本。`)) return;
+    if (
+      !(await confirmDialog({
+        title: '恢复版本',
+        message: `恢复到“${name}”？当前内容会先自动保存为一个新版本。`,
+        confirmLabel: '恢复此版本',
+      }))
+    )
+      return;
 
     setRestoringId(revision.id);
     setError(null);

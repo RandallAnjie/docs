@@ -23,6 +23,7 @@ import {
   restoreDeletedSyncedBlock,
   unsyncAllSyncedBlock,
 } from './api';
+import { confirmDialog, showToast } from './dialogs';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
 
@@ -286,12 +287,18 @@ function SyncedBlockNodeView(props: NodeViewProps) {
 
   const unsyncAll = async () => {
     if (managementBusy) return;
-    if (!window.confirm('将所有副本转换为独立内容，并永久停止同步？')) return;
+    const confirmed = await confirmDialog({
+      title: '全部取消同步',
+      message: '将所有副本转换为独立内容，并永久停止同步？',
+      confirmLabel: '取消同步',
+      danger: true,
+    });
+    if (!confirmed) return;
     setManagementBusy(true);
     try {
       await unsyncAllSyncedBlock(pageId, blockId);
     } catch (reason) {
-      window.alert(reason instanceof Error ? reason.message : '全部取消同步失败');
+      showToast(reason instanceof Error ? reason.message : '全部取消同步失败');
       setManagementBusy(false);
     }
   };
@@ -302,12 +309,18 @@ function SyncedBlockNodeView(props: NodeViewProps) {
       return;
     }
     if (managementBusy) return;
-    if (!window.confirm('删除原始同步块会同时删除所有页面中的同步副本。确定继续？')) return;
+    const confirmed = await confirmDialog({
+      title: '删除同步块',
+      message: '删除原始同步块会同时删除所有页面中的同步副本。确定继续？',
+      confirmLabel: '删除全部',
+      danger: true,
+    });
+    if (!confirmed) return;
     setManagementBusy(true);
     try {
       await deleteAllSyncedBlock(pageId, blockId);
     } catch (reason) {
-      window.alert(reason instanceof Error ? reason.message : '删除原始同步块失败');
+      showToast(reason instanceof Error ? reason.message : '删除原始同步块失败');
       setManagementBusy(false);
     }
   };
@@ -473,7 +486,12 @@ function DeletedSyncedBlockNodeView(props: NodeViewProps) {
 
   const restore = async () => {
     if (!operationId || state === 'restoring') return;
-    if (!window.confirm('恢复原始同步块以及所有仍保留的同步引用？')) return;
+    const confirmed = await confirmDialog({
+      title: '恢复同步块',
+      message: '恢复原始同步块以及所有仍保留的同步引用？',
+      confirmLabel: '恢复',
+    });
+    if (!confirmed) return;
     setState('restoring');
     setMessage('');
     try {
