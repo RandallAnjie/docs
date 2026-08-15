@@ -1482,14 +1482,27 @@ export function getAiSettings(organizationId: string) {
   );
 }
 
-export function runPageAi(
+export async function runPageAi(
   pageId: string,
-  input: { kind: import('@rdocs/shared').AiJobKind; prompt: string },
+  input: {
+    kind: import('@rdocs/shared').AiJobKind;
+    prompt: string;
+    selection?: string;
+    pageExcerpt?: string;
+  },
 ) {
-  return request<{ job: import('@rdocs/shared').AiJobSummary }>(
-    `/api/pages/${encodeURIComponent(pageId)}/ai`,
-    { method: 'POST', body: JSON.stringify(input) },
-  );
+  const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/ai`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    job?: import('@rdocs/shared').AiJobSummary;
+    error?: string;
+  } | null;
+  if (body?.job) return { job: body.job };
+  if (response.status === 401) window.dispatchEvent(new Event('rdocs:auth-required'));
+  throw new Error(body?.error ?? `AI 请求失败（${response.status}）`);
 }
 
 export function listOfflinePins(organizationId: string) {

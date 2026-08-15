@@ -1325,8 +1325,14 @@ async function runPageAi(
   const kind = input?.kind as AiJobKind | undefined;
   const prompt =
     typeof input?.prompt === 'string' ? input.prompt.trim().slice(0, MAX_AI_PROMPT) : '';
+  const selection =
+    typeof input?.selection === 'string' ? input.selection.trim().slice(0, MAX_AI_PROMPT) : '';
+  const pageExcerpt =
+    typeof input?.pageExcerpt === 'string' ? input.pageExcerpt.trim().slice(0, 8_000) : '';
   const allowed: AiJobKind[] = ['write', 'rewrite', 'summarize', 'ask', 'autofill', 'research'];
-  if (!kind || !allowed.includes(kind) || !prompt) return error('AI 任务或提示无效', 400);
+  if (!kind || !allowed.includes(kind) || (!prompt && !selection && kind !== 'summarize')) {
+    return error('AI 任务或提示无效', 400);
+  }
   const needsEdit = kind === 'write' || kind === 'rewrite' || kind === 'autofill';
   const authorized = await authorizePage(
     env,
@@ -1355,7 +1361,7 @@ async function runPageAi(
         actor.id,
         pageId,
         kind,
-        prompt,
+        prompt || '总结这一页',
         null,
         JSON.stringify(citations),
         '未配置模型密钥，已安全降级',
@@ -1369,7 +1375,7 @@ async function runPageAi(
       pageId,
       kind,
       status: 'degraded',
-      prompt,
+      prompt: prompt || '总结这一页',
       resultText: null,
       citations,
       errorMessage:
@@ -1380,8 +1386,19 @@ async function runPageAi(
     return json({ job }, { status: 503 });
   }
 
-  const system = `You are Rdocs AI. Only use the provided page context. Never invent access to other pages. Cite page titles you used. Language: follow the user.`;
-  const context = `Page: ${authorized.title} (${authorized.id})\nUser prompt (${kind}): ${prompt}`;
+  const system = `你是嵌在 Rdocs 文档里的写作助手，行为接近 Notion AI。
+用用户的语言回答。只根据提供的页面标题、正文摘录和选中文字作答，不要编造看不到的内容。
+不要说“作为 AI”、不要道歉套话。
+写作或改写时直接输出可插入文档的正文；总结用短段落或短列表；问答先给结论再补依据。`;
+  const context = [
+    `页面标题：${authorized.title}`,
+    pageExcerpt ? `页面摘录：\n${pageExcerpt}` : '',
+    selection ? `用户选中的文字：\n${selection}` : '',
+    `任务：${kind}`,
+    `用户要求：${prompt || (kind === 'summarize' ? '总结这一页' : '')}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   let resultText = '';
   let status: AiJobSummary['status'] = 'succeeded';
   let errorMessage: string | null = null;
@@ -1432,7 +1449,7 @@ async function runPageAi(
       pageId,
       kind,
       status,
-      prompt,
+      prompt || '总结这一页',
       settings.retention === 'none' ? null : resultText || null,
       JSON.stringify(citations),
       errorMessage,
