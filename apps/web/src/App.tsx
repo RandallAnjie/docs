@@ -53,6 +53,7 @@ import {
   Paperclip,
   Plus,
   Quote,
+  RefreshCw,
   Search,
   Share2,
   Sparkles,
@@ -101,6 +102,7 @@ import {
   copyPage,
   createPageDatabase,
   createPage,
+  createSyncedBlock,
   createSpace,
   deletePage,
   finishPasskeyAuthentication,
@@ -186,6 +188,7 @@ type SlashCommandId =
   | 'table'
   | 'table-of-contents'
   | 'task-list'
+  | 'synced-block'
   | 'video'
   | 'block-math';
 
@@ -279,6 +282,12 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     label: '按钮',
     description: '插入预设内容或打开网页',
     keywords: 'button action automation 按钮 动作',
+  },
+  {
+    id: 'synced-block',
+    label: '同步块',
+    description: '跨页面实时同步同一段内容',
+    keywords: 'synced block mirror 跨页 同步块',
   },
   {
     id: 'file',
@@ -376,6 +385,8 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <ChevronRight size={17} />;
     case 'page-button':
       return <Zap size={17} />;
+    case 'synced-block':
+      return <RefreshCw size={17} />;
     case 'file':
       return <Paperclip size={17} />;
     case 'audio':
@@ -534,6 +545,7 @@ function SharedPage({ token }: { token: string }) {
       initialTicket={shared.ticket}
       identity={identity}
       renewTicket={renewTicket}
+      publicShareToken={token}
     />
   );
 }
@@ -1643,6 +1655,7 @@ function DocumentWorkspace({
   identity,
   onLogout,
   renewTicket,
+  publicShareToken,
   initialDatabase,
 }: {
   initialPage: PageSummary;
@@ -1651,6 +1664,7 @@ function DocumentWorkspace({
   identity: LocalIdentity;
   onLogout?: () => Promise<void>;
   renewTicket?: () => Promise<string>;
+  publicShareToken?: string;
   initialDatabase?: DatabaseSnapshot | null;
 }) {
   const [page, setPage] = useState(initialPage);
@@ -1694,6 +1708,10 @@ function DocumentWorkspace({
   const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
   const canManagePage = page.role === 'space_admin';
   const canEdit = canEditStructure && !page.isLocked;
+  const createSyncedBlockResource = useCallback(async () => {
+    const result = await createSyncedBlock(page.id);
+    return result.syncedBlock.id;
+  }, [page.id]);
   const handleEditorReady = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
   }, []);
@@ -2395,7 +2413,10 @@ function DocumentWorkspace({
                 editable={canEdit}
                 onReady={handleEditorReady}
                 onRequestAttachment={requestAttachmentUpload}
+                onCreateSyncedBlock={createSyncedBlockResource}
                 breadcrumbItems={breadcrumbItems}
+                pageId={page.id}
+                publicShareToken={publicShareToken}
               />
             ) : (
               <div className="editor-loading">
@@ -2634,7 +2655,10 @@ function CollaborativeEditor({
   editable,
   onReady,
   onRequestAttachment,
+  onCreateSyncedBlock,
   breadcrumbItems,
+  pageId,
+  publicShareToken,
 }: {
   collab: { ydoc: Y.Doc; provider: WebsocketProvider };
   identity: LocalIdentity;
@@ -2642,13 +2666,25 @@ function CollaborativeEditor({
   editable: boolean;
   onReady: (editor: Editor | null) => void;
   onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
+  onCreateSyncedBlock: () => Promise<string>;
   breadcrumbItems: readonly { id: string; title: string }[];
+  pageId: string;
+  publicShareToken?: string;
 }) {
   const [, rerender] = useState(0);
   const editorInstance = useRef<Editor | null>(null);
   const breadcrumbItemsRef = useRef(breadcrumbItems);
   breadcrumbItemsRef.current = breadcrumbItems;
-  const editorBlocks = useMemo(() => createRdocsEditorBlocks(() => breadcrumbItemsRef.current), []);
+  const syncedBlockContextRef = useRef({ identity, pageId, publicShareToken });
+  syncedBlockContextRef.current = { identity, pageId, publicShareToken };
+  const editorBlocks = useMemo(
+    () =>
+      createRdocsEditorBlocks(
+        () => breadcrumbItemsRef.current,
+        () => syncedBlockContextRef.current,
+      ),
+    [],
+  );
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
 
@@ -2889,6 +2925,24 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'synced-block') {
+        editor.chain().focus().deleteRange(context).run();
+        setSlashMenu(null);
+        void onCreateSyncedBlock()
+          .then((syncedBlockId) => {
+            if (!editor.isEditable) return;
+            editor
+              .chain()
+              .focus()
+              .insertContent({ type: 'syncedBlock', attrs: { syncedBlockId } })
+              .run();
+          })
+          .catch((reason) => {
+            window.alert(reason instanceof Error ? reason.message : '同步块创建失败');
+          });
+        return;
+      }
+
       const chain = editor.chain().focus().deleteRange(context);
       switch (id) {
         case 'paragraph':
@@ -2963,7 +3017,7 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor, onRequestAttachment],
+    [editor, onCreateSyncedBlock, onRequestAttachment],
   );
 
   useEffect(() => setSlashIndex(0), [slashMenu?.query]);

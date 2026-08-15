@@ -1,5 +1,5 @@
 export const PRODUCT_NAME = 'Rdocs';
-export const EDITOR_SCHEMA_VERSION = 6;
+export const EDITOR_SCHEMA_VERSION = 7;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
 export type ResourceGrantRole = 'none' | SpaceRole;
@@ -391,6 +391,18 @@ export interface CollabTicketResponse {
   ticket: string;
   expiresAt: number;
   generation: number;
+}
+
+export interface SyncedBlockSummary {
+  id: string;
+  organizationId: string;
+  sourcePageId: string;
+  currentGeneration: number;
+  editorSchemaVersion: number;
+  aclVersion: number;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface CreatePageResponse {

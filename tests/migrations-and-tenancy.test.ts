@@ -89,6 +89,11 @@ function migratedDatabase(): DatabaseSync {
     '0014_database_templates.sql',
     '0015_database_automations.sql',
     '0016_page_appearance_and_lock.sql',
+    '0017_editor_core_blocks.sql',
+    '0018_editor_block_controls_and_columns.sql',
+    '0019_editor_attachment_and_media_blocks.sql',
+    '0020_editor_page_button_and_breadcrumb.sql',
+    '0021_cross_page_synced_blocks.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }

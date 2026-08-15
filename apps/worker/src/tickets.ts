@@ -1,5 +1,6 @@
 export interface CollabTicketPayload {
   version: 1;
+  resourceKind?: 'page' | 'synced_block';
   pageId: string;
   generation: number;
   actorId: string;

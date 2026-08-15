@@ -43,6 +43,7 @@ interface SocketAttachment {
   aclVersion: number;
   awarenessClientIds: number[];
   lastAwarenessAt: number;
+  resourceKind: 'page' | 'synced_block';
 }
 
 interface SnapshotRow {
@@ -359,6 +360,8 @@ export class DocumentRoom {
       aclVersion: Number(request.headers.get('x-rdocs-acl-version') ?? 1),
       awarenessClientIds: [],
       lastAwarenessAt: 0,
+      resourceKind:
+        request.headers.get('x-rdocs-resource-kind') === 'synced_block' ? 'synced_block' : 'page',
     };
 
     const pair = new WebSocketPair();
@@ -431,13 +434,19 @@ export class DocumentRoom {
       if (role !== 'editor') return new Response('Editing is disabled', { status: 403 });
       const pageId = request.headers.get('x-rdocs-page-id') ?? '';
       const generation = Number(request.headers.get('x-rdocs-generation'));
-      await this.beforeDocumentChange(pageId, generation, actorId);
+      const resourceKind =
+        request.headers.get('x-rdocs-resource-kind') === 'synced_block' ? 'synced_block' : 'page';
+      if (resourceKind === 'page') await this.beforeDocumentChange(pageId, generation, actorId);
       await this.persistUpdate(clientUpdate, actorId);
       Y.applyUpdate(this.document, clientUpdate, 'http-sync');
       this.broadcast(syncMessage(SYNC_UPDATE, clientUpdate));
       await this.maybeCreateSnapshot();
-      await this.afterDocumentChange(pageId, generation, actorId);
-      await this.maybeUpdateSearchProjection(pageId, generation);
+      if (resourceKind === 'page') {
+        await this.afterDocumentChange(pageId, generation, actorId);
+        await this.maybeUpdateSearchProjection(pageId, generation);
+      } else {
+        await this.recordSyncedBlockChange(pageId, generation, actorId);
+      }
     }
 
     if (awarenessUpdate.byteLength > 0) {
@@ -555,13 +564,23 @@ export class DocumentRoom {
     }
     if (!yjsUpdateChangesDocument(this.document, update)) return;
 
-    await this.beforeDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
+    if (attachment.resourceKind === 'page') {
+      await this.beforeDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
+    }
     await this.persistUpdate(update, attachment.actorId);
     Y.applyUpdate(this.document, update, socket);
     this.broadcast(syncMessage(SYNC_UPDATE, update), socket);
     await this.maybeCreateSnapshot();
-    await this.afterDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
-    await this.maybeUpdateSearchProjection(attachment.pageId, attachment.generation);
+    if (attachment.resourceKind === 'page') {
+      await this.afterDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
+      await this.maybeUpdateSearchProjection(attachment.pageId, attachment.generation);
+    } else {
+      await this.recordSyncedBlockChange(
+        attachment.pageId,
+        attachment.generation,
+        attachment.actorId,
+      );
+    }
   }
 
   private async persistUpdate(update: Uint8Array, actorId: string): Promise<void> {
@@ -579,6 +598,24 @@ export class DocumentRoom {
     this.currentSeq = nextSeq;
     this.updatesSinceSnapshot += 1;
     this.bytesSinceSnapshot += update.byteLength;
+  }
+
+  private async recordSyncedBlockChange(
+    blockId: string,
+    generation: number,
+    actorId: string,
+  ): Promise<void> {
+    if (!blockId || !Number.isSafeInteger(generation) || generation < 1) return;
+    const now = Date.now();
+    await Promise.all([
+      this.setRoomMetaNumber('last_edit_at', now),
+      this.env.DB.prepare(
+        `UPDATE synced_blocks SET updated_by = ?, updated_at = ?
+          WHERE id = ? AND current_generation = ? AND deleted_at IS NULL`,
+      )
+        .bind(actorId, now, blockId, generation)
+        .run(),
+    ]);
   }
 
   private async maybeCreateSnapshot(): Promise<void> {
