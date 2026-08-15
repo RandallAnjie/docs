@@ -201,7 +201,8 @@ import {
 import { LandingPage } from './LandingPage';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
-import { AiSelectionToolbar, PageAiComposer, type EditorAiRequest } from './EditorAi';
+import { PageAiComposer, type EditorAiRequest } from './EditorAi';
+import { markdownToEditorContent } from './ai-markdown';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -2012,11 +2013,7 @@ function DocumentWorkspace({
   const insertAiText = useCallback(
     (text: string, replace: boolean) => {
       const editor = editorRef.current;
-      const blocks = text
-        .split(/\n{2,}|\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => ({ type: 'paragraph', content: [{ type: 'text', text: line }] }));
+      const blocks = markdownToEditorContent(text);
       if (!editor || !blocks.length) {
         void navigator.clipboard.writeText(text);
         setAiRequest(null);
@@ -3469,13 +3466,15 @@ function CollaborativeEditor({
         return;
       }
       const quotedText = currentEditor.state.doc.textBetween(from, to, ' ').trim().slice(0, 500);
-      if (quotedText && currentEditor.isEditable && onAskAi) {
+      if (quotedText && currentEditor.isEditable) {
         try {
           const start = currentEditor.view.coordsAtPos(from);
           const end = currentEditor.view.coordsAtPos(to);
+          const width = Math.min(560, window.innerWidth - 24);
+          const center = (start.left + end.right) / 2;
           setAiToolbar({
-            left: Math.min(start.left, Math.max(12, window.innerWidth - 140)),
-            top: Math.max(12, Math.min(start.top, end.top) - 42),
+            left: Math.min(Math.max(12, center - width / 2), window.innerWidth - width - 12),
+            top: Math.max(12, Math.min(start.top, end.top) - 52),
             from,
             to,
             text: quotedText,
@@ -3937,18 +3936,26 @@ function CollaborativeEditor({
   };
 
   const tools = [
-    {
-      label: '询问 AI',
-      icon: <Sparkles size={16} />,
-      action: () => {
-        const { from, to } = editor.state.selection;
-        const selectionText = from === to ? '' : editor.state.doc.textBetween(from, to, ' ').trim();
-        onAskAi?.({ from, to, selectionText });
-      },
-      active: false,
-    },
+    ...(onAskAi
+      ? [
+          {
+            label: '询问 AI',
+            askAi: true,
+            icon: <Sparkles size={16} />,
+            action: () => {
+              const { from, to } = editor.state.selection;
+              const selectionText =
+                from === to ? '' : editor.state.doc.textBetween(from, to, ' ').trim();
+              onAskAi({ from, to, selectionText });
+              setAiToolbar(null);
+            },
+            active: false,
+          },
+        ]
+      : []),
     {
       label: '插入内容块（也可输入 /）',
+      separator: true,
       icon: <Plus size={16} />,
       action: () => {
         const parent = editor.state.selection.$from.parent;
@@ -3972,6 +3979,7 @@ function CollaborativeEditor({
     },
     {
       label: '正文',
+      separator: true,
       icon: <span className="text-tool">T</span>,
       action: () => editor.chain().focus().setParagraph().run(),
       active: editor.isActive('paragraph'),
@@ -3996,6 +4004,7 @@ function CollaborativeEditor({
     },
     {
       label: '粗体',
+      separator: true,
       icon: <Bold size={16} />,
       action: () => editor.chain().focus().toggleBold().run(),
       active: editor.isActive('bold'),
@@ -4008,6 +4017,7 @@ function CollaborativeEditor({
     },
     {
       label: '无序列表',
+      separator: true,
       icon: <List size={16} />,
       action: () => editor.chain().focus().toggleBulletList().run(),
       active: editor.isActive('bulletList'),
@@ -4038,6 +4048,7 @@ function CollaborativeEditor({
     },
     {
       label: editor.isActive('link') ? '编辑链接' : '添加链接',
+      separator: true,
       icon: <Link2 size={16} />,
       action: () => {
         const current = String(editor.getAttributes('link').href ?? '');
@@ -4070,19 +4081,6 @@ function CollaborativeEditor({
 
   return (
     <div className="editor-frame">
-      <div className="editor-toolbar">
-        {tools.map((tool, index) => (
-          <button
-            key={tool.label}
-            className={`${tool.active ? 'active' : ''} ${[2, 5, 7, 11].includes(index) ? 'tool-separator' : ''}`}
-            onClick={tool.action}
-            title={tool.label}
-            type="button"
-          >
-            {tool.icon}
-          </button>
-        ))}
-      </div>
       {editable ? (
         <EditorBlockHandle
           editor={editor}
@@ -4091,19 +4089,25 @@ function CollaborativeEditor({
         />
       ) : null}
       <EditorContent editor={editor} />
-      {aiToolbar && onAskAi ? (
-        <AiSelectionToolbar
-          left={aiToolbar.left}
-          top={aiToolbar.top}
-          onAsk={() => {
-            onAskAi({
-              from: aiToolbar.from,
-              to: aiToolbar.to,
-              selectionText: aiToolbar.text,
-            });
-            setAiToolbar(null);
-          }}
-        />
+      {aiToolbar ? (
+        <div
+          className="editor-selection-toolbar"
+          style={{ left: aiToolbar.left, top: aiToolbar.top }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {tools.map((tool) => (
+            <button
+              key={tool.label}
+              className={`${tool.active ? 'active' : ''} ${'separator' in tool && tool.separator ? 'tool-separator' : ''} ${'askAi' in tool && tool.askAi ? 'ask-ai' : ''}`}
+              onClick={tool.action}
+              title={tool.label}
+              type="button"
+            >
+              {tool.icon}
+              {'askAi' in tool && tool.askAi ? <span>询问 AI</span> : null}
+            </button>
+          ))}
+        </div>
       ) : null}
       {slashMenu ? (
         <div
