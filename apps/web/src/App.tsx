@@ -72,6 +72,7 @@ import type {
   AuthSessionResponse,
   AuthUserSummary,
   AttachmentSummary,
+  DatabaseSnapshot,
   OrganizationSummary,
   PageSummary,
   SpaceSummary,
@@ -84,6 +85,7 @@ import {
   acceptInvitation,
   attachmentDownloadUrl,
   copyPage,
+  createPageDatabase,
   createPage,
   createSpace,
   deletePage,
@@ -92,6 +94,7 @@ import {
   exportMarkdown,
   getAuthSession,
   getCollabTicket,
+  getPageDatabase,
   getPage,
   getPublicShare,
   listPages,
@@ -106,6 +109,7 @@ import {
 import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel } from './AttachmentPanel';
 import { CommentsPanel } from './CommentsPanel';
+import { DatabaseCanvas } from './DatabaseCanvas';
 import type { LocalIdentity } from './identity';
 import { DiscoveryDialog } from './DiscoveryDialog';
 import { OrganizationSettings } from './OrganizationSettings';
@@ -641,6 +645,20 @@ function TenantHome({
     }
   };
 
+  const openNewDatabase = async (space: SpaceSummary) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { page } = await createPage('未命名数据库', null, space.id);
+      await createPageDatabase(page.id);
+      navigateToPage(page.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法创建数据库');
+      setBusy(false);
+    }
+  };
+
   const createAndOpenPage = async (space: SpaceSummary, parentId: string | null) => {
     if (creatingPage) return;
     setCreatingPage({ spaceId: space.id, parentId });
@@ -792,13 +810,24 @@ function TenantHome({
                     <span>{space.icon || '◆'}</span>
                     <strong>{space.name}</strong>
                     {canCreate ? (
-                      <button
-                        type="button"
-                        aria-label={`在${space.name}中新建页面`}
-                        onClick={() => void createAndOpenPage(space, null)}
-                      >
-                        <Plus size={13} />
-                      </button>
+                      <span className="notion-space-create-actions">
+                        <button
+                          type="button"
+                          aria-label={`在${space.name}中新建数据库`}
+                          title="新建数据库"
+                          onClick={() => void openNewDatabase(space)}
+                        >
+                          <Table2 size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`在${space.name}中新建页面`}
+                          title="新建页面"
+                          onClick={() => void createAndOpenPage(space, null)}
+                        >
+                          <Plus size={13} />
+                        </button>
+                      </span>
                     ) : null}
                   </div>
                   <PageTree
@@ -1080,6 +1109,7 @@ function Workspace({
     page: PageSummary;
     pages: PageSummary[];
     ticket: string;
+    database: DatabaseSnapshot | null;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1088,15 +1118,17 @@ function Workspace({
     let active = true;
     getPage(pageId)
       .then(async ({ page }) => {
-        const [{ ticket }, { pages }] = await Promise.all([
+        const [{ ticket }, { pages }, database] = await Promise.all([
           getCollabTicket(pageId, identity),
           listPages(page.spaceId),
+          getPageDatabase(pageId),
         ]);
         if (active) {
           setBootstrap({
             page,
             pages: pages.some((candidate) => candidate.id === page.id) ? pages : [...pages, page],
             ticket,
+            database,
           });
         }
       })
@@ -1121,6 +1153,7 @@ function Workspace({
       initialTicket={bootstrap.ticket}
       identity={identity}
       onLogout={onLogout}
+      initialDatabase={bootstrap.database}
     />
   );
 }
@@ -1132,6 +1165,7 @@ function DocumentWorkspace({
   identity,
   onLogout,
   renewTicket,
+  initialDatabase,
 }: {
   initialPage: PageSummary;
   initialPages: PageSummary[];
@@ -1139,6 +1173,7 @@ function DocumentWorkspace({
   identity: LocalIdentity;
   onLogout?: () => Promise<void>;
   renewTicket?: () => Promise<string>;
+  initialDatabase?: DatabaseSnapshot | null;
 }) {
   const [page, setPage] = useState(initialPage);
   const [pages, setPages] = useState(initialPages);
@@ -1166,6 +1201,7 @@ function DocumentWorkspace({
   const [discoveryTab, setDiscoveryTab] = useState<'search' | 'favorites' | 'recent' | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
+  const [database, setDatabase] = useState<DatabaseSnapshot | null>(initialDatabase ?? null);
   const titleTimer = useRef<number | undefined>(undefined);
   const latestTitle = useRef(page.title);
   const savedTitle = useRef(page.title);
@@ -1515,6 +1551,21 @@ function DocumentWorkspace({
     }
   };
 
+  const convertToDatabase = async () => {
+    if (pageActionBusy || database) return;
+    setPageMenuOpen(false);
+    setPageActionBusy(true);
+    setPageActionError(null);
+    try {
+      await flushDocument();
+      setDatabase(await createPageDatabase(page.id));
+    } catch (reason) {
+      setPageActionError(reason instanceof Error ? reason.message : '无法转换为数据库');
+    } finally {
+      setPageActionBusy(false);
+    }
+  };
+
   const insertAttachment = (attachment: AttachmentSummary) => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -1743,6 +1794,11 @@ function DocumentWorkspace({
                 <button type="button" onClick={() => void copyCurrentPage()}>
                   <Copy size={15} /> 创建副本
                 </button>
+                {!database ? (
+                  <button type="button" onClick={() => void convertToDatabase()}>
+                    <Table2 size={15} /> 转换为数据库
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   disabled={siblingIndex <= 0}
@@ -1787,7 +1843,9 @@ function DocumentWorkspace({
               onBlur={() => void flushTitle()}
               aria-label="页面标题"
             />
-            {collab ? (
+            {database ? (
+              <DatabaseCanvas initialSnapshot={database} canEdit={canEdit} />
+            ) : collab ? (
               <CollaborativeEditor
                 collab={collab}
                 identity={identity}

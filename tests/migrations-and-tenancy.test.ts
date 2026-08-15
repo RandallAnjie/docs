@@ -16,6 +16,7 @@ import { listPages } from '../apps/worker/src/page-tree';
 import { pageAccessSnapshot } from '../apps/worker/src/page-access';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
 import { handleCommentsAndNotificationsApi } from '../apps/worker/src/comments';
+import { handleDatabasesApi } from '../apps/worker/src/databases';
 
 class TestStatement {
   constructor(
@@ -81,6 +82,7 @@ function migratedDatabase(): DatabaseSync {
     '0007_editor_blocks.sql',
     '0008_page_acl_roles.sql',
     '0009_complete_permissions.sql',
+    '0010_databases.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -160,6 +162,121 @@ describe('database migrations', () => {
         )
         .get(),
     ).toMatchObject({ total: 0 });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
+        )
+        .get(),
+    ).toMatchObject({ total: 6 });
+    database.close();
+  });
+});
+
+describe('structured database integration', () => {
+  it('creates a database, properties and page-backed rows without crossing tenants', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'database-owner');
+    const outsider = seedTenant(database, 'database-outsider');
+    const pageId = '11111111-1111-4111-8111-111111111111';
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES (?, 'org_database-owner', 'spc_database-owner', NULL, 'Tasks', '1', ?, ?, ?, ?)`,
+      )
+      .run(pageId, owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+         VALUES (?, 1, 1, 'inherit', ?)`,
+      )
+      .run(pageId, now);
+    database
+      .prepare(
+        `INSERT INTO page_search_projection(
+           page_id, organization_id, space_id, generation, collab_seq,
+           title, normalized_body, updated_at
+         ) VALUES (?, 'org_database-owner', 'spc_database-owner', 1, 0, 'Tasks', '', ?)`,
+      )
+      .run(pageId, now);
+    const env = testEnv(database);
+
+    const createdResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/pages/${pageId}/database`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ titlePropertyName: '任务' }),
+      }),
+      env,
+      owner,
+    );
+    expect(createdResponse?.status).toBe(201);
+    const created = (await createdResponse?.json()) as {
+      database: { id: string };
+      properties: Array<{ id: string; type: string }>;
+    };
+    const databaseId = created.database.id;
+    const titlePropertyId = created.properties.find((property) => property.type === 'title')?.id;
+    expect(titlePropertyId).toBeTruthy();
+
+    const numberResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '工时', type: 'number' }),
+      }),
+      env,
+      owner,
+    );
+    const numberProperty = (await numberResponse?.json()) as { property: { id: string } };
+    expect(numberResponse?.status).toBe(201);
+
+    const formulaResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '计费工时',
+          type: 'formula',
+          config: { expression: 'prop("工时") * 2' },
+        }),
+      }),
+      env,
+      owner,
+    );
+    const formulaProperty = (await formulaResponse?.json()) as { property: { id: string } };
+    expect(formulaResponse?.status).toBe(201);
+
+    const rowResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          values: { [titlePropertyId!]: '发布 Rdocs', [numberProperty.property.id]: 3 },
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(rowResponse?.status).toBe(201);
+    const rowResult = (await rowResponse?.json()) as {
+      row: { pageId: string; values: Record<string, unknown> };
+    };
+    expect(rowResult.row.values[formulaProperty.property.id]).toBe(6);
+    expect(
+      database.prepare('SELECT title, parent_id FROM pages WHERE id = ?').get(rowResult.row.pageId),
+    ).toMatchObject({ title: '发布 Rdocs', parent_id: pageId });
+
+    const hidden = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      env,
+      outsider,
+    );
+    expect(hidden?.status).toBe(404);
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     database.close();
   });
