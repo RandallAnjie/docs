@@ -5,6 +5,7 @@ import { Bookmark, ExternalLink, ListTree, Pencil, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { attachmentEditorBlocks } from './AttachmentBlocks';
+import { pageUtilityEditorBlocks, type BreadcrumbItem } from './PageUtilityBlocks';
 
 export interface EmbedTarget {
   originalUrl: string;
@@ -407,12 +408,19 @@ export const ColumnsBlock = Node.create({
   },
 });
 
-export const rdocsEditorBlocks = [
-  CalloutBlock,
-  BookmarkBlock,
-  EmbedBlock,
-  TableOfContentsBlock,
-  ColumnsBlock,
-  ColumnBlock,
-  ...attachmentEditorBlocks,
-];
+export function createRdocsEditorBlocks(
+  getBreadcrumbItems: () => readonly BreadcrumbItem[] = () => [],
+) {
+  return [
+    CalloutBlock,
+    BookmarkBlock,
+    EmbedBlock,
+    TableOfContentsBlock,
+    ColumnsBlock,
+    ColumnBlock,
+    ...attachmentEditorBlocks,
+    ...pageUtilityEditorBlocks(getBreadcrumbItems),
+  ];
+}
+
+export const rdocsEditorBlocks = createRdocsEditorBlocks();

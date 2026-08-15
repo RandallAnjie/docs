@@ -27,6 +27,14 @@ function cleanInlineMarkdown(value: string): string {
     .replace(/\\([\\`*_[\]{}()#+\-.!>])/g, '$1');
 }
 
+function decodeMarkdownComponent(value: string): string {
+  try {
+    return decodeURIComponent(value).slice(0, 10_000);
+  } catch {
+    return '';
+  }
+}
+
 function markdownTableCells(line: string): string[] {
   const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
   return trimmed
@@ -60,6 +68,11 @@ export function markdownToYjsSnapshot(markdown: string): {
     }
     if (line.trim() === '<!-- rdocs:table-of-contents -->') {
       nodes.push(element('tableOfContents', ''));
+      index += 1;
+      continue;
+    }
+    if (line.trim() === '<!-- rdocs:breadcrumb -->') {
+      nodes.push(element('breadcrumb', ''));
       index += 1;
       continue;
     }
@@ -267,6 +280,20 @@ export function markdownToYjsSnapshot(markdown: string): {
       index += 1;
       continue;
     }
+    const pageButton = line
+      .trim()
+      .match(/^\[⚡\s+((?:\\.|[^\\\]])+)\]\(rdocs-button:(insertText|openUrl)\?payload=([^)]*)\)$/);
+    if (pageButton) {
+      nodes.push(
+        element('pageButton', '', {
+          action: pageButton[2] ?? 'insertText',
+          label: cleanInlineMarkdown(pageButton[1] ?? '新按钮').slice(0, 100),
+          payload: decodeMarkdownComponent(pageButton[3] ?? ''),
+        }),
+      );
+      index += 1;
+      continue;
+    }
     if (!line.trim()) {
       index += 1;
       continue;
@@ -390,6 +417,16 @@ function renderElement(node: Y.XmlElement): string {
     }
     case 'tableOfContents':
       return '<!-- rdocs:table-of-contents -->\n\n';
+    case 'breadcrumb':
+      return '<!-- rdocs:breadcrumb -->\n\n';
+    case 'pageButton': {
+      const action = node.getAttribute('action') === 'openUrl' ? 'openUrl' : 'insertText';
+      const label = (node.getAttribute('label') || '新按钮')
+        .replace(/\\/g, '\\\\')
+        .replace(/]/g, '\\]');
+      const payload = encodeURIComponent(node.getAttribute('payload') || '');
+      return `[⚡ ${label}](rdocs-button:${action}?payload=${payload})\n\n`;
+    }
     case 'columns': {
       const columns = node
         .toArray()

@@ -122,11 +122,16 @@ describe('editor block URL normalization', () => {
             name: '演示.mp4',
           },
         },
+        { type: 'breadcrumb' },
+        {
+          type: 'pageButton',
+          attrs: { action: 'insertText', label: '插入结论', payload: '结论：' },
+        },
       ],
     });
 
     expect(() => document.check()).not.toThrow();
-    expect(document.toJSON().content).toHaveLength(11);
+    expect(document.toJSON().content).toHaveLength(13);
   });
 
   it('moves complete top-level blocks without changing their content', () => {

@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { PageSummary } from '@rdocs/shared';
 
-import { ancestorPageIds, buildPageTree, descendantPageIds } from './page-tree';
+import {
+  ancestorPageIds,
+  buildPageTree,
+  descendantPageIds,
+  pageBreadcrumbItems,
+} from './page-tree';
 
 function page(id: string, parentId: string | null): PageSummary {
   return {
@@ -51,5 +56,15 @@ describe('page tree', () => {
     ]);
 
     expect(tree.map((node) => node.id)).toEqual(['orphan', 'self', 'cycle-a', 'cycle-b']);
+  });
+
+  it('builds a safe root-to-page breadcrumb and stops at inaccessible parents', () => {
+    const pages = [page('root', null), page('child', 'root'), page('leaf', 'child')];
+    expect(pageBreadcrumbItems('leaf', pages).map((item) => item.id)).toEqual([
+      'root',
+      'child',
+      'leaf',
+    ]);
+    expect(pageBreadcrumbItems('leaf', [pages[2]!])).toEqual([{ id: 'leaf', title: 'leaf' }]);
   });
 });

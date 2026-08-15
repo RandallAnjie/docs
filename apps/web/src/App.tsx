@@ -63,6 +63,7 @@ import {
   Users,
   Upload,
   Video,
+  Zap,
 } from 'lucide-react';
 import {
   useCallback,
@@ -128,12 +129,19 @@ import { DatabaseCanvas } from './DatabaseCanvas';
 import type { LocalIdentity } from './identity';
 import { DiscoveryDialog } from './DiscoveryDialog';
 import { EditorBlockHandle } from './EditorBlockHandle';
-import { normalizeBookmarkUrl, normalizeEmbedUrl, rdocsEditorBlocks } from './EditorBlocks';
+import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
-import { ancestorPageIds, buildPageTree, descendantPageIds, type PageTreeNode } from './page-tree';
+import {
+  ancestorPageIds,
+  buildPageTree,
+  descendantPageIds,
+  pageBreadcrumbItems,
+  type PageTreeNode,
+} from './page-tree';
+import { normalizePageButtonUrl } from './PageUtilityBlocks';
 import { RevisionPanel } from './RevisionPanel';
 import { SpaceAccessDialog } from './SpaceAccessDialog';
 import { SpaceTrashDialog } from './SpaceTrashDialog';
@@ -157,6 +165,7 @@ interface ActiveCollaborator {
 
 type SlashCommandId =
   | 'bookmark'
+  | 'breadcrumb'
   | 'bullet-list'
   | 'callout'
   | 'code'
@@ -171,6 +180,7 @@ type SlashCommandId =
   | 'inline-math'
   | 'audio'
   | 'numbered-list'
+  | 'page-button'
   | 'paragraph'
   | 'quote'
   | 'table'
@@ -257,6 +267,18 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     label: '网页书签',
     description: '以卡片形式保存链接',
     keywords: 'bookmark link url 书签',
+  },
+  {
+    id: 'breadcrumb',
+    label: '面包屑',
+    description: '展示并跟随当前页面层级',
+    keywords: 'breadcrumb path hierarchy 面包屑 层级',
+  },
+  {
+    id: 'page-button',
+    label: '按钮',
+    description: '插入预设内容或打开网页',
+    keywords: 'button action automation 按钮 动作',
   },
   {
     id: 'file',
@@ -350,6 +372,10 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <ListTree size={17} />;
     case 'bookmark':
       return <Bookmark size={17} />;
+    case 'breadcrumb':
+      return <ChevronRight size={17} />;
+    case 'page-button':
+      return <Zap size={17} />;
     case 'file':
       return <Paperclip size={17} />;
     case 'audio':
@@ -1664,6 +1690,7 @@ function DocumentWorkspace({
   const editorRef = useRef<Editor | null>(null);
   const attachmentPanelRef = useRef<AttachmentPanelHandle>(null);
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
+  const breadcrumbItems = useMemo(() => pageBreadcrumbItems(page.id, pages), [page.id, pages]);
   const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
   const canManagePage = page.role === 'space_admin';
   const canEdit = canEditStructure && !page.isLocked;
@@ -2368,6 +2395,7 @@ function DocumentWorkspace({
                 editable={canEdit}
                 onReady={handleEditorReady}
                 onRequestAttachment={requestAttachmentUpload}
+                breadcrumbItems={breadcrumbItems}
               />
             ) : (
               <div className="editor-loading">
@@ -2606,6 +2634,7 @@ function CollaborativeEditor({
   editable,
   onReady,
   onRequestAttachment,
+  breadcrumbItems,
 }: {
   collab: { ydoc: Y.Doc; provider: WebsocketProvider };
   identity: LocalIdentity;
@@ -2613,9 +2642,13 @@ function CollaborativeEditor({
   editable: boolean;
   onReady: (editor: Editor | null) => void;
   onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
+  breadcrumbItems: readonly { id: string; title: string }[];
 }) {
   const [, rerender] = useState(0);
   const editorInstance = useRef<Editor | null>(null);
+  const breadcrumbItemsRef = useRef(breadcrumbItems);
+  breadcrumbItemsRef.current = breadcrumbItems;
+  const editorBlocks = useMemo(() => createRdocsEditorBlocks(() => breadcrumbItemsRef.current), []);
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
 
@@ -2682,7 +2715,7 @@ function CollaborativeEditor({
           },
         },
       }),
-      ...rdocsEditorBlocks,
+      ...editorBlocks,
       Collaboration.configure({ document: collab.ydoc }),
       CollaborationCaret.configure({
         provider: collab.provider,
@@ -2732,6 +2765,10 @@ function CollaborativeEditor({
       updateSlashMenu(currentEditor);
     },
   });
+
+  useEffect(() => {
+    editor?.view.dom.dispatchEvent(new Event('rdocs:breadcrumb-refresh'));
+  }, [breadcrumbItems, editor]);
 
   useEffect(() => {
     editorInstance.current = editor;
@@ -2818,6 +2855,40 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'page-button') {
+        const label = window.prompt('按钮名称', '插入新内容');
+        if (label === null || !label.trim()) return;
+        const actionChoice = window.prompt('按钮动作：1 = 插入预设内容，2 = 打开网页', '1');
+        if (actionChoice === null) return;
+        const action = actionChoice.trim() === '2' ? 'openUrl' : 'insertText';
+        const payload = window.prompt(
+          action === 'openUrl'
+            ? '输入 HTTP(S) 网页地址'
+            : '输入点击后要插入的内容；换行会创建多个段落',
+          action === 'openUrl' ? 'https://' : '新内容',
+        );
+        if (payload === null) return;
+        if (action === 'openUrl' && !normalizePageButtonUrl(payload)) {
+          window.alert('请输入有效的 HTTP(S) 网页地址');
+          return;
+        }
+        editor
+          .chain()
+          .focus()
+          .deleteRange(context)
+          .insertContent({
+            type: 'pageButton',
+            attrs: {
+              action,
+              label: label.trim().slice(0, 100),
+              payload: payload.slice(0, 10_000),
+            },
+          })
+          .run();
+        setSlashMenu(null);
+        return;
+      }
+
       const chain = editor.chain().focus().deleteRange(context);
       switch (id) {
         case 'paragraph':
@@ -2880,6 +2951,9 @@ function CollaborativeEditor({
         }
         case 'table-of-contents':
           chain.insertContent({ type: 'tableOfContents' }).run();
+          break;
+        case 'breadcrumb':
+          chain.insertContent({ type: 'breadcrumb' }).run();
           break;
         case 'divider':
           chain.setHorizontalRule().run();
