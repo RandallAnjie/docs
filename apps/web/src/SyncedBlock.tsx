@@ -1,5 +1,6 @@
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCaret from '@tiptap/extension-collaboration-caret';
+import Image from '@tiptap/extension-image';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
 import { TableKit } from '@tiptap/extension-table';
 import { mergeAttributes, Node, type Editor } from '@tiptap/core';
@@ -7,7 +8,7 @@ import type { NodeViewProps } from '@tiptap/react';
 import { EditorContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Copy, RefreshCw, RotateCcw, Trash2, Unlink } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type DragEvent } from 'react';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
@@ -23,15 +24,18 @@ import {
   restoreDeletedSyncedBlock,
   unsyncAllSyncedBlock,
 } from './api';
+import { attachmentEditorBlocks } from './AttachmentBlocks';
 import { confirmDialog, showToast } from './dialogs';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
+import { contentForSyncedEditor, draggingNodeJson, filesFromDataTransfer } from './page-upload';
 
 export interface SyncedBlockContext {
   identity: LocalIdentity;
   pageId: string;
   publicShareToken?: string;
   publicSiteSlug?: string;
+  uploadFiles?: (files: File[], target?: Editor | null) => Promise<void>;
 }
 
 interface SyncedBlockOptions {
@@ -80,9 +84,11 @@ function SyncedBlockEditor({
           undoRedo: false,
           link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
         }),
+        Image.configure({ allowBase64: false }),
         TaskList,
         TaskItem.configure({ nested: true }),
         TableKit,
+        ...attachmentEditorBlocks,
         Collaboration.configure({ document }),
         CollaborationCaret.configure({
           provider,
@@ -303,6 +309,41 @@ function SyncedBlockNodeView(props: NodeViewProps) {
     }
   };
 
+  const acceptOutsideDrop = async (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!nestedEditor?.isEditable || publicReadOnly) return;
+    const files = filesFromDataTransfer(event.dataTransfer);
+    if (files.length) {
+      await context?.uploadFiles?.(files, nestedEditor);
+      return;
+    }
+    const sourceEditor = props.editor;
+    const json = draggingNodeJson(sourceEditor);
+    if (!json) return;
+    const inserted = nestedEditor
+      .chain()
+      .focus('end')
+      .insertContent(contentForSyncedEditor(json))
+      .run();
+    if (!inserted) {
+      showToast('这段内容无法放进同步块');
+      return;
+    }
+    const dragging = sourceEditor.view.dragging as
+      { move?: boolean; node?: { from: number; to: number } } | null | undefined;
+    if (dragging?.move) {
+      if (dragging.node) {
+        sourceEditor.view.dispatch(
+          sourceEditor.state.tr.delete(dragging.node.from, dragging.node.to),
+        );
+      } else {
+        sourceEditor.view.dispatch(sourceEditor.state.tr.deleteSelection());
+      }
+    }
+    sourceEditor.view.dragging = null;
+  };
+
   const deleteReference = async () => {
     if (session?.sourcePageId !== pageId || publicReadOnly) {
       props.deleteNode();
@@ -326,7 +367,17 @@ function SyncedBlockNodeView(props: NodeViewProps) {
   };
 
   return (
-    <NodeViewWrapper className="rdocs-synced-block" contentEditable={false}>
+    <NodeViewWrapper
+      className="rdocs-synced-block"
+      data-rdocs-synced-block=""
+      contentEditable={false}
+      onDragOverCapture={(event: DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = event.dataTransfer.files.length ? 'copy' : 'move';
+      }}
+      onDropCapture={(event: DragEvent<HTMLElement>) => void acceptOutsideDrop(event)}
+    >
       <header>
         <span>
           <RefreshCw size={13} /> 同步块
@@ -473,7 +524,10 @@ export const SyncedBlock = Node.create<SyncedBlockOptions>({
     ];
   },
   addNodeView() {
-    return ReactNodeViewRenderer(SyncedBlockNodeView, { stopEvent: () => true });
+    return ReactNodeViewRenderer(SyncedBlockNodeView, {
+      stopEvent: ({ event }) =>
+        event.type !== 'drop' && event.type !== 'dragover' && event.type !== 'dragenter',
+    });
   },
 });
 

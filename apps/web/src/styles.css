@@ -3588,6 +3588,27 @@ button.page-icon-display:hover {
   background: #f4e4dd;
   color: #c85436;
 }
+.page-upload-progress {
+  position: sticky;
+  bottom: 16px;
+  z-index: 6;
+  overflow: hidden;
+  margin: 16px 0 0;
+  border: 1px solid #d9e7d4;
+  border-radius: 8px;
+  background: #f4f8f2;
+  color: #3d6b46;
+  font-size: 12px;
+}
+.page-upload-progress > span {
+  display: block;
+  padding: 8px 12px;
+}
+.page-upload-progress > i {
+  display: block;
+  height: 3px;
+  background: #5c8f62;
+}
 .editor-frame {
   position: relative;
   margin-top: 18px;
@@ -4766,24 +4787,46 @@ button.page-icon-display:hover {
 .rdocs-editor ol {
   padding-left: 24px;
 }
-.rdocs-editor ul[data-type='taskList'] {
+.rdocs-editor ul[data-type='taskList'],
+.rdocs-synced-block-editor ul[data-type='taskList'] {
   padding-left: 0;
   list-style: none;
 }
-.rdocs-editor ul[data-type='taskList'] li {
+.rdocs-editor ul[data-type='taskList'] li,
+.rdocs-synced-block-editor ul[data-type='taskList'] li {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
+  gap: 8px;
 }
-.rdocs-editor ul[data-type='taskList'] li > label {
-  padding-top: 7px;
+.rdocs-editor ul[data-type='taskList'] li > label,
+.rdocs-synced-block-editor ul[data-type='taskList'] li > label {
+  display: inline-flex;
+  height: 1.85em;
+  flex: 0 0 auto;
+  align-items: center;
+  margin: 0;
+  padding: 0;
   user-select: none;
 }
-.rdocs-editor ul[data-type='taskList'] li > div {
+.rdocs-editor ul[data-type='taskList'] li > div,
+.rdocs-synced-block-editor ul[data-type='taskList'] li > div {
   flex: 1;
   min-width: 0;
 }
-.rdocs-editor ul[data-type='taskList'] input {
+.rdocs-editor ul[data-type='taskList'] li > div > p,
+.rdocs-synced-block-editor ul[data-type='taskList'] li > div > p {
+  margin: 0;
+}
+.rdocs-editor ul[data-type='taskList'] li > div > p + p,
+.rdocs-synced-block-editor ul[data-type='taskList'] li > div > p + p {
+  margin-top: 0.35em;
+}
+.rdocs-editor ul[data-type='taskList'] input[type='checkbox'],
+.rdocs-synced-block-editor ul[data-type='taskList'] input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
   accent-color: var(--accent);
 }
 .rdocs-editor .tableWrapper {

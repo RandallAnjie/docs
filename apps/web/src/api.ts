@@ -62,6 +62,7 @@ import type {
   TrashedPageSummary,
   JsonValue,
 } from '@rdocs/shared';
+import { ATTACHMENT_DIRECT_UPLOAD_BYTES, ATTACHMENT_PART_BYTES } from '@rdocs/shared';
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -865,24 +866,81 @@ export function cancelPageReminderSource(
   });
 }
 
-export async function uploadAttachment(
-  pageId: string,
-  file: File,
-): Promise<{ attachment: AttachmentSummary }> {
-  const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/attachments`, {
-    method: 'POST',
-    headers: {
-      'content-type': file.type || 'application/octet-stream',
-      'x-rdocs-file-name': encodeURIComponent(file.name),
-    },
-    body: file,
-  });
+async function readUploadResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event('rdocs:auth-required'));
     const responseBody = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(responseBody?.error ?? `上传失败（${response.status}）`);
   }
-  return (await response.json()) as { attachment: AttachmentSummary };
+  return (await response.json()) as T;
+}
+
+export async function uploadAttachment(
+  pageId: string,
+  file: File,
+  onProgress?: (uploadedBytes: number, totalBytes: number) => void,
+): Promise<{ attachment: AttachmentSummary }> {
+  if (file.size <= ATTACHMENT_DIRECT_UPLOAD_BYTES) {
+    onProgress?.(0, file.size);
+    const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/attachments`, {
+      method: 'POST',
+      headers: {
+        'content-type': file.type || 'application/octet-stream',
+        'x-rdocs-file-name': encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    const result = await readUploadResponse<{ attachment: AttachmentSummary }>(response);
+    onProgress?.(file.size, file.size);
+    return result;
+  }
+
+  const started = await readUploadResponse<{
+    attachmentId: string;
+    partSize: number;
+  }>(
+    await fetch(`/api/pages/${encodeURIComponent(pageId)}/attachments/uploads`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        byteSize: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        name: file.name,
+      }),
+    }),
+  );
+
+  const partSize = started.partSize || ATTACHMENT_PART_BYTES;
+  const parts: Array<{ etag: string; partNumber: number }> = [];
+  let uploaded = 0;
+  onProgress?.(0, file.size);
+  for (let start = 0, partNumber = 1; start < file.size; start += partSize, partNumber += 1) {
+    const chunk = file.slice(start, Math.min(start + partSize, file.size));
+    const part = await readUploadResponse<{ etag: string; partNumber: number }>(
+      await fetch(
+        `/api/pages/${encodeURIComponent(pageId)}/attachments/uploads/${encodeURIComponent(started.attachmentId)}/parts/${partNumber}`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: chunk,
+        },
+      ),
+    );
+    parts.push(part);
+    uploaded += chunk.size;
+    onProgress?.(uploaded, file.size);
+  }
+
+  return readUploadResponse<{ attachment: AttachmentSummary }>(
+    await fetch(
+      `/api/pages/${encodeURIComponent(pageId)}/attachments/uploads/${encodeURIComponent(started.attachmentId)}/complete`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parts }),
+      },
+    ),
+  );
 }
 
 export function deleteAttachment(attachmentId: string): Promise<{ ok: true }> {
