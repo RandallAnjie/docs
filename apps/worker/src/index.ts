@@ -2,8 +2,10 @@ import appHtml from '../../web/dist/index.html';
 import * as Y from 'yjs';
 
 import {
+  ATTACHMENT_PART_BYTES,
   EDITOR_SCHEMA_VERSION,
   isPageId,
+  MAX_ATTACHMENT_BYTES,
   MAX_HTTP_SYNC_BODY_BYTES,
   MAX_REVISION_SNAPSHOT_BYTES,
   type AuthUserSummary,
@@ -88,11 +90,10 @@ const MAX_REVISIONS_PER_PAGE = 100;
 const MAX_GENERATION_INITIALIZATION_ATTEMPTS = 5;
 const RESTORE_OPERATION_LEASE_MS = 60_000;
 const COLLAB_AUTH_CACHE_MS = 2_000;
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENT_NAME_LENGTH = 180;
 const MAX_MARKDOWN_IMPORT_BYTES = 2 * 1024 * 1024;
 const MAX_PAGE_COPY_ATTACHMENTS = 200;
-const MAX_PAGE_COPY_ATTACHMENT_BYTES = 250 * 1024 * 1024;
+const MAX_PAGE_COPY_ATTACHMENT_BYTES = MAX_ATTACHMENT_BYTES;
 const SYNCED_BLOCK_DELETE_UNDO_MS = 30 * 24 * 60 * 60 * 1_000;
 const SYNCED_BLOCK_RESTORE_LEASE_MS = 5 * 60 * 1_000;
 const SYNCED_BLOCK_PAGE_MUTATION_CONCURRENCY = 8;
@@ -971,10 +972,10 @@ async function uploadAttachment(
   const name = safeAttachmentName(decodedName);
   if (!name) return error('附件名无效', 400);
   const declaredLength = Number(request.headers.get('content-length') ?? 0);
-  if (declaredLength > MAX_ATTACHMENT_BYTES) return error('附件超过 25 MB 上限', 413);
+  if (declaredLength > MAX_ATTACHMENT_BYTES) return error('附件超过 1 GB 上限', 413);
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (!bytes.byteLength) return error('附件不能为空', 400);
-  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) return error('附件超过 25 MB 上限', 413);
+  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) return error('附件超过 1 GB 上限', 413);
   const id = crypto.randomUUID();
   const mimeType = safeAttachmentType(request.headers.get('content-type'));
   const digest = await sha256Hex(bytes);
@@ -1032,6 +1033,153 @@ async function uploadAttachment(
     },
     { status: 201 },
   );
+}
+
+interface R2MultipartUploadLike {
+  abort(): Promise<void>;
+  complete(parts: Array<{ etag: string; partNumber: number }>): Promise<unknown>;
+  uploadId: string;
+  uploadPart(
+    partNumber: number,
+    value: ReadableStream | ArrayBuffer | Blob | Uint8Array,
+  ): Promise<{ etag: string; partNumber: number }>;
+}
+
+function multipartBucket(env: Env) {
+  return env.ATTACHMENTS as R2Bucket & {
+    createMultipartUpload(key: string): Promise<R2MultipartUploadLike>;
+    resumeMultipartUpload(key: string, uploadId: string): R2MultipartUploadLike;
+  };
+}
+
+function multipartUploadId(sha256: string): string | null {
+  return sha256.startsWith('mp:') ? sha256.slice(3) : null;
+}
+
+async function startAttachmentUpload(
+  request: Request,
+  env: Env,
+  page: PageSummary,
+  actorId: string,
+): Promise<Response> {
+  const bucket = multipartBucket(env);
+  if (typeof bucket.createMultipartUpload !== 'function') {
+    return error('当前运行时暂不支持大于 8 MB 的分片上传', 501);
+  }
+  const body = (await request.json().catch(() => null)) as {
+    byteSize?: number;
+    mimeType?: string;
+    name?: string;
+  } | null;
+  const name = safeAttachmentName(String(body?.name ?? ''));
+  if (!name) return error('附件名无效', 400);
+  const byteSize = Number(body?.byteSize ?? 0);
+  if (!Number.isSafeInteger(byteSize) || byteSize <= 0) return error('附件大小无效', 400);
+  if (byteSize > MAX_ATTACHMENT_BYTES) return error('附件超过 1 GB 上限', 413);
+  const mimeType = safeAttachmentType(body?.mimeType ?? null);
+  const id = crypto.randomUUID();
+  const r2Key = `organizations/${page.organizationId}/pages/${page.id}/attachments/${id}`;
+  const now = Date.now();
+  const upload = await bucket.createMultipartUpload(r2Key);
+  try {
+    await env.DB.prepare(
+      `INSERT INTO attachments(
+         id, organization_id, page_id, r2_key, original_name, mime_type,
+         byte_size, sha256, status, created_by, created_at, deleted_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)`,
+    )
+      .bind(
+        id,
+        page.organizationId,
+        page.id,
+        r2Key,
+        name,
+        mimeType,
+        byteSize,
+        `mp:${upload.uploadId}`,
+        actorId,
+        now,
+      )
+      .run();
+  } catch (reason) {
+    await upload.abort().catch(() => undefined);
+    throw reason;
+  }
+  return json(
+    { attachmentId: id, partSize: ATTACHMENT_PART_BYTES, uploadId: upload.uploadId },
+    { status: 201 },
+  );
+}
+
+async function uploadAttachmentPart(
+  request: Request,
+  env: Env,
+  page: PageSummary,
+  attachment: AttachmentRow,
+  partNumber: number,
+): Promise<Response> {
+  if (attachment.page_id !== page.id || attachment.status !== 'pending') {
+    return error('上传会话不存在或已结束', 404);
+  }
+  if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > 10_000) {
+    return error('分片序号无效', 400);
+  }
+  const uploadId = multipartUploadId(attachment.sha256);
+  if (!uploadId) return error('上传会话无效', 409);
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!bytes.byteLength) return error('分片不能为空', 400);
+  if (bytes.byteLength > ATTACHMENT_PART_BYTES * 2) return error('分片过大', 413);
+  const upload = multipartBucket(env).resumeMultipartUpload(attachment.r2_key, uploadId);
+  const part = await upload.uploadPart(partNumber, toArrayBuffer(bytes));
+  return json({ etag: part.etag, partNumber: part.partNumber });
+}
+
+async function completeAttachmentUpload(
+  request: Request,
+  env: Env,
+  page: PageSummary,
+  attachment: AttachmentRow,
+  actorId: string,
+): Promise<Response> {
+  if (attachment.page_id !== page.id || attachment.status !== 'pending') {
+    return error('上传会话不存在或已结束', 404);
+  }
+  const uploadId = multipartUploadId(attachment.sha256);
+  if (!uploadId) return error('上传会话无效', 409);
+  const body = (await request.json().catch(() => null)) as {
+    parts?: Array<{ etag?: string; partNumber?: number }>;
+  } | null;
+  const parts = (body?.parts ?? [])
+    .map((part) => ({
+      etag: String(part.etag ?? ''),
+      partNumber: Number(part.partNumber ?? 0),
+    }))
+    .filter((part) => part.etag && Number.isSafeInteger(part.partNumber) && part.partNumber > 0)
+    .sort((left, right) => left.partNumber - right.partNumber);
+  if (!parts.length) return error('缺少已上传的分片', 400);
+  const upload = multipartBucket(env).resumeMultipartUpload(attachment.r2_key, uploadId);
+  await upload.complete(parts);
+  const object = await env.ATTACHMENTS.head(attachment.r2_key);
+  const byteSize = object?.size ?? attachment.byte_size;
+  await env.DB.prepare(
+    `UPDATE attachments
+        SET status = 'ready', byte_size = ?, sha256 = ?
+      WHERE id = ? AND status = 'pending'`,
+  )
+    .bind(byteSize, `done:${uploadId}`, attachment.id)
+    .run();
+  const ready = {
+    ...attachment,
+    byte_size: byteSize,
+    sha256: `done:${uploadId}`,
+    status: 'ready' as const,
+  };
+  await pageAudit(env, page, actorId, 'attachment.created', {
+    attachmentId: attachment.id,
+    byteSize,
+    mimeType: attachment.mime_type,
+  });
+  return json({ attachment: attachmentFromRow(ready) });
 }
 
 async function findAttachment(env: Env, attachmentId: string): Promise<AttachmentRow | null> {
@@ -4132,6 +4280,34 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     if (request.method === 'DELETE') {
       return deletePageGrant(env, authorized.page, actorId, type, principalId, context);
     }
+  }
+
+  const pageAttachmentUploadsMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/attachments\/uploads(?:\/([^/]+)(?:\/(complete|parts\/(\d+)))?)?$/,
+  );
+  if (pageAttachmentUploadsMatch?.[1]) {
+    const pageId = decodeURIComponent(pageAttachmentUploadsMatch[1]);
+    if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    const authorized = await requirePageAction(env, pageId, actorId, 'edit_content');
+    if (!authorized) return error('页面不存在或无权上传附件', 404);
+    const uploadId = pageAttachmentUploadsMatch[2];
+    const complete = pageAttachmentUploadsMatch[3] === 'complete';
+    const partNumber = pageAttachmentUploadsMatch[4] ? Number(pageAttachmentUploadsMatch[4]) : null;
+    if (!uploadId && request.method === 'POST') {
+      return startAttachmentUpload(request, env, authorized.page, actorId);
+    }
+    if (uploadId && !isPageId(uploadId)) return error('附件 ID 无效', 400);
+    if (uploadId) {
+      const attachment = await findAttachment(env, uploadId);
+      if (!attachment) return error('上传会话不存在', 404);
+      if (complete && request.method === 'POST') {
+        return completeAttachmentUpload(request, env, authorized.page, attachment, actorId);
+      }
+      if (partNumber !== null && request.method === 'PUT') {
+        return uploadAttachmentPart(request, env, authorized.page, attachment, partNumber);
+      }
+    }
+    return error('附件上传方法不受支持', 405);
   }
 
   const pageAttachmentsMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/attachments$/);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isPageId } from './index';
+import { isPageId, MAX_ATTACHMENT_BYTES } from './index';
 
 describe('isPageId', () => {
   it('accepts UUID v4 page ids', () => {
@@ -10,5 +10,11 @@ describe('isPageId', () => {
   it('rejects path traversal and arbitrary strings', () => {
     expect(isPageId('../etc/passwd')).toBe(false);
     expect(isPageId('not-a-page')).toBe(false);
+  });
+});
+
+describe('attachment limits', () => {
+  it('allows 1 GB uploads', () => {
+    expect(MAX_ATTACHMENT_BYTES).toBe(1024 * 1024 * 1024);
   });
 });

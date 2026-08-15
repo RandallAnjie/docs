@@ -5,7 +5,7 @@ import Image from '@tiptap/extension-image';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
 import { Mathematics } from '@tiptap/extension-mathematics';
 import { TableKit } from '@tiptap/extension-table';
-import type { Editor } from '@tiptap/core';
+import { Extension, type Editor } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import {
@@ -15,6 +15,7 @@ import {
   ySyncPluginKey,
 } from '@tiptap/y-tiptap';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { TextSelection } from '@tiptap/pm/state';
 import {
   browserSupportsWebAuthn,
   startAuthentication,
@@ -41,6 +42,7 @@ import {
   FilePlus2,
   FileText,
   FolderInput,
+  ImagePlus,
   Heading1,
   Heading2,
   Heading3,
@@ -87,7 +89,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { flushSync } from 'react-dom';
+
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
@@ -175,6 +177,13 @@ import {
   pageBreadcrumbItems,
   type PageTreeNode,
 } from './page-tree';
+import {
+  acceptForAttachmentKind,
+  filesFromDataTransfer,
+  insertAttachments,
+  pickLocalFiles,
+  validateAttachmentFile,
+} from './page-upload';
 import { normalizePageButtonUrl } from './PageUtilityBlocks';
 import { RevisionPanel } from './RevisionPanel';
 import { SpaceAccessDialog } from './SpaceAccessDialog';
@@ -224,6 +233,7 @@ type SlashCommandId =
   | 'heading-1'
   | 'heading-2'
   | 'heading-3'
+  | 'image'
   | 'inline-math'
   | 'inline-reminder'
   | 'audio'
@@ -356,9 +366,15 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     keywords: 'synced block mirror 跨页 同步块',
   },
   {
+    id: 'image',
+    label: '图片',
+    description: '直接上传并插入到当前页面',
+    keywords: 'image picture photo 图片 照片',
+  },
+  {
     id: 'file',
     label: '文件',
-    description: '上传并插入私有文件',
+    description: '直接上传并插入到当前页面',
     keywords: 'file attachment upload 文件 附件',
   },
   {
@@ -427,6 +443,8 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <Heading2 size={17} />;
     case 'heading-3':
       return <Heading3 size={17} />;
+    case 'image':
+      return <ImagePlus size={17} />;
     case 'bullet-list':
       return <List size={17} />;
     case 'numbered-list':
@@ -2469,41 +2487,15 @@ function DocumentWorkspace({
     }
   };
 
+  const [pageUpload, setPageUpload] = useState<{
+    name: string;
+    percent: number;
+  } | null>(null);
+
   const insertAttachment = useCallback((attachment: AttachmentSummary) => {
     const editor = editorRef.current;
     if (!editor) return;
-    const href = attachmentDownloadUrl(attachment.id);
-    if (attachment.mimeType.startsWith('image/')) {
-      editor
-        .chain()
-        .focus()
-        .setImage({ src: href, alt: attachment.originalName, title: attachment.originalName })
-        .run();
-      return;
-    }
-    const commonAttributes = {
-      attachmentId: attachment.id,
-      byteSize: attachment.byteSize,
-      mimeType: attachment.mimeType,
-      name: attachment.originalName,
-    };
-    if (attachment.mimeType.startsWith('audio/')) {
-      editor
-        .chain()
-        .focus()
-        .insertContent({ type: 'attachmentAudio', attrs: commonAttributes })
-        .run();
-      return;
-    }
-    if (attachment.mimeType.startsWith('video/')) {
-      editor
-        .chain()
-        .focus()
-        .insertContent({ type: 'attachmentVideo', attrs: commonAttributes })
-        .run();
-      return;
-    }
-    editor.chain().focus().insertContent({ type: 'attachmentFile', attrs: commonAttributes }).run();
+    insertAttachments(editor, [attachment]);
   }, []);
 
   const removeDeletedAttachmentFromDocument = useCallback((attachment: AttachmentSummary) => {
@@ -2513,14 +2505,33 @@ function DocumentWorkspace({
     if (transaction) editor.view.dispatch(transaction);
   }, []);
 
-  const requestAttachmentUpload = useCallback((kind: 'audio' | 'file' | 'video') => {
-    flushSync(() => {
-      setContextPanelOpen(true);
-      setContextTab('attachments');
-    });
-    const accept = kind === 'audio' ? 'audio/*' : kind === 'video' ? 'video/*' : undefined;
-    attachmentPanelRef.current?.openPicker(accept);
-  }, []);
+  const uploadFilesToPage = useCallback(
+    async (files: File[], target?: Editor | null) => {
+      const editor = target ?? editorRef.current;
+      if (!files.length) return;
+      for (const file of files) {
+        const invalid = validateAttachmentFile(file);
+        if (invalid) {
+          showToast(invalid);
+          continue;
+        }
+        setPageUpload({ name: file.name, percent: 0 });
+        try {
+          const result = await uploadAttachment(page.id, file, (uploaded, total) => {
+            setPageUpload({
+              name: file.name,
+              percent: total ? Math.round((uploaded / total) * 100) : 0,
+            });
+          });
+          if (editor?.isEditable) insertAttachments(editor, [result.attachment]);
+        } catch (reason) {
+          showToast(reason instanceof Error ? reason.message : '附件上传失败');
+        }
+      }
+      setPageUpload(null);
+    },
+    [page.id],
+  );
 
   return (
     <div
@@ -2902,7 +2913,7 @@ function DocumentWorkspace({
                 onAskAi={openAi}
                 editable={canEdit}
                 onReady={handleEditorReady}
-                onRequestAttachment={requestAttachmentUpload}
+                onUploadFiles={uploadFilesToPage}
                 onCreateSyncedBlock={createSyncedBlockResource}
                 organizationId={page.organizationId}
                 breadcrumbItems={breadcrumbItems}
@@ -2916,6 +2927,14 @@ function DocumentWorkspace({
                 <span>正在建立加密协作连接…</span>
               </div>
             )}
+            {pageUpload ? (
+              <div className="page-upload-progress" role="status">
+                <span>
+                  正在上传 {pageUpload.name} · {pageUpload.percent}%
+                </span>
+                <i style={{ width: `${pageUpload.percent}%` }} />
+              </div>
+            ) : null}
           </article>
         </div>
       </main>
@@ -3159,7 +3178,7 @@ function CollaborativeEditor({
   onAskAi,
   editable,
   onReady,
-  onRequestAttachment,
+  onUploadFiles,
   onCreateSyncedBlock,
   organizationId,
   breadcrumbItems,
@@ -3173,7 +3192,7 @@ function CollaborativeEditor({
   onAskAi?: (request: EditorAiRequest) => void;
   editable: boolean;
   onReady: (editor: Editor | null) => void;
-  onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
+  onUploadFiles: (files: File[], target?: Editor | null) => Promise<void>;
   onCreateSyncedBlock: (snapshot?: Uint8Array) => Promise<string>;
   organizationId: string;
   breadcrumbItems: readonly { id: string; title: string }[];
@@ -3185,8 +3204,33 @@ function CollaborativeEditor({
   const editorInstance = useRef<Editor | null>(null);
   const breadcrumbItemsRef = useRef(breadcrumbItems);
   breadcrumbItemsRef.current = breadcrumbItems;
-  const syncedBlockContextRef = useRef({ identity, pageId, publicShareToken, publicSiteSlug });
-  syncedBlockContextRef.current = { identity, pageId, publicShareToken, publicSiteSlug };
+  const uploadFilesRef = useRef(onUploadFiles);
+  uploadFilesRef.current = onUploadFiles;
+  const slashKeyRef = useRef<{
+    commands: SlashCommandDefinition[];
+    index: number;
+    isOpen: boolean;
+    run: (id: SlashCommandId) => void;
+  }>({
+    commands: [],
+    index: 0,
+    isOpen: false,
+    run: () => undefined,
+  });
+  const syncedBlockContextRef = useRef({
+    identity,
+    pageId,
+    publicShareToken,
+    publicSiteSlug,
+    uploadFiles: onUploadFiles,
+  });
+  syncedBlockContextRef.current = {
+    identity,
+    pageId,
+    publicShareToken,
+    publicSiteSlug,
+    uploadFiles: onUploadFiles,
+  };
   const publicReadOnlyToken =
     publicShareToken ?? (publicSiteSlug ? `site:${publicSiteSlug}` : undefined);
   const inlineReminderContextRef = useRef({
@@ -3242,9 +3286,55 @@ function CollaborativeEditor({
     }
   }, []);
 
+  const slashMenuKeys = useMemo(
+    () =>
+      Extension.create({
+        name: 'slashMenuKeys',
+        priority: 1000,
+        addKeyboardShortcuts() {
+          return {
+            Enter: () => {
+              const slash = slashKeyRef.current;
+              if (!slash.isOpen || !slash.commands.length) return false;
+              const selected = slash.commands[slash.index % slash.commands.length];
+              if (selected) slash.run(selected.id);
+              return true;
+            },
+            ArrowDown: () => {
+              const slash = slashKeyRef.current;
+              if (!slash.isOpen || !slash.commands.length) return false;
+              setSlashIndex(
+                (current) => (current + 1 + slash.commands.length) % slash.commands.length,
+              );
+              return true;
+            },
+            ArrowUp: () => {
+              const slash = slashKeyRef.current;
+              if (!slash.isOpen || !slash.commands.length) return false;
+              setSlashIndex(
+                (current) => (current - 1 + slash.commands.length) % slash.commands.length,
+              );
+              return true;
+            },
+            Escape: () => {
+              const slash = slashKeyRef.current;
+              if (!slash.isOpen) return false;
+              const current = editorInstance.current;
+              const context = current ? slashContext(current) : null;
+              if (current && context) current.chain().focus().deleteRange(context).run();
+              setSlashMenu(null);
+              return true;
+            },
+          };
+        },
+      }),
+    [],
+  );
+
   const editor = useEditor({
     editable,
     extensions: [
+      slashMenuKeys,
       StarterKit.configure({
         undoRedo: false,
         link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
@@ -3317,6 +3407,57 @@ function CollaborativeEditor({
       attributes: {
         class: 'rdocs-editor',
         spellcheck: 'true',
+      },
+      handleKeyDown: (_view, event) => {
+        const slash = slashKeyRef.current;
+        if (!slash.isOpen) return false;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          const current = editorInstance.current;
+          const context = current ? slashContext(current) : null;
+          if (current && context) current.chain().focus().deleteRange(context).run();
+          setSlashMenu(null);
+          return true;
+        }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          if (!slash.commands.length) return true;
+          event.preventDefault();
+          const delta = event.key === 'ArrowDown' ? 1 : -1;
+          setSlashIndex(
+            (current) => (current + delta + slash.commands.length) % slash.commands.length,
+          );
+          return true;
+        }
+        if (event.key === 'Enter' && !event.shiftKey && slash.commands.length) {
+          event.preventDefault();
+          const selected = slash.commands[slash.index % slash.commands.length];
+          if (selected) slash.run(selected.id);
+          return true;
+        }
+        return false;
+      },
+      handleDrop: (view, event) => {
+        if (event.target instanceof Element && event.target.closest('[data-rdocs-synced-block]')) {
+          return true;
+        }
+        const files = filesFromDataTransfer(event.dataTransfer);
+        if (!files.length || !view.editable) return false;
+        event.preventDefault();
+        const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
+        if (coords) {
+          view.dispatch(
+            view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(coords.pos))),
+          );
+        }
+        void uploadFilesRef.current(files);
+        return true;
+      },
+      handlePaste: (view, event) => {
+        const files = filesFromDataTransfer(event.clipboardData);
+        if (!files.length || !view.editable) return false;
+        event.preventDefault();
+        void uploadFilesRef.current(files);
+        return true;
       },
     },
     onSelectionUpdate: ({ editor: currentEditor }) => {
@@ -3616,10 +3757,12 @@ function CollaborativeEditor({
         return;
       }
 
-      if (id === 'audio' || id === 'file' || id === 'video') {
+      if (id === 'audio' || id === 'file' || id === 'image' || id === 'video') {
         editor.chain().focus().deleteRange(context).run();
-        onRequestAttachment(id);
         setSlashMenu(null);
+        void pickLocalFiles(acceptForAttachmentKind(id), true).then((files) => {
+          if (files.length) void uploadFilesRef.current(files);
+        });
         return;
       }
 
@@ -3760,38 +3903,17 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor, identity.id, onAskAi, onCreateSyncedBlock, onRequestAttachment, organizationId],
+    [editor, identity.id, onAskAi, onCreateSyncedBlock, organizationId],
   );
 
-  useEffect(() => setSlashIndex(0), [slashMenu?.query]);
+  slashKeyRef.current = {
+    commands: filteredSlashCommands,
+    index: slashIndex,
+    isOpen: Boolean(slashMenu),
+    run: runSlashCommand,
+  };
 
-  useEffect(() => {
-    if (!editor || !slashMenu) return;
-    const handleMenuKeys = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        editor.chain().focus().deleteRange(slashMenu).run();
-        setSlashMenu(null);
-        return;
-      }
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        if (!filteredSlashCommands.length) return;
-        event.preventDefault();
-        setSlashIndex((current) => {
-          const delta = event.key === 'ArrowDown' ? 1 : -1;
-          return (current + delta + filteredSlashCommands.length) % filteredSlashCommands.length;
-        });
-        return;
-      }
-      if (event.key === 'Enter' && filteredSlashCommands.length) {
-        event.preventDefault();
-        const selected = filteredSlashCommands[slashIndex % filteredSlashCommands.length];
-        if (selected) runSlashCommand(selected.id);
-      }
-    };
-    editor.view.dom.addEventListener('keydown', handleMenuKeys);
-    return () => editor.view.dom.removeEventListener('keydown', handleMenuKeys);
-  }, [editor, filteredSlashCommands, runSlashCommand, slashIndex, slashMenu]);
+  useEffect(() => setSlashIndex(0), [slashMenu?.query]);
 
   if (!editor) return null;
 

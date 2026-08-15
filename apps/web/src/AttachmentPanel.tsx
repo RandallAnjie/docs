@@ -3,8 +3,11 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 
 import type { AttachmentSummary } from '@rdocs/shared';
 
+import { MAX_ATTACHMENT_BYTES } from '@rdocs/shared';
+
 import { attachmentDownloadUrl, deleteAttachment, listAttachments, uploadAttachment } from './api';
 import { confirmDialog } from './dialogs';
+import { attachmentLimitLabel, validateAttachmentFile } from './page-upload';
 
 function byteLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -58,8 +61,9 @@ export const AttachmentPanel = forwardRef<AttachmentPanelHandle, AttachmentPanel
 
     const selectFile = async (file: File | undefined) => {
       if (!file || uploading) return;
-      if (file.size > 25 * 1024 * 1024) {
-        setError('附件不能超过 25 MB');
+      const invalid = validateAttachmentFile(file);
+      if (invalid) {
+        setError(invalid);
         return;
       }
       setUploading(true);
@@ -112,8 +116,8 @@ export const AttachmentPanel = forwardRef<AttachmentPanelHandle, AttachmentPanel
               onClick={() => openPicker()}
               disabled={uploading}
             >
-              <Upload size={15} /> {uploading ? '正在上传…' : '上传附件'}
-              <small>最大 25 MB</small>
+              <Upload size={15} /> {uploading ? '正在上传…' : '上传到附件库'}
+              <small>最大 {attachmentLimitLabel(MAX_ATTACHMENT_BYTES)}</small>
             </button>
           </>
         ) : null}
