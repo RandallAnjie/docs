@@ -69,7 +69,7 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 
 ## 上线状态与仍需本人完成的动作
 
-- 已完成：备份生产 D1，并精确应用 migrations `0004`–`0026`；迁移账本、85 个页面的编辑器 schema v9、50 张平台计数表（含 5 张 FTS5 影子表）、同步资源、页面链接投影、页面订阅、提醒、系统身份、设备密钥、组织所有者和外键完整性均已复验。`0026` 前原始导出位于 `/tmp/rdocs-db-backup-UAzHPC/before-0026.sql`（178,309 bytes，SHA-256 `ed253e3ab2e571c68c44e32c06eaa80fcf5df784fcecbf187258f230be29b8ae`）；因 RF-10 另有已实际重放并演练 `0026` 的恢复副本 `/tmp/rdocs-db-backup-UAzHPC/before-0026-restorable.sql`（169,772 bytes，SHA-256 `b5d65787a737c3572fa984d541ebfae1a55cbb183fb789f16f14c92824dbee2c`）。
+- 已完成：备份生产 D1，并精确应用 migrations `0004`–`0027`；迁移账本、85 个页面的编辑器 schema v10、50 张平台计数表（含 5 张 FTS5 影子表）、43 个显式索引、同步资源、页面链接投影、页面订阅、提醒、系统身份、设备密钥、组织所有者和外键完整性均已复验。`0027` 前原始导出位于 `/tmp/rdocs-db-backup-x1koXW/before-0027.sql`（179,346 bytes，SHA-256 `21a0fb8b94b6fa5c3109f86bc16fc8ecc17c15c2debd93e05b7e7e14cd513b65`）；因 RF-10 另有剔除错误 FTS 影子数据、补回 41 个迁移前显式索引并已实际重放及演练 `0027` 的恢复副本 `/tmp/rdocs-db-backup-x1koXW/before-0027-restorable.sql`（174,988 bytes，SHA-256 `01af7c9d554e8500cfd70405faea69b273ee22b91f0c6addf63817f928c621d6`）。
 - 已完成：格式、类型、单元/集成测试、构建、原生 WebSocket、generation 恢复和生产产品主链路 smoke。
 - 已完成：Rdocs v0.1 业务代码合并到 `main`，RandallFlare Git build 已自动激活并在正式域名复验。
 - 已完成：按 [设备密钥手册](PASSKEY_SETUP.md) 登记真实密钥、切换到 `passkey`、删除一次性登记 secret，并让旧 `phase0` 配置在代码中失效。
@@ -78,8 +78,8 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 ## 已知非阻塞差异
 
 - RandallFlare 已修复此前的平台阻塞；历史见 [平台修复清单](RANDALLFLARE_PLATFORM_ISSUES.md)。
-- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0026` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
-- `rrangler d1 export` 会重复输出 FTS5 影子表且把 BLOB 写成 `[object Object]`，原始 SQL 无法直接重放，已作为 RF-10 记录；本次另保留了仅剔除影子表行、已实际重放验证的恢复副本。
+- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0027` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
+- `rrangler d1 export` 会重复输出 FTS5 影子表、把 BLOB 写成 `[object Object]`，并漏掉全部显式索引，原始 SQL 无法完整恢复，已作为 RF-10 记录；本次恢复副本同时剔除了错误影子表行并从只读 `sqlite_master` 查询补回显式索引，已实际重放验证。
 - 重复运行生产产品 smoke 时，三个不同写端点间歇出现过 `502 upstream peer unreachable`；完整重跑可以通过，已作为 RF-8 记录并保留 request ID，不能视为 Rdocs 业务层已消除的平台可靠性风险。
 - Rdocs 当前没有 browser→R2 直传所需的项目级短期签名配置，因此附件走鉴权 Worker，单文件限制 25 MB。功能、权限和数据保留闭环不受影响，大附件成本路径尚未达到设计推荐值。
 - 本机随附的 `workerd 2026-08-14` 当前只接受到 `2026-07-08` 的 compatibility date，导致本地完整 Worker 浏览器验收无法启动；生产 RandallFlare 不受该本地工具版本限制。
