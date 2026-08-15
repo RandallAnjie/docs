@@ -142,7 +142,7 @@ import { DiscoveryDialog } from './DiscoveryDialog';
 import { EditorBlockHandle } from './EditorBlockHandle';
 import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
-import { NotificationBell } from './NotificationBell';
+import { NotificationBell, PageNotificationControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
 import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
@@ -2319,6 +2319,9 @@ function DocumentWorkspace({
             {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
             <ConnectionPill state={connection} offlineReady={offlineReady} />
             <CollaboratorStack collaborators={collaborators} />
+            {onLogout && !renewTicket ? (
+              <PageNotificationControl key={page.id} pageId={page.id} />
+            ) : null}
             {!renewTicket ? (
               <button
                 className={`icon-button subtle header-comment-button ${contextPanelOpen ? 'active' : ''}`}

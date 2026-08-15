@@ -33,6 +33,8 @@ import type {
   PageGrantRole,
   PageGrantSummary,
   PageLinkPreview,
+  PageNotificationMode,
+  PageNotificationSettings,
   PageSearchSort,
   PageSearchResult,
   PageSummary,
@@ -628,25 +630,67 @@ export function setCommentThreadResolved(
   });
 }
 
-export function listNotifications(organizationId?: string): Promise<{
+export type NotificationView = 'inbox' | 'unread' | 'archived';
+
+export function listNotificationsView(
+  organizationId: string | undefined,
+  view: NotificationView,
+): Promise<{
   notifications: NotificationSummary[];
   unreadCount: number;
+  resultCapReached: boolean;
 }> {
-  return request(
-    organizationId
-      ? `/api/notifications?organizationId=${encodeURIComponent(organizationId)}`
-      : '/api/notifications',
-  );
+  const query = new URLSearchParams({ view });
+  if (organizationId) query.set('organizationId', organizationId);
+  return request(`/api/notifications?${query.toString()}`);
 }
 
-export function markNotificationRead(notificationId: string): Promise<{ ok: true }> {
-  return request(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+export function updateNotification(
+  notificationId: string,
+  input: { read?: boolean; archived?: boolean },
+): Promise<{ ok: true }> {
+  return request(`/api/notifications/${encodeURIComponent(notificationId)}`, {
     method: 'PATCH',
+    body: JSON.stringify(input),
   });
 }
 
-export function markAllNotificationsRead(): Promise<{ ok: true }> {
-  return request('/api/notifications/read-all', { method: 'POST' });
+function bulkNotificationAction(
+  action: 'read-all' | 'archive-read' | 'archive-all',
+  organizationId: string,
+): Promise<{ ok: true }> {
+  return request(`/api/notifications/${action}`, {
+    method: 'POST',
+    body: JSON.stringify({ organizationId }),
+  });
+}
+
+export function markAllNotificationsRead(organizationId: string): Promise<{ ok: true }> {
+  return bulkNotificationAction('read-all', organizationId);
+}
+
+export function archiveReadNotifications(organizationId: string): Promise<{ ok: true }> {
+  return bulkNotificationAction('archive-read', organizationId);
+}
+
+export function archiveAllNotifications(organizationId: string): Promise<{ ok: true }> {
+  return bulkNotificationAction('archive-all', organizationId);
+}
+
+export function getPageNotificationSettings(
+  pageId: string,
+): Promise<{ settings: PageNotificationSettings }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/notification-settings`);
+}
+
+export function setPageNotificationSettings(
+  pageId: string,
+  mode: PageNotificationMode,
+): Promise<{ settings: PageNotificationSettings }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/notification-settings`, {
+    method: 'PUT',
+    body: JSON.stringify({ mode }),
+  });
 }
 
 export async function uploadAttachment(

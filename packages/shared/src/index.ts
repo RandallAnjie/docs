@@ -376,7 +376,21 @@ export interface CommentThreadSummary {
 }
 
 export type NotificationType =
-  'mention' | 'comment_reply' | 'page_shared' | 'permission_changed' | 'invitation_accepted';
+  | 'mention'
+  | 'comment_reply'
+  | 'page_comment'
+  | 'page_updated'
+  | 'page_shared'
+  | 'permission_changed'
+  | 'invitation_accepted';
+
+export type PageNotificationMode = 'all_updates' | 'all_comments' | 'replies_mentions';
+
+export interface PageNotificationSettings {
+  pageId: string;
+  mode: PageNotificationMode;
+  explicitlySet: boolean;
+}
 
 export interface NotificationSummary {
   id: string;
@@ -390,6 +404,7 @@ export interface NotificationSummary {
   metadata: Record<string, unknown>;
   createdAt: number;
   readAt: number | null;
+  archivedAt: number | null;
 }
 
 export interface ShareLinkSummary {

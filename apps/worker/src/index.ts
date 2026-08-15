@@ -36,7 +36,7 @@ import {
   type SpaceAction,
 } from './access';
 import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
-import { handleCommentsAndNotificationsApi } from './comments';
+import { deliverPageUpdateNotifications, handleCommentsAndNotificationsApi } from './comments';
 import { handleDatabasesApi, handlePublicDatabaseFormsApi } from './databases';
 import {
   cacheCollaborationPage,
@@ -2443,22 +2443,32 @@ async function pageAudit(
   eventType: string,
   metadata: Record<string, unknown> = {},
 ): Promise<void> {
+  const eventId = crypto.randomUUID();
+  const now = Date.now();
   await env.DB.prepare(
     `INSERT INTO audit_events(
        id, organization_id, actor_id, event_type, target_type, target_id,
        request_id, metadata_json, created_at
      ) VALUES (?, ?, ?, ?, 'page', ?, NULL, ?, ?)`,
   )
-    .bind(
-      crypto.randomUUID(),
-      page.organizationId,
-      actorId,
-      eventType,
-      page.id,
-      JSON.stringify(metadata),
-      Date.now(),
-    )
+    .bind(eventId, page.organizationId, actorId, eventType, page.id, JSON.stringify(metadata), now)
     .run();
+  await deliverPageUpdateNotifications(env, {
+    organizationId: page.organizationId,
+    pageId: page.id,
+    actorId,
+    eventKey: `page-audit:${eventId}`,
+    metadata: { ...metadata, eventType },
+  }).catch((reason) =>
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'page_update_notification_failed',
+        pageId: page.id,
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    ),
+  );
 }
 
 async function closePageConnections(

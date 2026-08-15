@@ -17,6 +17,7 @@ import {
 } from '@rdocs/shared';
 
 import type { Env } from './env';
+import { deliverPageUpdateNotifications } from './comments';
 import { documentPlainText, normalizeSearchText, searchIndexText } from './search-projection';
 
 const MESSAGE_SYNC = 0;
@@ -985,6 +986,7 @@ export class DocumentRoom {
       .bind(pageId)
       .first<RevisionPageRow>();
     if (!page || Number(page.current_generation) !== generation) return;
+    const eventId = crypto.randomUUID();
     await this.env.DB.prepare(
       `INSERT INTO audit_events(
          id, organization_id, actor_id, event_type, target_type, target_id,
@@ -992,7 +994,7 @@ export class DocumentRoom {
        ) VALUES (?, ?, ?, 'page.content_updated', 'page', ?, NULL, ?, ?)`,
     )
       .bind(
-        crypto.randomUUID(),
+        eventId,
         page.organization_id,
         actorId,
         pageId,
@@ -1000,6 +1002,26 @@ export class DocumentRoom {
         now,
       )
       .run();
+    this.state.waitUntil(
+      deliverPageUpdateNotifications(this.env, {
+        organizationId: page.organization_id,
+        pageId,
+        actorId,
+        eventKey: `page-content:${pageId}:${generation}:${this.currentSeq}`,
+        metadata: { eventType: 'page.content_updated', generation, collabSeq: this.currentSeq },
+      })
+        .then(() => undefined)
+        .catch((reason) =>
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              event: 'page_update_notification_failed',
+              pageId,
+              message: reason instanceof Error ? reason.message : String(reason),
+            }),
+          ),
+        ),
+    );
     await this.setRoomMetaNumber('last_page_update_event_at', now);
   }
 
