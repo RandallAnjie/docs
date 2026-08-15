@@ -201,6 +201,41 @@ export interface ProjectWorkspaceSummary {
   sprintsDatabaseId: string;
 }
 
+export type DatabaseAutomationTrigger =
+  'row_created' | 'row_updated' | 'property_changed' | 'form_submitted' | 'manual';
+
+export type DatabaseAutomationAction =
+  'set_property' | 'toggle_checkbox' | 'increment_number' | 'archive_row' | 'webhook';
+
+export interface DatabaseAutomationSummary {
+  id: string;
+  databaseId: string;
+  name: string;
+  enabled: boolean;
+  triggerType: DatabaseAutomationTrigger;
+  triggerConfig: Record<string, JsonValue>;
+  actionType: DatabaseAutomationAction;
+  actionConfig: Record<string, JsonValue>;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DatabaseAutomationRunSummary {
+  id: string;
+  databaseId: string;
+  automationId: string;
+  rowId: string | null;
+  triggerType: DatabaseAutomationTrigger;
+  status: 'running' | 'succeeded' | 'failed' | 'skipped';
+  attempt: number;
+  responseCode: number | null;
+  errorMessage: string | null;
+  startedAt: number;
+  completedAt: number | null;
+}
+
 export interface DatabaseSummary {
   id: string;
   organizationId: string;

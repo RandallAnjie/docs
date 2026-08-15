@@ -4958,6 +4958,31 @@ button {
 .database-computed-value.empty {
   color: #b7b5b0;
 }
+.database-button-cell {
+  max-width: calc(100% - 10px);
+  min-height: 24px;
+  margin: 4px 5px;
+  border: 1px solid #d9d8d5;
+  border-radius: 5px;
+  background: #fff;
+  color: #4f4d49;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.database-button-cell:hover:not(:disabled) {
+  background: #f3f3f1;
+  border-color: #c9c8c5;
+}
+.database-button-cell:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .database-checkbox-cell {
   height: 100%;
   padding: 0 8px;
@@ -6163,6 +6188,172 @@ button {
   font: inherit;
   font-weight: 400;
 }
+.database-automation-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 40px));
+  overflow: auto;
+}
+.database-automation-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.database-automation-dialog h2,
+.database-automation-dialog h3,
+.database-automation-dialog p {
+  margin: 0;
+}
+.database-automation-dialog header p {
+  margin-top: 4px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-automation-dialog header > button {
+  border: 0;
+  background: transparent;
+  color: #787671;
+  font-size: 20px;
+  cursor: pointer;
+}
+.database-automation-list {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 18px;
+}
+.database-automation-list > p {
+  border-radius: 6px;
+  background: #f7f7f5;
+  padding: 14px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-automation-list article {
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid #efefed;
+}
+.database-automation-list article > span {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #efefed;
+  color: #9b9994;
+  display: grid;
+  place-items: center;
+}
+.database-automation-list article > span.enabled {
+  background: #fbf3db;
+  color: #a07813;
+}
+.database-automation-list article > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.database-automation-list strong,
+.database-automation-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-automation-list strong {
+  font-size: 13px;
+}
+.database-automation-list small {
+  color: #898781;
+  font-size: 11px;
+}
+.database-automation-list button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 5px 7px;
+  color: #6f6d68;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.database-automation-list button:hover:not(:disabled) {
+  background: #f2f2f0;
+}
+.database-automation-list button.danger {
+  color: #c94b47;
+}
+.database-automation-dialog > form {
+  border-top: 1px solid #e9e8e6;
+  padding-top: 16px;
+}
+.database-automation-dialog > form h3 {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+.database-automation-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.database-automation-grid label {
+  display: grid;
+  gap: 6px;
+  color: #5f5e5a;
+  font-size: 12px;
+  font-weight: 550;
+}
+.database-automation-grid input,
+.database-automation-grid select {
+  min-width: 0;
+  border: 1px solid #d9d8d5;
+  border-radius: 5px;
+  background: #fff;
+  padding: 8px 9px;
+  font: inherit;
+  font-weight: 400;
+}
+.database-automation-dialog .dialog-actions {
+  margin-top: 14px;
+}
+.database-automation-runs {
+  margin-top: 16px;
+  border-top: 1px solid #e9e8e6;
+  padding-top: 12px;
+}
+.database-automation-runs summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6f6d68;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-automation-runs > div {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: 72px 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #f1f1ef;
+  font-size: 11px;
+}
+.database-automation-runs span {
+  width: fit-content;
+  border-radius: 999px;
+  background: #e9f5ee;
+  color: #2f7d4c;
+  padding: 2px 7px;
+}
+.database-automation-runs span.failed {
+  background: #fbe9e7;
+  color: #b53b36;
+}
+.database-automation-runs time,
+.database-automation-runs small {
+  color: #898781;
+}
 .database-trash-dialog > header {
   display: flex;
   align-items: flex-start;
@@ -6331,6 +6522,27 @@ button {
   .database-template-default {
     grid-column: 3;
     grid-row: 1;
+  }
+  .database-automation-grid {
+    grid-template-columns: 1fr;
+  }
+  .database-automation-list article {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    padding: 7px 0;
+  }
+  .database-automation-list article > button {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .database-automation-list article > button.danger {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  .database-automation-runs > div {
+    grid-template-columns: 70px 1fr;
+  }
+  .database-automation-runs small {
+    grid-column: 1 / -1;
   }
 }
 

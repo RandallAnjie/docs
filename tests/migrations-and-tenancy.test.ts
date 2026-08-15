@@ -87,6 +87,7 @@ function migratedDatabase(): DatabaseSync {
     '0012_database_sequence_rollout_guards.sql',
     '0013_public_database_forms.sql',
     '0014_database_templates.sql',
+    '0015_database_automations.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -173,7 +174,7 @@ describe('database migrations', () => {
           "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
         )
         .get(),
-    ).toMatchObject({ total: 10 });
+    ).toMatchObject({ total: 12 });
     const rolloutOwner = seedTenant(database, 'rollout-guard');
     const seed = {
       id: 'page_rollout_parent',
@@ -373,6 +374,74 @@ describe('structured database integration', () => {
       database.prepare('SELECT title, parent_id FROM pages WHERE id = ?').get(rowResult.row.pageId),
     ).toMatchObject({ title: '发布 Rdocs', parent_id: pageId });
 
+    const automationResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/automations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '工时变更后再加一小时',
+          triggerType: 'property_changed',
+          triggerConfig: { propertyId: numberProperty.property.id },
+          actionType: 'increment_number',
+          actionConfig: { targetPropertyId: numberProperty.property.id, increment: 1 },
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(automationResponse?.status).toBe(201);
+
+    const buttonPropertyResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '增加工时',
+          type: 'button',
+          config: {
+            label: '+2',
+            action: 'increment_number',
+            targetPropertyId: numberProperty.property.id,
+            increment: 2,
+          },
+        }),
+      }),
+      env,
+      owner,
+    );
+    const buttonProperty = (await buttonPropertyResponse?.json()) as {
+      property: { id: string };
+    };
+    const buttonResponse = await handleDatabasesApi(
+      new Request(
+        `https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}/buttons/${buttonProperty.property.id}`,
+        { method: 'POST' },
+      ),
+      env,
+      owner,
+    );
+    const buttonResult = (await buttonResponse?.json()) as {
+      row: { values: Record<string, unknown> };
+    };
+    expect(buttonResponse?.status).toBe(200);
+    expect(buttonResult.row.values[numberProperty.property.id]).toBe(6);
+    expect(buttonResult.row.values[formulaProperty.property.id]).toBe(12);
+    const automationListResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/automations`),
+      env,
+      owner,
+    );
+    const automationList = (await automationListResponse?.json()) as {
+      automations: Array<{ name: string }>;
+      runs: Array<{ status: string; rowId: string }>;
+    };
+    expect(automationList.automations).toEqual([
+      expect.objectContaining({ name: '工时变更后再加一小时' }),
+    ]);
+    expect(automationList.runs).toEqual([
+      expect.objectContaining({ status: 'succeeded', rowId: rowResult.row.id }),
+    ]);
+
     for (const expectedSequence of [2, 3]) {
       const temporaryResponse = await handleDatabasesApi(
         new Request(`https://docs.test/api/databases/${databaseId}/rows`, {
@@ -511,6 +580,34 @@ describe('structured database integration', () => {
       owner,
     );
 
+    const triagedPropertyResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '已分流', type: 'checkbox' }),
+      }),
+      env,
+      owner,
+    );
+    const triagedProperty = (await triagedPropertyResponse?.json()) as {
+      property: { id: string };
+    };
+    const formAutomationResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/automations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '表单提交后自动分流',
+          triggerType: 'form_submitted',
+          actionType: 'set_property',
+          actionConfig: { targetPropertyId: triagedProperty.property.id, value: true },
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(formAutomationResponse?.status).toBe(201);
+
     const formViewResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/views`, {
         method: 'POST',
@@ -585,6 +682,21 @@ describe('structured database integration', () => {
     expect(
       database
         .prepare(
+          'SELECT value_json, updated_by FROM database_cells WHERE row_id = ? AND property_id = ?',
+        )
+        .get(submission.submissionId, triagedProperty.property.id),
+    ).toMatchObject({ value_json: 'true', updated_by: owner.id });
+    expect(
+      database
+        .prepare(
+          `SELECT status, trigger_type FROM database_automation_runs
+            WHERE database_id = ? AND row_id = ?`,
+        )
+        .get(databaseId, submission.submissionId),
+    ).toMatchObject({ status: 'succeeded', trigger_type: 'form_submitted' });
+    expect(
+      database
+        .prepare(
           `SELECT COUNT(*) AS count FROM organization_members
             WHERE user_id = 'usr_rdocs_forms'`,
         )
@@ -610,6 +722,12 @@ describe('structured database integration', () => {
       outsider,
     );
     expect(hiddenList?.status).toBe(404);
+    const hiddenAutomations = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/automations`),
+      env,
+      outsider,
+    );
+    expect(hiddenAutomations?.status).toBe(404);
 
     database
       .prepare(
