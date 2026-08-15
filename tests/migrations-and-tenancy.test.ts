@@ -83,6 +83,8 @@ function migratedDatabase(): DatabaseSync {
     '0008_page_acl_roles.sql',
     '0009_complete_permissions.sql',
     '0010_databases.sql',
+    '0011_database_relations_and_sequences.sql',
+    '0012_database_sequence_rollout_guards.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -169,7 +171,82 @@ describe('database migrations', () => {
           "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
         )
         .get(),
-    ).toMatchObject({ total: 6 });
+    ).toMatchObject({ total: 7 });
+    const rolloutOwner = seedTenant(database, 'rollout-guard');
+    const seed = {
+      id: 'page_rollout_parent',
+      organization_id: 'org_rollout-guard',
+      space_id: 'spc_rollout-guard',
+      created_by: rolloutOwner.id,
+    };
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES (?, ?, ?, NULL, 'Rollout database', 'rollout-parent', ?, ?, ?, ?)`,
+      )
+      .run(
+        seed.id,
+        seed.organization_id,
+        seed.space_id,
+        seed.created_by,
+        seed.created_by,
+        now,
+        now,
+      );
+    database
+      .prepare(
+        `INSERT INTO databases(
+           id, organization_id, page_id, created_by, updated_by, created_at, updated_at
+         ) VALUES ('db_rollout_guard', ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(seed.organization_id, seed.id, seed.created_by, seed.created_by, now, now);
+    expect(
+      database
+        .prepare(
+          "SELECT next_row_sequence FROM database_counters WHERE database_id = 'db_rollout_guard'",
+        )
+        .get(),
+    ).toMatchObject({ next_row_sequence: 1 });
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_rollout_guard', ?, ?, ?, 'Rollout row', 'rollout', ?, ?, ?, ?)`,
+      )
+      .run(
+        seed.organization_id,
+        seed.space_id,
+        seed.id,
+        seed.created_by,
+        seed.created_by,
+        now,
+        now,
+      );
+    database
+      .prepare(
+        `INSERT INTO database_rows(
+           id, organization_id, database_id, page_id, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES ('row_rollout_guard', ?, 'db_rollout_guard', 'page_rollout_guard',
+                   'rollout', ?, ?, ?, ?)`,
+      )
+      .run(seed.organization_id, seed.created_by, seed.created_by, now, now);
+    expect(
+      database
+        .prepare("SELECT sequence_number FROM database_rows WHERE id = 'row_rollout_guard'")
+        .get(),
+    ).toMatchObject({ sequence_number: 1 });
+    expect(
+      database
+        .prepare(
+          "SELECT next_row_sequence FROM database_counters WHERE database_id = 'db_rollout_guard'",
+        )
+        .get(),
+    ).toMatchObject({ next_row_sequence: 2 });
     database.close();
   });
 });
@@ -261,6 +338,18 @@ describe('structured database integration', () => {
     const formulaProperty = (await formulaResponse?.json()) as { property: { id: string } };
     expect(formulaResponse?.status).toBe(201);
 
+    const uniqueIdResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '任务 ID', type: 'unique_id', config: { prefix: 'TASK-' } }),
+      }),
+      env,
+      owner,
+    );
+    const uniqueIdProperty = (await uniqueIdResponse?.json()) as { property: { id: string } };
+    expect(uniqueIdResponse?.status).toBe(201);
+
     const rowResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/rows`, {
         method: 'POST',
@@ -277,9 +366,34 @@ describe('structured database integration', () => {
       row: { id: string; pageId: string; values: Record<string, unknown> };
     };
     expect(rowResult.row.values[formulaProperty.property.id]).toBe(6);
+    expect(rowResult.row.values[uniqueIdProperty.property.id]).toBe('TASK-1');
     expect(
       database.prepare('SELECT title, parent_id FROM pages WHERE id = ?').get(rowResult.row.pageId),
     ).toMatchObject({ title: '发布 Rdocs', parent_id: pageId });
+
+    for (const expectedSequence of [2, 3]) {
+      const temporaryResponse = await handleDatabasesApi(
+        new Request(`https://docs.test/api/databases/${databaseId}/rows`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ values: { [titlePropertyId!]: `临时任务 ${expectedSequence}` } }),
+        }),
+        env,
+        owner,
+      );
+      const temporary = (await temporaryResponse?.json()) as {
+        row: { id: string; sequenceNumber: number; values: Record<string, unknown> };
+      };
+      expect(temporary.row.sequenceNumber).toBe(expectedSequence);
+      expect(temporary.row.values[uniqueIdProperty.property.id]).toBe(`TASK-${expectedSequence}`);
+      await handleDatabasesApi(
+        new Request(`https://docs.test/api/databases/${databaseId}/rows/${temporary.row.id}`, {
+          method: 'DELETE',
+        }),
+        env,
+        owner,
+      );
+    }
 
     const hidden = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}`),
@@ -402,13 +516,20 @@ describe('structured database integration', () => {
         body: JSON.stringify({
           name: '关联目标',
           type: 'relation',
-          config: { targetDatabaseId: targetDatabase.database.id },
+          config: {
+            targetDatabaseId: targetDatabase.database.id,
+            reciprocalName: '来源任务',
+          },
         }),
       }),
       env,
       owner,
     );
-    const relation = (await relationResponse?.json()) as { property: { id: string } };
+    const relation = (await relationResponse?.json()) as {
+      property: { id: string };
+      reciprocalProperty: { id: string };
+    };
+    expect(relationResponse?.status).toBe(201);
     const rollupResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/properties`, {
         method: 'POST',
@@ -437,9 +558,59 @@ describe('structured database integration', () => {
       env,
       owner,
     );
+    const mirroredResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${targetDatabase.database.id}`),
+      env,
+      owner,
+    );
+    const mirrored = (await mirroredResponse?.json()) as {
+      rows: Array<{ values: Record<string, unknown> }>;
+    };
+    expect(mirrored.rows[0]?.values[relation.reciprocalProperty.id]).toEqual([rowResult.row.id]);
+
+    await handleDatabasesApi(
+      new Request(
+        `https://docs.test/api/databases/${targetDatabase.database.id}/rows/${targetRow.row.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ values: { [relation.reciprocalProperty.id]: [] } }),
+        },
+      ),
+      env,
+      owner,
+    );
+    const clearedResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      env,
+      owner,
+    );
+    const cleared = (await clearedResponse?.json()) as {
+      rows: Array<{ values: Record<string, unknown> }>;
+    };
+    expect(cleared.rows[0]?.values[relation.property.id]).toEqual([]);
+    await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [relation.property.id]: [targetRow.row.id] } }),
+      }),
+      env,
+      owner,
+    );
     database
       .prepare("UPDATE page_access_state SET access_mode = 'restricted' WHERE page_id = ?")
       .run(targetRow.row.pageId);
+    const hiddenRelationWrite = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${rowResult.row.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values: { [relation.property.id]: [targetRow.row.id] } }),
+      }),
+      env,
+      outsider,
+    );
+    expect(hiddenRelationWrite?.status).toBe(400);
     const censoredRelationResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}`),
       env,

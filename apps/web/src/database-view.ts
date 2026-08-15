@@ -23,6 +23,22 @@ export interface DatabaseViewSort {
   direction: 'ascending' | 'descending';
 }
 
+export type DatabaseAggregation =
+  | 'count_all'
+  | 'count_values'
+  | 'count_unique'
+  | 'sum'
+  | 'average'
+  | 'min'
+  | 'max'
+  | 'percent_checked';
+
+export interface DatabaseRowGroup {
+  key: string;
+  label: string;
+  rows: DatabaseRowSummary[];
+}
+
 function valueText(value: JsonValue | undefined): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
@@ -163,4 +179,75 @@ export function applyDatabaseView(
     }
     return (originalOrder.get(left.id) ?? 0) - (originalOrder.get(right.id) ?? 0);
   });
+}
+
+export function orderedVisibleDatabaseProperties(
+  properties: readonly DatabasePropertySummary[],
+  config: Readonly<Record<string, JsonValue>>,
+): DatabasePropertySummary[] {
+  const configuredVisibility = Array.isArray(config.visiblePropertyIds)
+    ? config.visiblePropertyIds.filter((id): id is string => typeof id === 'string')
+    : null;
+  const configuredOrder = Array.isArray(config.propertyOrder)
+    ? config.propertyOrder.filter((id): id is string => typeof id === 'string')
+    : [];
+  const visible = properties.filter(
+    (property) =>
+      property.type === 'title' ||
+      configuredVisibility === null ||
+      configuredVisibility.includes(property.id),
+  );
+  const order = new Map(configuredOrder.map((id, index) => [id, index]));
+  return [...visible].sort((left, right) => {
+    const leftOrder = order.get(left.id);
+    const rightOrder = order.get(right.id);
+    if (leftOrder !== undefined || rightOrder !== undefined) {
+      return (leftOrder ?? Number.MAX_SAFE_INTEGER) - (rightOrder ?? Number.MAX_SAFE_INTEGER);
+    }
+    return left.sortOrder - right.sortOrder;
+  });
+}
+
+export function groupDatabaseRows(
+  rows: readonly DatabaseRowSummary[],
+  propertyId: string | null,
+): DatabaseRowGroup[] {
+  if (!propertyId) return [{ key: 'all', label: '', rows: [...rows] }];
+  const groups = new Map<string, DatabaseRowSummary[]>();
+  for (const row of rows) {
+    const label = valueText(row.values[propertyId]) || '空';
+    groups.set(label, [...(groups.get(label) ?? []), row]);
+  }
+  return [...groups].map(([label, groupedRows]) => ({
+    key: `${propertyId}:${label}`,
+    label,
+    rows: groupedRows,
+  }));
+}
+
+export function databaseAggregationValue(
+  rows: readonly DatabaseRowSummary[],
+  propertyId: string,
+  aggregation: DatabaseAggregation,
+): string {
+  const values = rows.map((row) => row.values[propertyId]);
+  if (aggregation === 'count_all') return String(rows.length);
+  const present = values.filter((value) => !isEmpty(value));
+  if (aggregation === 'count_values') return String(present.length);
+  if (aggregation === 'count_unique') {
+    return String(new Set(present.map((value) => JSON.stringify(value))).size);
+  }
+  if (aggregation === 'percent_checked') {
+    const checked = values.filter((value) => value === true).length;
+    return `${rows.length ? Math.round((checked / rows.length) * 100) : 0}%`;
+  }
+  const numbers = present.filter((value): value is number => typeof value === 'number');
+  if (!numbers.length) return '—';
+  if (aggregation === 'sum') return String(numbers.reduce((total, value) => total + value, 0));
+  if (aggregation === 'average') {
+    return String(numbers.reduce((total, value) => total + value, 0) / numbers.length);
+  }
+  if (aggregation === 'min') return String(Math.min(...numbers));
+  if (aggregation === 'max') return String(Math.max(...numbers));
+  return '—';
 }

@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { DatabasePropertySummary, DatabaseRowSummary } from '@rdocs/shared';
 
-import { applyDatabaseView } from './database-view';
+import {
+  applyDatabaseView,
+  databaseAggregationValue,
+  groupDatabaseRows,
+  orderedVisibleDatabaseProperties,
+} from './database-view';
 
 const properties = [
   { id: 'title', name: '任务', type: 'title' },
@@ -16,6 +21,7 @@ function row(id: string, values: DatabaseRowSummary['values']): DatabaseRowSumma
     databaseId: 'database',
     pageId: `page-${id}`,
     sortKey: id,
+    sequenceNumber: id.charCodeAt(0),
     values,
     createdBy: 'user',
     updatedBy: 'user',
@@ -50,5 +56,25 @@ describe('applyDatabaseView', () => {
       ],
     });
     expect(result.map((row) => row.id)).toEqual(['b', 'c']);
+  });
+
+  it('persists property visibility and order while keeping the title', () => {
+    const result = orderedVisibleDatabaseProperties(properties, {
+      visiblePropertyIds: ['hours'],
+      propertyOrder: ['hours', 'title'],
+    });
+    expect(result.map((property) => property.id)).toEqual(['hours', 'title']);
+  });
+
+  it('groups rows and calculates view aggregates', () => {
+    expect(
+      groupDatabaseRows(rows, 'status').map((group) => [group.label, group.rows.length]),
+    ).toEqual([
+      ['进行中', 2],
+      ['完成', 1],
+    ]);
+    expect(databaseAggregationValue(rows, 'hours', 'sum')).toBe('13');
+    expect(databaseAggregationValue(rows, 'hours', 'average')).toBe(String(13 / 3));
+    expect(databaseAggregationValue(rows, 'status', 'count_unique')).toBe('2');
   });
 });

@@ -81,6 +81,10 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 同日执行数据库内核迁移 `0010_databases.sql` 时，即使 RandallFlare 已反馈修复，问题仍第三次复现：CLI 报告成功、生产导出从 33 张表增加到 39 张表，但账本新增 `(10, NULL, NULL)`，`migrations list` 继续显示 `0010` 未应用。Rdocs 已在执行前完整导出 33 张表到 `/tmp/rdocs-db-backup-e8P3J3/before-0010.sql`，确认新表和外键正常后，仅把第 10 行更新为 `0010_databases.sql`；随后迁移列表 `0001`–`0010` 全部为已应用。没有修改 RandallFlare 平台代码。
 
+执行 `0011_database_relations_and_sequences.sql` 时第四次复现：CLI 报告成功，但第 11 条账本记录仍为 `(11, NULL, NULL)`。执行前的 39 表完整备份保存在 `/tmp/rdocs-db-backup-OLC8Co/before-0011.sql`（132,615 bytes）。复验确认 `database_counters` 已创建、现有行无空序号、外键违规为 0 后，只把第 11 条 Rdocs 账本记录修复为实际文件名；`migrations list` 随后显示 `0001`–`0011` 全部已应用。没有修改 RandallFlare 平台代码或配置。
+
+紧接着执行滚动发布保护迁移 `0012_database_sequence_rollout_guards.sql` 时第五次复现，第 12 条账本仍为 `(12, NULL, NULL)`。执行前 40 表备份位于 `/tmp/rdocs-db-backup-LoRCKz/before-0012.sql`（141,335 bytes）。复验确认两个兼容触发器均存在、无空序号、外键违规为 0 后，只修复第 12 条 Rdocs 账本记录；迁移列表 `0001`–`0012` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

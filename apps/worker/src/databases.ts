@@ -105,6 +105,7 @@ interface RowRecord {
   database_id: string;
   page_id: string;
   sort_key: string;
+  sequence_number: number;
   created_by: string;
   updated_by: string;
   created_at: number;
@@ -526,7 +527,7 @@ async function visibleRelatedRowIds(
       const placeholders = rowIds.map(() => '?').join(', ');
       const targetRows = (
         await env.DB.prepare(
-          `SELECT id, database_id, page_id, sort_key, created_by, updated_by,
+          `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
                   created_at, updated_at, archived_at
              FROM database_rows
             WHERE database_id = ? AND archived_at IS NULL AND id IN (${placeholders})`,
@@ -635,7 +636,7 @@ async function snapshot(
       .bind(authorization.database.id, MAX_DATABASE_VIEWS)
       .all<ViewRecord>(),
     env.DB.prepare(
-      `SELECT id, database_id, page_id, sort_key, created_by, updated_by,
+      `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
               created_at, updated_at, archived_at
          FROM database_rows WHERE database_id = ? AND archived_at IS NULL
         ORDER BY sort_key LIMIT ?`,
@@ -699,7 +700,7 @@ async function snapshot(
       else if (property.type === 'last_edited_by') values[property.id] = row.updated_by;
       else if (property.type === 'unique_id') {
         const prefix = typeof property.config.prefix === 'string' ? property.config.prefix : '';
-        values[property.id] = `${prefix}${row.id.slice(0, 8).toUpperCase()}`;
+        values[property.id] = `${prefix}${row.sequence_number}`;
       }
     }
     const valuesByName = Object.fromEntries(
@@ -720,6 +721,7 @@ async function snapshot(
       databaseId: row.database_id,
       pageId: row.page_id,
       sortKey: row.sort_key,
+      sequenceNumber: Number(row.sequence_number),
       values,
       createdBy: row.created_by,
       updatedBy: row.updated_by,
@@ -758,6 +760,10 @@ async function createDatabase(
          id, organization_id, page_id, is_locked, created_by, updated_by, created_at, updated_at
        ) VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
     ).bind(databaseId, access.organizationId, pageId, actor.id, actor.id, now, now),
+    env.DB.prepare(
+      `INSERT INTO database_counters(database_id, next_row_sequence) VALUES (?, 1)
+       ON CONFLICT(database_id) DO NOTHING`,
+    ).bind(databaseId),
     env.DB.prepare(
       `INSERT INTO database_properties(
          id, organization_id, database_id, name, type, config_json, sort_order,
@@ -911,9 +917,19 @@ async function createProperty(
   const input = await requestBody(request);
   const name = entityName(input?.name, MAX_PROPERTY_NAME_LENGTH);
   const type = propertyType(input?.type);
-  const config = input?.config === undefined ? {} : jsonObject(input.config);
-  if (!name || !type || !config) return error('属性名称、类型或配置无效', 400);
+  const requestedConfig = input?.config === undefined ? {} : jsonObject(input.config);
+  if (!name || !type || !requestedConfig) return error('属性名称、类型或配置无效', 400);
   if (type === 'title') return error('数据库只能有一个标题属性', 409);
+  const reciprocalName =
+    type === 'relation' && typeof requestedConfig.reciprocalName === 'string'
+      ? entityName(requestedConfig.reciprocalName, MAX_PROPERTY_NAME_LENGTH)
+      : null;
+  if (type === 'relation' && 'reciprocalName' in requestedConfig && !reciprocalName) {
+    return error('双向关系属性名称无效', 400);
+  }
+  const config = { ...requestedConfig };
+  delete config.reciprocalName;
+  delete config.syncedPropertyId;
   const configError = await validatePropertyConfig(env, authorization, actor.id, type, config);
   if (configError) return error(configError, 400);
   const count = await env.DB.prepare(
@@ -928,9 +944,49 @@ async function createProperty(
     .bind(authorization.database.id)
     .first<{ next: number }>();
   const id = crypto.randomUUID();
+  let reciprocal:
+    | {
+        id: string;
+        database: DatabaseRecord;
+        name: string;
+        order: number;
+      }
+    | undefined;
+  if (type === 'relation' && reciprocalName) {
+    const targetDatabaseId = config.targetDatabaseId as string;
+    const target = await authorizeDatabase(env, targetDatabaseId, actor.id, 'edit_content');
+    if (!target || target.database.organization_id !== authorization.database.organization_id) {
+      return error('创建双向关系需要目标数据库的编辑权限', 403);
+    }
+    if (target.database.is_locked) return error('目标数据库已锁定', 409);
+    const targetCount = await env.DB.prepare(
+      'SELECT COUNT(*) AS count FROM database_properties WHERE database_id = ?',
+    )
+      .bind(targetDatabaseId)
+      .first<{ count: number }>();
+    const requiredSlots = targetDatabaseId === authorization.database.id ? 2 : 1;
+    if (Number(targetCount?.count ?? 0) + requiredSlots > MAX_DATABASE_PROPERTIES) {
+      return error('目标数据库属性已达上限', 409);
+    }
+    const targetOrder = await env.DB.prepare(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM database_properties WHERE database_id = ?',
+    )
+      .bind(targetDatabaseId)
+      .first<{ next: number }>();
+    reciprocal = {
+      id: crypto.randomUUID(),
+      database: target.database,
+      name: reciprocalName,
+      order:
+        targetDatabaseId === authorization.database.id
+          ? Number(order?.next ?? 0) + 1
+          : Number(targetOrder?.next ?? 0),
+    };
+    config.syncedPropertyId = reciprocal.id;
+  }
   const now = Date.now();
   try {
-    await env.DB.batch([
+    const statements = [
       env.DB.prepare(
         `INSERT INTO database_properties(
            id, organization_id, database_id, name, type, config_json, sort_order,
@@ -953,7 +1009,36 @@ async function createProperty(
         now,
         authorization.database.id,
       ),
-    ]);
+    ];
+    if (reciprocal) {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO database_properties(
+             id, organization_id, database_id, name, type, config_json, sort_order,
+             created_by, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 'relation', ?, ?, ?, ?, ?)`,
+        ).bind(
+          reciprocal.id,
+          reciprocal.database.organization_id,
+          reciprocal.database.id,
+          reciprocal.name,
+          JSON.stringify({
+            targetDatabaseId: authorization.database.id,
+            syncedPropertyId: id,
+          }),
+          reciprocal.order,
+          actor.id,
+          now,
+          now,
+        ),
+        env.DB.prepare('UPDATE databases SET updated_by = ?, updated_at = ? WHERE id = ?').bind(
+          actor.id,
+          now,
+          reciprocal.database.id,
+        ),
+      );
+    }
+    await env.DB.batch(statements);
   } catch {
     return error('属性名称已存在', 409);
   }
@@ -975,7 +1060,21 @@ async function createProperty(
       type,
     },
   );
-  return json({ property: propertySummary(property) }, { status: 201 });
+  const reciprocalProperty = reciprocal
+    ? await env.DB.prepare(
+        `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
+           FROM database_properties WHERE id = ?`,
+      )
+        .bind(reciprocal.id)
+        .first<PropertyRecord>()
+    : null;
+  return json(
+    {
+      property: propertySummary(property),
+      ...(reciprocalProperty ? { reciprocalProperty: propertySummary(reciprocalProperty) } : {}),
+    },
+    { status: 201 },
+  );
 }
 
 async function updateProperty(
@@ -996,8 +1095,20 @@ async function updateProperty(
   const input = await requestBody(request);
   if (!input) return error('请求格式无效', 400);
   const name = 'name' in input ? entityName(input.name, MAX_PROPERTY_NAME_LENGTH) : existing.name;
-  const config = 'config' in input ? jsonObject(input.config) : parsedObject(existing.config_json);
+  const existingConfig = parsedObject(existing.config_json);
+  const config = 'config' in input ? jsonObject(input.config) : existingConfig;
   if (!name || !config) return error('属性名称或配置无效', 400);
+  if (existing.type === 'relation') {
+    if (config.targetDatabaseId !== existingConfig.targetDatabaseId) {
+      return error('关系创建后不能更换目标数据库，请新建关系属性', 409);
+    }
+    if (existingConfig.syncedPropertyId) {
+      config.syncedPropertyId = existingConfig.syncedPropertyId;
+    } else {
+      delete config.syncedPropertyId;
+    }
+    delete config.reciprocalName;
+  }
   const configError = await validatePropertyConfig(
     env,
     authorization,
@@ -1043,15 +1154,42 @@ async function deleteProperty(
 ): Promise<Response> {
   if (authorization.database.is_locked) return error('数据库已锁定，不能删除属性', 409);
   const property = await env.DB.prepare(
-    'SELECT type FROM database_properties WHERE id = ? AND database_id = ?',
+    `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
+       FROM database_properties WHERE id = ? AND database_id = ?`,
   )
     .bind(propertyId, authorization.database.id)
-    .first<{ type: DatabasePropertyType }>();
+    .first<PropertyRecord>();
   if (!property) return error('属性不存在', 404);
   if (property.type === 'title') return error('不能删除标题属性', 409);
-  await env.DB.prepare('DELETE FROM database_properties WHERE id = ? AND database_id = ?')
-    .bind(propertyId, authorization.database.id)
-    .run();
+  const config = parsedObject(property.config_json);
+  const syncedPropertyId =
+    property.type === 'relation' && typeof config.syncedPropertyId === 'string'
+      ? config.syncedPropertyId
+      : null;
+  if (syncedPropertyId) {
+    const reciprocal = await env.DB.prepare(
+      `SELECT d.id AS database_id, d.is_locked
+         FROM database_properties p JOIN databases d ON d.id = p.database_id
+        WHERE p.id = ?`,
+    )
+      .bind(syncedPropertyId)
+      .first<{ database_id: string; is_locked: number }>();
+    if (reciprocal) {
+      if (!(await authorizeDatabase(env, reciprocal.database_id, actor.id, 'edit_content'))) {
+        return error('删除双向关系需要目标数据库的编辑权限', 403);
+      }
+      if (reciprocal.is_locked) return error('目标数据库已锁定', 409);
+    }
+  }
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM database_properties WHERE id = ? AND database_id = ?').bind(
+      propertyId,
+      authorization.database.id,
+    ),
+    ...(syncedPropertyId
+      ? [env.DB.prepare('DELETE FROM database_properties WHERE id = ?').bind(syncedPropertyId)]
+      : []),
+  ]);
   await databaseAudit(
     env,
     authorization.database,
@@ -1247,13 +1385,18 @@ async function validateReferenceValues(
       : [];
     if (!ids.length) return null;
     const placeholders = ids.map(() => '?').join(', ');
-    const result = await env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM database_rows
-        WHERE database_id = ? AND archived_at IS NULL AND id IN (${placeholders})`,
-    )
-      .bind(targetDatabaseId, ...ids)
-      .first<{ count: number }>();
-    return Number(result?.count ?? 0) === ids.length ? null : '关系属性包含无效或已归档的行';
+    const targetRows = (
+      await env.DB.prepare(
+        `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
+                created_at, updated_at, archived_at
+           FROM database_rows
+          WHERE database_id = ? AND archived_at IS NULL AND id IN (${placeholders})`,
+      )
+        .bind(targetDatabaseId, ...ids)
+        .all<RowRecord>()
+    ).results;
+    const visible = await visibleDatabaseRows(env, target, targetRows, actorId);
+    return visible.length === ids.length ? null : '关系属性包含无权访问、无效或已归档的行';
   }
   if (property.type === 'files') {
     const ids = Array.isArray(value)
@@ -1356,12 +1499,39 @@ function relationEdgeStatements(
   const statements: D1PreparedStatement[] = [];
   for (const [property, value] of values) {
     if (property.type !== 'relation') continue;
+    const relationConfig = parsedObject(property.config_json);
+    const targetDatabaseId = relationConfig.targetDatabaseId;
+    const syncedPropertyId = relationConfig.syncedPropertyId;
+    if (typeof syncedPropertyId === 'string') {
+      statements.push(
+        env.DB.prepare(
+          `UPDATE database_cells
+              SET value_json = (
+                    SELECT json_group_array(value)
+                      FROM json_each(database_cells.value_json)
+                     WHERE value <> ?
+                  ),
+                  updated_by = ?, updated_at = ?
+            WHERE property_id = ? AND row_id IN (
+              SELECT target_row_id FROM database_relation_edges
+               WHERE source_row_id = ? AND source_property_id = ?
+            )`,
+        ).bind(rowId, actorId, now, syncedPropertyId, rowId, property.id),
+        env.DB.prepare(
+          `DELETE FROM database_relation_edges
+            WHERE source_property_id = ? AND target_row_id = ?
+              AND source_row_id IN (
+                SELECT target_row_id FROM database_relation_edges
+                 WHERE source_row_id = ? AND source_property_id = ?
+              )`,
+        ).bind(syncedPropertyId, rowId, rowId, property.id),
+      );
+    }
     statements.push(
       env.DB.prepare(
         'DELETE FROM database_relation_edges WHERE source_row_id = ? AND source_property_id = ?',
       ).bind(rowId, property.id),
     );
-    const targetDatabaseId = parsedObject(property.config_json).targetDatabaseId;
     if (typeof targetDatabaseId !== 'string' || !Array.isArray(value)) continue;
     for (const targetRowId of value) {
       if (typeof targetRowId !== 'string') continue;
@@ -1382,6 +1552,50 @@ function relationEdgeStatements(
           now,
         ),
       );
+      if (typeof syncedPropertyId === 'string') {
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO database_cells(
+               organization_id, database_id, row_id, property_id, value_json, updated_by, updated_at
+             ) VALUES (?, ?, ?, ?, json_array(?), ?, ?)
+             ON CONFLICT(row_id, property_id) DO UPDATE SET
+               value_json = CASE
+                 WHEN EXISTS (
+                   SELECT 1 FROM json_each(database_cells.value_json) WHERE value = ?
+                 ) THEN database_cells.value_json
+                 ELSE json_insert(database_cells.value_json, '$[#]', ?)
+               END,
+               updated_by = excluded.updated_by,
+               updated_at = excluded.updated_at`,
+          ).bind(
+            database.organization_id,
+            targetDatabaseId,
+            targetRowId,
+            syncedPropertyId,
+            rowId,
+            actorId,
+            now,
+            rowId,
+            rowId,
+          ),
+          env.DB.prepare(
+            `INSERT INTO database_relation_edges(
+               organization_id, source_database_id, source_row_id, source_property_id,
+               target_database_id, target_row_id, created_by, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(source_row_id, source_property_id, target_row_id) DO NOTHING`,
+          ).bind(
+            database.organization_id,
+            targetDatabaseId,
+            targetRowId,
+            syncedPropertyId,
+            database.id,
+            rowId,
+            actorId,
+            now,
+          ),
+        );
+      }
     }
   }
   return statements;
@@ -1440,9 +1654,10 @@ async function createRow(
     ).bind(pageId, searchIndexText(title), searchIndexText(title)),
     env.DB.prepare(
       `INSERT INTO database_rows(
-         id, organization_id, database_id, page_id, sort_key,
+         id, organization_id, database_id, page_id, sort_key, sequence_number,
          created_by, updated_by, created_at, updated_at, archived_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+       ) SELECT ?, ?, ?, ?, ?, next_row_sequence, ?, ?, ?, ?, NULL
+           FROM database_counters WHERE database_id = ?`,
     ).bind(
       rowId,
       authorization.database.organization_id,
@@ -1453,7 +1668,11 @@ async function createRow(
       actor.id,
       now,
       now,
+      authorization.database.id,
     ),
+    env.DB.prepare(
+      'UPDATE database_counters SET next_row_sequence = next_row_sequence + 1 WHERE database_id = ?',
+    ).bind(authorization.database.id),
     ...cellStatements(env, authorization.database, rowId, actor.id, now, normalized.values),
     ...relationEdgeStatements(env, authorization.database, rowId, actor.id, now, normalized.values),
     env.DB.prepare('UPDATE databases SET updated_by = ?, updated_at = ? WHERE id = ?').bind(
@@ -1488,7 +1707,7 @@ async function updateRow(
   actor: AuthUserSummary,
 ): Promise<Response> {
   const row = await env.DB.prepare(
-    `SELECT id, database_id, page_id, sort_key, created_by, updated_by,
+    `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
             created_at, updated_at, archived_at
        FROM database_rows WHERE id = ? AND database_id = ?`,
   )

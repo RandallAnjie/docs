@@ -168,6 +168,7 @@ export interface DatabaseRowSummary {
   databaseId: string;
   pageId: string;
   sortKey: string;
+  sequenceNumber: number;
   values: Record<string, JsonValue>;
   createdBy: string;
   updatedBy: string;
