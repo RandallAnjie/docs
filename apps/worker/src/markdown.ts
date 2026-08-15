@@ -47,6 +47,40 @@ export function markdownToYjsSnapshot(markdown: string): {
   let index = 0;
   while (index < lines.length) {
     const line = lines[index] ?? '';
+    if (line.trim() === '$$') {
+      const latex: string[] = [];
+      index += 1;
+      while (index < lines.length && (lines[index] ?? '').trim() !== '$$') {
+        latex.push(lines[index] ?? '');
+        index += 1;
+      }
+      nodes.push(element('blockMath', '', { latex: latex.join('\n').trim() }));
+      index += 1;
+      continue;
+    }
+    if (line.trim() === '<!-- rdocs:table-of-contents -->') {
+      nodes.push(element('tableOfContents', ''));
+      index += 1;
+      continue;
+    }
+    if (line.trim() === '<details>') {
+      const summaryLine = lines[index + 1] ?? '';
+      const summary = summaryLine.match(/^<summary>(.*)<\/summary>$/)?.[1] ?? '折叠内容';
+      index += summaryLine.startsWith('<summary>') ? 2 : 1;
+      const body: string[] = [];
+      while (index < lines.length && (lines[index] ?? '').trim() !== '</details>') {
+        if ((lines[index] ?? '').trim()) body.push(lines[index] ?? '');
+        index += 1;
+      }
+      const details = new Y.XmlElement('details');
+      const detailsSummary = element('detailsSummary', cleanInlineMarkdown(summary));
+      const detailsContent = new Y.XmlElement('detailsContent');
+      detailsContent.insert(0, [element('paragraph', cleanInlineMarkdown(body.join(' ')))]);
+      details.insert(0, [detailsSummary, detailsContent]);
+      nodes.push(details);
+      index += 1;
+      continue;
+    }
     const fence = line.match(/^```\s*([\w+-]*)\s*$/);
     if (fence) {
       const language = fence[1] ?? '';
@@ -123,6 +157,23 @@ export function markdownToYjsSnapshot(markdown: string): {
       nodes.push(list);
       continue;
     }
+    const callout = line.match(/^>\s*\[!NOTE\]\s*(\S+)?\s*(.*)$/);
+    if (callout) {
+      const content = [callout[2] ?? ''];
+      index += 1;
+      while (index < lines.length) {
+        const continuation = (lines[index] ?? '').match(/^>\s?(.*)$/);
+        if (!continuation) break;
+        content.push(continuation[1] ?? '');
+        index += 1;
+      }
+      const calloutNode = new Y.XmlElement('callout');
+      calloutNode.setAttribute('icon', callout[1] || '💡');
+      calloutNode.setAttribute('tone', 'gray');
+      calloutNode.insert(0, [element('paragraph', cleanInlineMarkdown(content.join(' ').trim()))]);
+      nodes.push(calloutNode);
+      continue;
+    }
     const quote = line.match(/^>\s?(.*)$/);
     if (quote) {
       const blockquote = new Y.XmlElement('blockquote');
@@ -143,6 +194,29 @@ export function markdownToYjsSnapshot(markdown: string): {
           src: image[2] ?? '',
           alt: image[1] ?? '',
           ...(image[3] ? { title: image[3] } : {}),
+        }),
+      );
+      index += 1;
+      continue;
+    }
+    const bookmark = line.trim().match(/^\[🔖\s+([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+    if (bookmark) {
+      nodes.push(
+        element('bookmark', '', {
+          title: cleanInlineMarkdown(bookmark[1] ?? ''),
+          url: bookmark[2] ?? '',
+        }),
+      );
+      index += 1;
+      continue;
+    }
+    const embed = line.trim().match(/^\[▶\s+([^\]]+?)\s+嵌入\]\((https:\/\/[^\s)]+)\)$/);
+    if (embed) {
+      nodes.push(
+        element('embed', '', {
+          originalUrl: embed[2] ?? '',
+          provider: embed[1] ?? '',
+          src: '',
         }),
       );
       index += 1;
@@ -228,6 +302,41 @@ function renderElement(node: Y.XmlElement): string {
       const alt = (node.getAttribute('alt') ?? '').replace(/]/g, '\\]');
       const title = node.getAttribute('title');
       return src ? `![${alt}](${src}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})\n\n` : '';
+    }
+    case 'callout': {
+      const icon = node.getAttribute('icon') || '💡';
+      const lines = content.trim().split('\n').filter(Boolean);
+      return `${lines
+        .map((line, index) => `> ${index === 0 ? `[!NOTE] ${icon} ` : ''}${line}`)
+        .join('\n')}\n\n`;
+    }
+    case 'details': {
+      const children = node
+        .toArray()
+        .filter((child): child is Y.XmlElement => child instanceof Y.XmlElement);
+      const summary = children.find((child) => child.nodeName === 'detailsSummary');
+      const detailsContent = children.find((child) => child.nodeName === 'detailsContent');
+      return `<details>\n<summary>${summary ? renderChildren(summary).trim() : '折叠内容'}</summary>\n\n${detailsContent ? renderChildren(detailsContent).trim() : ''}\n</details>\n\n`;
+    }
+    case 'bookmark': {
+      const url = node.getAttribute('url') ?? '';
+      const title = (node.getAttribute('title') || url).replace(/]/g, '\\]');
+      return url ? `[🔖 ${title}](${url})\n\n` : '';
+    }
+    case 'embed': {
+      const url = node.getAttribute('originalUrl') || node.getAttribute('src') || '';
+      const provider = node.getAttribute('provider') || '网页';
+      return url ? `[▶ ${provider} 嵌入](${url})\n\n` : '';
+    }
+    case 'tableOfContents':
+      return '<!-- rdocs:table-of-contents -->\n\n';
+    case 'inlineMath': {
+      const latex = node.getAttribute('latex') ?? '';
+      return latex ? `$${latex}$` : '';
+    }
+    case 'blockMath': {
+      const latex = node.getAttribute('latex') ?? '';
+      return latex ? `$$\n${latex}\n$$\n\n` : '';
     }
     case 'bulletList':
     case 'orderedList': {
