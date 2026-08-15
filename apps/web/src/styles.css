@@ -3642,6 +3642,47 @@ button.page-icon-display:hover {
   height: 3px;
   background: #5c8f62;
 }
+.rdocs-mention {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: #f4e4dd;
+  padding: 0 6px;
+  color: #b65339;
+  font-weight: 650;
+}
+.rdocs-pdf-preview {
+  width: 100%;
+  height: 420px;
+  border: 0;
+  border-radius: 8px;
+  background: #f6f4ef;
+}
+.rdocs-html-sandbox {
+  overflow: hidden;
+  margin: 1em 0;
+  border: 1px solid #dedbd4;
+  border-radius: 8px;
+}
+.rdocs-html-sandbox > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  color: #7a766f;
+  font-size: 11px;
+}
+.rdocs-html-sandbox iframe {
+  width: 100%;
+  min-height: 180px;
+  border: 0;
+  background: #fff;
+}
+.database-input-cell.date-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .editor-frame {
   position: relative;
   margin-top: 8px;

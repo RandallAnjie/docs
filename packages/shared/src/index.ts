@@ -1,5 +1,5 @@
 export const PRODUCT_NAME = 'Rdocs';
-export const EDITOR_SCHEMA_VERSION = 10;
+export const EDITOR_SCHEMA_VERSION = 11;
 
 export type SpaceRole = 'space_admin' | 'editor' | 'commenter' | 'viewer';
 export type ResourceGrantRole = 'none' | SpaceRole;
@@ -94,6 +94,7 @@ export interface PageSummary {
   title: string;
   icon: string | null;
   coverAttachmentId: string | null;
+  coverPosition?: 'top' | 'center' | 'bottom';
   fontStyle: 'sans' | 'serif' | 'mono';
   isFullWidth: boolean;
   isSmallText: boolean;
@@ -229,7 +230,14 @@ export interface DatabaseAutomationSummary {
 }
 
 export type ApiTokenScope =
-  'pages:read' | 'pages:write' | 'databases:read' | 'databases:write' | 'search:read' | 'admin';
+  | 'pages:read'
+  | 'pages:write'
+  | 'databases:read'
+  | 'databases:write'
+  | 'search:read'
+  | 'files:read'
+  | 'files:write'
+  | 'admin';
 
 export interface ApiTokenSummary {
   id: string;
@@ -263,7 +271,7 @@ export interface ExportJobSummary {
   organizationId: string;
   kind: 'workspace' | 'space' | 'page';
   scopeId: string | null;
-  format: 'markdown' | 'json' | 'csv';
+  format: 'markdown' | 'json' | 'csv' | 'html' | 'zip' | 'pdf';
   status: 'running' | 'succeeded' | 'failed';
   pageCount: number;
   result: Record<string, JsonValue> | null;

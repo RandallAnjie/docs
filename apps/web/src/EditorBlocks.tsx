@@ -1,11 +1,12 @@
 import { mergeAttributes, Node } from '@tiptap/core';
 import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
-import { Bookmark, ExternalLink, ListTree, Pencil, Trash2 } from 'lucide-react';
+import { Bookmark, Code2, ExternalLink, ListTree, Pencil, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { attachmentEditorBlocks } from './AttachmentBlocks';
-import { bookmarkDialog, embedDialog, emojiDialog } from './dialogs';
+import { bookmarkDialog, embedDialog, emojiDialog, promptDialog } from './dialogs';
+import { sanitizeHtmlBlock } from './html-sandbox';
 import { inlineReminderExtension, type InlineReminderContext } from './InlineReminder';
 import {
   pageUtilityEditorBlocks,
@@ -468,6 +469,122 @@ export const ColumnsBlock = Node.create({
   },
 });
 
+export const MentionInline = Node.create({
+  name: 'mention',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      kind: { default: 'user' },
+      label: { default: '' },
+      mentionId: { default: '' },
+    };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'span[data-rdocs-mention]',
+        getAttrs: (element) => ({
+          kind: element.getAttribute('data-kind') ?? 'user',
+          label: element.getAttribute('data-label') ?? '',
+          mentionId: element.getAttribute('data-mention-id') ?? '',
+        }),
+      },
+    ];
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    return [
+      'span',
+      mergeAttributes(HTMLAttributes, {
+        'data-kind': node.attrs.kind,
+        'data-label': node.attrs.label,
+        'data-mention-id': node.attrs.mentionId,
+        'data-rdocs-mention': '',
+      }),
+      `@${String(node.attrs.label ?? '')}`,
+    ];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(function MentionNodeView(props: NodeViewProps) {
+      return (
+        <NodeViewWrapper as="span" className="rdocs-mention" contentEditable={false}>
+          @{String(props.node.attrs.label ?? '')}
+        </NodeViewWrapper>
+      );
+    });
+  },
+});
+
+export const HtmlSandboxBlock = Node.create({
+  name: 'htmlSandbox',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  draggable: true,
+  addAttributes() {
+    return { html: { default: '<p>自定义 HTML</p>' } };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'div[data-rdocs-html]',
+        getAttrs: (element) => ({ html: element.getAttribute('data-html') ?? '' }),
+      },
+    ];
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    return [
+      'div',
+      mergeAttributes(HTMLAttributes, {
+        'data-html': node.attrs.html,
+        'data-rdocs-html': '',
+      }),
+      'HTML',
+    ];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(function HtmlSandboxNodeView(props: NodeViewProps) {
+      const html = sanitizeHtmlBlock(String(props.node.attrs.html ?? ''));
+      return (
+        <NodeViewWrapper className="rdocs-html-sandbox" contentEditable={false} data-drag-handle>
+          <header>
+            <span>
+              <Code2 size={13} /> HTML 块
+            </span>
+            {props.editor.isEditable ? (
+              <button
+                type="button"
+                title="编辑 HTML"
+                onClick={() => {
+                  void promptDialog({
+                    title: 'HTML 块',
+                    message: '在沙箱 iframe 中运行。脚本不能访问页面。',
+                    label: 'HTML',
+                    defaultValue: html,
+                    multiline: true,
+                  }).then((next) => {
+                    if (next !== null) props.updateAttributes({ html: sanitizeHtmlBlock(next) });
+                  });
+                }}
+              >
+                <Pencil size={13} />
+              </button>
+            ) : null}
+          </header>
+          <iframe
+            sandbox="allow-scripts"
+            srcDoc={html}
+            title="HTML 沙箱"
+            referrerPolicy="no-referrer"
+          />
+        </NodeViewWrapper>
+      );
+    });
+  },
+});
+
 export function createRdocsEditorBlocks(
   getBreadcrumbItems: () => readonly BreadcrumbItem[] = () => [],
   getSyncedBlockContext: () => SyncedBlockContext | null = () => null,
@@ -475,6 +592,8 @@ export function createRdocsEditorBlocks(
   getInlineReminderContext: () => InlineReminderContext | null = () => null,
 ) {
   return [
+    MentionInline,
+    HtmlSandboxBlock,
     CalloutBlock,
     BookmarkBlock,
     EmbedBlock,

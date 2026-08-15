@@ -36,6 +36,8 @@ const API_SCOPES = new Set<ApiTokenScope>([
   'databases:read',
   'databases:write',
   'search:read',
+  'files:read',
+  'files:write',
   'admin',
 ]);
 const TOKEN_PREFIX = 'rdocs_';
@@ -547,6 +549,29 @@ export async function handlePublicApi(
     return cors(json({ results }));
   }
 
+  const fileMatch = url.pathname.match(/^\/api\/v1\/files\/([^/]+)$/);
+  if (fileMatch?.[1] && request.method === 'GET') {
+    if (!hasScope(auth.scopes, 'files:read') && !hasScope(auth.scopes, 'pages:read')) {
+      return cors(error('令牌缺少文件读权限', 403, 'insufficient_scope'));
+    }
+    const attachmentId = decodeURIComponent(fileMatch[1]);
+    if (!isPageId(attachmentId)) return cors(error('附件 ID 无效', 400));
+    const attachment = await env.DB.prepare(
+      `SELECT id, page_id FROM attachments WHERE id = ? AND status = 'ready' AND deleted_at IS NULL`,
+    )
+      .bind(attachmentId)
+      .first<{ id: string; page_id: string }>();
+    if (!attachment) return cors(error('附件不存在', 404));
+    const authorized = await authorizePage(env, attachment.page_id, auth.user.id, 'view');
+    if (!authorized) return cors(error('附件不存在或无权访问', 404));
+    return cors(
+      new Response(null, {
+        status: 302,
+        headers: { location: `/api/attachments/${encodeURIComponent(attachment.id)}` },
+      }),
+    );
+  }
+
   void context;
   return cors(error('API 路径不存在', 404));
 }
@@ -1014,11 +1039,112 @@ async function handleSessionPlatformApi(
     }
   }
 
+  const researchMatch = url.pathname.match(/^\/api\/organizations\/([^/]+)\/ai\/research$/);
+  if (researchMatch?.[1] && request.method === 'POST') {
+    const organizationId = decodeURIComponent(researchMatch[1]);
+    const membership = await findActiveMembership(env, organizationId, actor.id);
+    if (!membership) return error('组织不存在', 404);
+    return runWorkspaceAi(request, env, organizationId, actor);
+  }
+
+  const adminSearchMatch = url.pathname.match(/^\/api\/organizations\/([^/]+)\/admin\/search$/);
+  if (adminSearchMatch?.[1] && request.method === 'GET') {
+    const organizationId = decodeURIComponent(adminSearchMatch[1]);
+    const membership = await findActiveMembership(env, organizationId, actor.id);
+    if (!membership || !canManageOrganization(membership.role, 'manage_members')) {
+      return error('无权使用管理搜索', 403);
+    }
+    const query = (url.searchParams.get('q') ?? '').trim();
+    const rows = (
+      await env.DB.prepare(
+        `SELECT p.id, p.title, COALESCE(s.normalized_body, '') AS snippet
+           FROM pages p
+           LEFT JOIN page_search_projection s ON s.page_id = p.id
+          WHERE p.organization_id = ? AND p.deleted_at IS NULL
+            AND (p.title LIKE ? OR COALESCE(s.normalized_body, '') LIKE ?)
+          ORDER BY p.updated_at DESC LIMIT 50`,
+      )
+        .bind(organizationId, `%${query}%`, `%${query}%`)
+        .all<{ id: string; title: string; snippet: string }>()
+    ).results;
+    return json({ results: rows.map((row) => ({ ...row, snippet: row.snippet.slice(0, 240) })) });
+  }
+
   const pageAiMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/ai$/);
   if (pageAiMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(pageAiMatch[1]);
     if (!isPageId(pageId)) return error('页面 ID 无效', 400);
     return runPageAi(request, env, pageId, actor);
+  }
+
+  const autofillMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/ai\/autofill$/);
+  if (autofillMatch?.[1] && request.method === 'POST') {
+    const databaseId = decodeURIComponent(autofillMatch[1]);
+    if (!isPageId(databaseId)) return error('数据库 ID 无效', 400);
+    const forwarded = new Request(`${url.origin}/api/databases/${databaseId}`, {
+      method: 'GET',
+      headers: request.headers,
+    });
+    const snapshotResponse = await handleDatabasesApi(forwarded, env, actor);
+    if (!snapshotResponse || !snapshotResponse.ok) return error('数据库不存在或无权编辑', 404);
+    const snapshot = (await snapshotResponse.json()) as {
+      database: { id: string; pageId: string };
+      properties: Array<{ id: string; name: string; type: string }>;
+      rows: Array<{ id: string; values: Record<string, JsonValue> }>;
+    };
+    const page = await authorizePage(env, snapshot.database.pageId, actor.id, 'edit_content');
+    if (!page) return error('数据库不存在或无权编辑', 404);
+    const body = await requestBody(request);
+    const propertyId = typeof body?.propertyId === 'string' ? body.propertyId : '';
+    const property = snapshot.properties.find((item) => item.id === propertyId);
+    if (!property) return error('属性不存在', 400);
+    const prompt =
+      typeof body?.prompt === 'string' && body.prompt.trim()
+        ? body.prompt.trim()
+        : `根据其他列填写「${property.name}」`;
+    const jobResponse = await runPageAi(
+      new Request(request.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'autofill',
+          prompt: `${prompt}\n\n记录：\n${snapshot.rows
+            .slice(0, 20)
+            .map((row) => JSON.stringify(row.values))
+            .join('\n')}`,
+        }),
+      }),
+      env,
+      page.id,
+      actor,
+    );
+    const payload = (await jobResponse.json()) as { job?: AiJobSummary };
+    let updated = 0;
+    const text = payload.job?.resultText ?? '';
+    if (payload.job?.status === 'succeeded' && text) {
+      const lines = text
+        .split('\n')
+        .map((line) => line.replace(/^[-*\d.\s]+/, '').trim())
+        .filter(Boolean);
+      for (const [index, row] of snapshot.rows.slice(0, lines.length).entries()) {
+        const value = lines[index];
+        if (!value) continue;
+        const update = await handleDatabasesApi(
+          new Request(`${url.origin}/api/databases/${databaseId}/rows/${row.id}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ values: { [propertyId]: value } }),
+          }),
+          env,
+          actor,
+        );
+        if (update?.ok) updated += 1;
+      }
+    }
+    return json(
+      { updated, job: payload.job },
+      { status: payload.job?.status === 'succeeded' ? 200 : 502 },
+    );
   }
 
   const pinsMatch = url.pathname === '/api/offline-pins';
@@ -1462,6 +1588,114 @@ async function runPageAi(
     organizationId: authorized.organizationId,
     pageId,
     kind,
+    status,
+    prompt,
+    resultText: resultText || null,
+    citations,
+    errorMessage,
+    createdAt: now,
+    completedAt: Date.now(),
+  };
+  return json({ job }, { status: status === 'succeeded' ? 200 : 502 });
+}
+
+async function runWorkspaceAi(
+  request: Request,
+  env: Env,
+  organizationId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const input = await requestBody(request);
+  const prompt =
+    typeof input?.prompt === 'string' ? input.prompt.trim().slice(0, MAX_AI_PROMPT) : '';
+  if (!prompt) return error('请输入要检索的问题', 400);
+  const settings = await loadAiSettings(env, organizationId);
+  if (!settings.enabled) return error('组织已关闭 AI', 403, 'ai_disabled');
+  const apiKey = aiApiKey(env);
+  const now = Date.now();
+  const jobId = crypto.randomUUID();
+  const rows = (
+    await env.DB.prepare(
+      `SELECT p.id, p.title, COALESCE(s.normalized_body, '') AS body
+         FROM pages p
+         LEFT JOIN page_search_projection s ON s.page_id = p.id
+        WHERE p.organization_id = ? AND p.deleted_at IS NULL
+          AND (p.title LIKE ? OR COALESCE(s.normalized_body, '') LIKE ?)
+        ORDER BY p.updated_at DESC LIMIT 8`,
+    )
+      .bind(organizationId, `%${prompt.slice(0, 80)}%`, `%${prompt.slice(0, 80)}%`)
+      .all<{ id: string; title: string; body: string }>()
+  ).results;
+  const citations: Array<{ pageId: string; title: string }> = [];
+  const excerpts: string[] = [];
+  for (const row of rows) {
+    const authorized = await authorizePage(env, row.id, actor.id, 'view');
+    if (!authorized) continue;
+    citations.push({ pageId: row.id, title: row.title });
+    excerpts.push(`《${row.title}》\n${row.body.slice(0, 800)}`);
+  }
+  if (!apiKey) {
+    const job: AiJobSummary = {
+      id: jobId,
+      organizationId,
+      pageId: citations[0]?.pageId ?? null,
+      kind: 'research',
+      status: 'degraded',
+      prompt,
+      resultText: null,
+      citations,
+      errorMessage: '未配置模型密钥',
+      createdAt: now,
+      completedAt: now,
+    };
+    return json({ job }, { status: 503 });
+  }
+  let resultText = '';
+  let status: AiJobSummary['status'] = 'succeeded';
+  let errorMessage: string | null = null;
+  try {
+    const response = await fetch(`${aiApiBase(env)}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: settings.model || 'grok-4.6',
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是 Rdocs 工作区搜索助手。只根据提供的页面摘录回答，列出依据页面标题。不要编造看不到的内容。',
+          },
+          {
+            role: 'user',
+            content: `问题：${prompt}\n\n可见页面摘录：\n${excerpts.join('\n\n') || '没有检索到可访问页面'}`,
+          },
+        ],
+      }),
+    });
+    const payload = (await response.json().catch(() => null)) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    } | null;
+    if (!response.ok) {
+      status = 'failed';
+      errorMessage = payload?.error?.message ?? `模型请求失败（${response.status}）`;
+    } else {
+      resultText = payload?.choices?.[0]?.message?.content?.trim() ?? '';
+      if (!resultText) {
+        status = 'failed';
+        errorMessage = '模型没有返回内容';
+      }
+    }
+  } catch (reason) {
+    status = 'failed';
+    errorMessage = reason instanceof Error ? reason.message : '模型请求异常';
+  }
+  const job: AiJobSummary = {
+    id: jobId,
+    organizationId,
+    pageId: citations[0]?.pageId ?? null,
+    kind: 'research',
     status,
     prompt,
     resultText: resultText || null,

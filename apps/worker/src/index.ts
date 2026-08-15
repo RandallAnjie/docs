@@ -37,7 +37,7 @@ import {
   requireSpaceAction,
   type SpaceAction,
 } from './access';
-import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
+import { authenticateRequest, createSession, handleAuthApi, isTrustedMutationOrigin } from './auth';
 import {
   deliverDueReminders,
   deliverPageUpdateNotifications,
@@ -50,6 +50,18 @@ import {
   invalidateCollaborationPage,
 } from './collaboration-access-cache';
 import { isCollaborationOriginAllowed } from './origins';
+import { markdownToHtmlDocument, simplePdf, zipStore } from './export-archive';
+import {
+  emailFromSamlResponse,
+  findOrganizationByScimToken,
+  handleEnterpriseProtocol,
+  processDueScheduledJobs,
+  queueOutboundEmail,
+  samlMetadataXml,
+  scimError,
+  scimListResponse,
+  scimUserResource,
+} from './enterprise-protocol';
 import {
   markdownToYjsSnapshot,
   rewriteYjsAttachmentReferences,
@@ -132,6 +144,7 @@ interface PageRow {
   title: string;
   icon: string | null;
   cover_attachment_id: string | null;
+  cover_position?: 'top' | 'center' | 'bottom' | null;
   font_style: 'sans' | 'serif' | 'mono';
   is_full_width: number;
   is_small_text: number;
@@ -270,6 +283,10 @@ function pageFromRow(row: PageRow): PageSummary {
     title: row.title,
     icon: row.icon,
     coverAttachmentId: row.cover_attachment_id,
+    coverPosition:
+      row.cover_position === 'top' || row.cover_position === 'bottom'
+        ? row.cover_position
+        : 'center',
     fontStyle: row.font_style,
     isFullWidth: Boolean(row.is_full_width),
     isSmallText: Boolean(row.is_small_text),
@@ -438,7 +455,7 @@ async function hasTrashedSyncedBlockReference(env: Env, blockId: string): Promis
 async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
   const row = await env.DB.prepare(
     `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-            p.icon, p.cover_attachment_id, p.font_style,
+            p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
             p.is_full_width, p.is_small_text, p.is_locked,
             p.current_generation, p.editor_schema_version, p.updated_at,
             a.collaboration_enabled, a.acl_version
@@ -594,7 +611,7 @@ async function searchPages(
     }
     return {
       sql: `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-                   p.icon, p.cover_attachment_id, p.font_style,
+                   p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
                    p.is_full_width, p.is_small_text, p.is_locked,
                    p.current_generation, p.editor_schema_version, p.updated_at,
                    p.created_at, p.created_by,
@@ -658,7 +675,7 @@ async function listPageBacklinks(
   const rows = (
     await env.DB.prepare(
       `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-              p.icon, p.cover_attachment_id, p.font_style,
+              p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
               p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version, links.last_seen_at
@@ -733,7 +750,7 @@ async function listPageUpdates(
   const rows = (
     await env.DB.prepare(
       `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-              p.icon, p.cover_attachment_id, p.font_style,
+              p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
               p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               access.collaboration_enabled, access.acl_version,
@@ -797,7 +814,7 @@ async function listPageActivity(
   const rows = (
     await env.DB.prepare(
       `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-              p.icon, p.cover_attachment_id, p.font_style,
+              p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
               p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version,
@@ -1691,11 +1708,15 @@ async function createRevision(
   return json({ revision }, { status: 201 });
 }
 
-async function exportPageMarkdown(env: Env, page: PageSummary, actorId: string): Promise<Response> {
+async function buildPageExport(
+  env: Env,
+  page: PageSummary,
+  actorId: string,
+): Promise<Response | { base: string; markdown: string; revisionId: string }> {
   const revision = await captureRevision(env, page, {
     kind: 'pre_export',
     label: '导出前自动保存',
-    description: 'Markdown 导出前生成',
+    description: '导出前生成',
     createdBy: actorId,
   });
   const row = await findRevision(env, revision.id);
@@ -1705,12 +1726,59 @@ async function exportPageMarkdown(env: Env, page: PageSummary, actorId: string):
   const snapshot = new Uint8Array(await object.arrayBuffer());
   if ((await sha256Hex(snapshot)) !== row.content_hash) return error('导出快照校验失败', 500);
   const markdown = yjsSnapshotToMarkdown(snapshot, page.title);
-  const filename = `${page.title.replace(/[\\/\u0000-\u001f]/g, '-').slice(0, 100) || 'Rdocs'}.md`;
+  const base = page.title.replace(/[\\/\u0000-\u001f]/g, '-').slice(0, 100) || 'Rdocs';
   await pageAudit(env, page, actorId, 'page.markdown.exported', { revisionId: revision.id });
-  return new Response(markdown, {
+  return { markdown, revisionId: revision.id, base };
+}
+
+async function exportPageMarkdown(env: Env, page: PageSummary, actorId: string): Promise<Response> {
+  const exported = await buildPageExport(env, page, actorId);
+  if (exported instanceof Response) return exported;
+  return new Response(exported.markdown, {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',
-      'content-disposition': `attachment; filename="rdocs.md"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'content-disposition': `attachment; filename="rdocs.md"; filename*=UTF-8''${encodeURIComponent(`${exported.base}.md`)}`,
+      'cache-control': 'private, no-store',
+    },
+  });
+}
+
+async function exportPageHtml(env: Env, page: PageSummary, actorId: string): Promise<Response> {
+  const exported = await buildPageExport(env, page, actorId);
+  if (exported instanceof Response) return exported;
+  const html = markdownToHtmlDocument(page.title, exported.markdown);
+  return new Response(html, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'content-disposition': `attachment; filename="rdocs.html"; filename*=UTF-8''${encodeURIComponent(`${exported.base}.html`)}`,
+      'cache-control': 'private, no-store',
+    },
+  });
+}
+
+async function exportPagePdfFile(env: Env, page: PageSummary, actorId: string): Promise<Response> {
+  const exported = await buildPageExport(env, page, actorId);
+  if (exported instanceof Response) return exported;
+  return new Response(simplePdf(page.title, exported.markdown) as unknown as BodyInit, {
+    headers: {
+      'content-type': 'application/pdf',
+      'content-disposition': `attachment; filename="rdocs.pdf"; filename*=UTF-8''${encodeURIComponent(`${exported.base}.pdf`)}`,
+      'cache-control': 'private, no-store',
+    },
+  });
+}
+
+async function exportPageZipFile(env: Env, page: PageSummary, actorId: string): Promise<Response> {
+  const exported = await buildPageExport(env, page, actorId);
+  if (exported instanceof Response) return exported;
+  const zip = zipStore([
+    { name: `${exported.base}.md`, body: exported.markdown },
+    { name: `${exported.base}.html`, body: markdownToHtmlDocument(page.title, exported.markdown) },
+  ]);
+  return new Response(zip as unknown as BodyInit, {
+    headers: {
+      'content-type': 'application/zip',
+      'content-disposition': `attachment; filename="rdocs.zip"; filename*=UTF-8''${encodeURIComponent(`${exported.base}.zip`)}`,
       'cache-control': 'private, no-store',
     },
   });
@@ -2573,6 +2641,7 @@ async function updatePage(
     'title',
     'icon',
     'coverAttachmentId',
+    'coverPosition',
     'fontStyle',
     'isFullWidth',
     'isSmallText',
@@ -2610,6 +2679,13 @@ async function updatePage(
     if ([...icon].length > 16) return error('页面图标过长', 400);
     fields.push('icon = ?');
     values.push(icon || null);
+  }
+  if ('coverPosition' in body) {
+    if (!['top', 'center', 'bottom'].includes(String(body.coverPosition))) {
+      return error('封面位置无效', 400);
+    }
+    fields.push('cover_position = ?');
+    values.push(body.coverPosition);
   }
   if ('coverAttachmentId' in body) {
     if (body.coverAttachmentId !== null && typeof body.coverAttachmentId !== 'string') {
@@ -2841,7 +2917,7 @@ async function deletePage(
           WHERE p.deleted_at IS NULL
        )
        SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-              p.icon, p.cover_attachment_id, p.font_style,
+              p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
               p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version
@@ -2907,7 +2983,7 @@ async function listTrash(env: Env, spaceId: string, actorId: string): Promise<Re
   const rows = (
     await env.DB.prepare(
       `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-              p.icon, p.cover_attachment_id, p.font_style,
+              p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
               p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at, p.deleted_at,
               a.collaboration_enabled, a.acl_version
@@ -2933,7 +3009,7 @@ async function listTrash(env: Env, spaceId: string, actorId: string): Promise<Re
 async function restorePage(env: Env, pageId: string, actorId: string): Promise<Response> {
   const row = await env.DB.prepare(
     `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-            p.icon, p.cover_attachment_id, p.font_style,
+            p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
             p.is_full_width, p.is_small_text, p.is_locked,
             p.current_generation, p.editor_schema_version, p.updated_at, p.deleted_at,
             a.collaboration_enabled, a.acl_version
@@ -3020,7 +3096,7 @@ async function bumpPageSubtreeAcl(
           WHERE p.deleted_at IS NULL
        )
        SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-              p.icon, p.cover_attachment_id, p.font_style,
+              p.icon, p.cover_attachment_id, p.cover_position, p.font_style,
               p.is_full_width, p.is_small_text, p.is_locked,
               p.current_generation, p.editor_schema_version, p.updated_at,
               a.collaboration_enabled, a.acl_version
@@ -3970,6 +4046,82 @@ async function openCollaborationSocket(
 
 async function handleApi(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
+  void processDueScheduledJobs(env).catch(() => undefined);
+
+  const enterprise = await handleEnterpriseProtocol(request, env);
+  if (enterprise) return enterprise;
+
+  if (url.pathname === '/api/saml/acs' && request.method === 'POST') {
+    const form = await request.formData();
+    const email = emailFromSamlResponse(String(form.get('SAMLResponse') ?? ''));
+    if (!email) return error('SAML 断言无效', 400);
+    const user = await env.DB.prepare(
+      `SELECT u.id FROM users u
+         JOIN organization_members m ON m.user_id = u.id
+         JOIN enterprise_settings e ON e.organization_id = m.organization_id
+        WHERE LOWER(u.email) = ? AND u.status = 'active' AND e.saml_enabled = 1
+        LIMIT 1`,
+    )
+      .bind(email)
+      .first<{ id: string }>();
+    if (!user) return error('SAML 用户未开通或不存在', 403);
+    const session = await createSession(env, user.id);
+    return new Response(null, {
+      status: 303,
+      headers: { location: '/', 'set-cookie': session.cookie },
+    });
+  }
+
+  if (url.pathname.startsWith('/scim/v2/Users')) {
+    const org = await findOrganizationByScimToken(env, request);
+    if (!org) return scimError('Unauthorized', 401);
+    if (url.pathname === '/scim/v2/Users' && request.method === 'GET') {
+      const rows = (
+        await env.DB.prepare(
+          `SELECT u.id, u.email, u.display_name, u.status
+             FROM users u
+             JOIN organization_members m ON m.user_id = u.id
+            WHERE m.organization_id = ?
+            ORDER BY u.created_at DESC LIMIT 100`,
+        )
+          .bind(org.organizationId)
+          .all<{ id: string; email: string; display_name: string; status: string }>()
+      ).results;
+      return json(
+        scimListResponse(
+          rows.map((row) =>
+            scimUserResource({
+              id: row.id,
+              email: row.email,
+              displayName: row.display_name,
+              active: row.status === 'active',
+            }),
+          ),
+        ),
+      );
+    }
+    const userMatch = url.pathname.match(/^\/scim\/v2\/Users\/([^/]+)$/);
+    if (userMatch?.[1] && request.method === 'GET') {
+      const row = await env.DB.prepare(
+        `SELECT u.id, u.email, u.display_name, u.status
+           FROM users u
+           JOIN organization_members m ON m.user_id = u.id
+          WHERE m.organization_id = ? AND u.id = ?`,
+      )
+        .bind(org.organizationId, decodeURIComponent(userMatch[1]))
+        .first<{ id: string; email: string; display_name: string; status: string }>();
+      if (!row) return scimError('User not found', 404);
+      return json(
+        scimUserResource({
+          id: row.id,
+          email: row.email,
+          displayName: row.display_name,
+          active: row.status === 'active',
+        }),
+      );
+    }
+    return scimError('Not implemented', 501);
+  }
 
   const publicApiResponse = await handlePublicApi(request, env, context);
   if (publicApiResponse) return publicApiResponse;
@@ -4378,14 +4530,18 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     }
   }
 
-  const markdownExportMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/export\/markdown$/);
-  if (markdownExportMatch?.[1] && request.method === 'POST') {
-    const pageId = decodeURIComponent(markdownExportMatch[1]);
+  const pageExportMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/export\/(markdown|html|pdf|zip)$/,
+  );
+  if (pageExportMatch?.[1] && pageExportMatch[2] && request.method === 'POST') {
+    const pageId = decodeURIComponent(pageExportMatch[1]);
     if (!isPageId(pageId)) return error('页面 ID 无效', 400);
     const authorized = await requirePageAction(env, pageId, actorId, 'export');
-    return authorized
-      ? exportPageMarkdown(env, authorized.page, actorId)
-      : error('页面不存在或无权导出', 404);
+    if (!authorized) return error('页面不存在或无权导出', 404);
+    if (pageExportMatch[2] === 'html') return exportPageHtml(env, authorized.page, actorId);
+    if (pageExportMatch[2] === 'pdf') return exportPagePdfFile(env, authorized.page, actorId);
+    if (pageExportMatch[2] === 'zip') return exportPageZipFile(env, authorized.page, actorId);
+    return exportPageMarkdown(env, authorized.page, actorId);
   }
 
   const favoriteMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/favorite$/);

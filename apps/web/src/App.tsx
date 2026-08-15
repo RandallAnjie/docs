@@ -123,6 +123,11 @@ import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
   exportMarkdown,
+  exportPageHtml,
+  exportPagePdf,
+  exportPageZip,
+  listOrganizationMembers,
+  searchPages,
   getAuthSession,
   getCollabTicket,
   getPageDatabase,
@@ -234,6 +239,7 @@ type SlashCommandId =
   | 'heading-1'
   | 'heading-2'
   | 'heading-3'
+  | 'html-sandbox'
   | 'image'
   | 'inline-math'
   | 'inline-reminder'
@@ -367,6 +373,12 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     keywords: 'synced block mirror 跨页 同步块',
   },
   {
+    id: 'html-sandbox',
+    label: 'HTML 块',
+    description: '在沙箱中嵌入自定义 HTML',
+    keywords: 'html embed sandbox 交互',
+  },
+  {
     id: 'image',
     label: '图片',
     description: '直接上传并插入到当前页面',
@@ -416,6 +428,26 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
   },
 ];
 
+function mentionContext(editor: Editor): SlashContext | null {
+  const { selection } = editor.state;
+  if (!selection.empty || !selection.$from.parent.isTextblock) return null;
+  const beforeCursor = selection.$from.parent.textBetween(
+    0,
+    selection.$from.parentOffset,
+    ' ',
+    ' ',
+  );
+  const match = beforeCursor.match(/(^|[\s\u3000])@([^\s@]{0,40})$/);
+  if (!match) return null;
+  const query = match[2] ?? '';
+  if (/^(remind|提醒)/i.test(query)) return null;
+  return {
+    from: selection.from - query.length - 1,
+    query,
+    to: selection.from,
+  };
+}
+
 function slashContext(editor: Editor): SlashContext | null {
   const { selection } = editor.state;
   if (!selection.empty || !selection.$from.parent.isTextblock) return null;
@@ -444,6 +476,8 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <Heading2 size={17} />;
     case 'heading-3':
       return <Heading3 size={17} />;
+    case 'html-sandbox':
+      return <Code2 size={17} />;
     case 'image':
       return <ImagePlus size={17} />;
     case 'bullet-list':
@@ -1702,6 +1736,9 @@ function PageAppearanceDialog({
 }) {
   const [icon, setIcon] = useState(page.icon ?? '');
   const [coverAttachmentId, setCoverAttachmentId] = useState<string | null>(page.coverAttachmentId);
+  const [coverPosition, setCoverPosition] = useState<'top' | 'center' | 'bottom'>(
+    page.coverPosition ?? 'center',
+  );
   const [fontStyle, setFontStyle] = useState(page.fontStyle);
   const [isFullWidth, setIsFullWidth] = useState(page.isFullWidth);
   const [isSmallText, setIsSmallText] = useState(page.isSmallText);
@@ -1738,6 +1775,7 @@ function PageAppearanceDialog({
         : {
             icon: icon.trim() || null,
             coverAttachmentId,
+            coverPosition,
             fontStyle,
             isFullWidth,
             isSmallText,
@@ -1815,6 +1853,19 @@ function PageAppearanceDialog({
                 >
                   移除封面
                 </button>
+                <label>
+                  封面位置
+                  <select
+                    value={coverPosition}
+                    onChange={(event) =>
+                      setCoverPosition(event.target.value as 'top' | 'center' | 'bottom')
+                    }
+                  >
+                    <option value="top">偏上</option>
+                    <option value="center">居中</option>
+                    <option value="bottom">偏下</option>
+                  </select>
+                </label>
               </div>
             </div>
             <fieldset className="page-font-options">
@@ -2456,14 +2507,17 @@ function DocumentWorkspace({
     }
   };
 
-  const exportCurrentPage = async () => {
+  const exportCurrentPage = async (format: 'html' | 'markdown' | 'pdf' | 'zip' = 'markdown') => {
     setPageActionBusy(true);
     setPageActionError(null);
     try {
       await flushDocument();
-      await exportMarkdown(page.id);
+      if (format === 'html') await exportPageHtml(page.id);
+      else if (format === 'pdf') await exportPagePdf(page.id);
+      else if (format === 'zip') await exportPageZip(page.id);
+      else await exportMarkdown(page.id);
     } catch (reason) {
-      setPageActionError(reason instanceof Error ? reason.message : '无法导出 Markdown');
+      setPageActionError(reason instanceof Error ? reason.message : '无法导出页面');
     } finally {
       setPageActionBusy(false);
     }
@@ -2788,6 +2842,33 @@ function DocumentWorkspace({
                 <button type="button" onClick={() => void copyCurrentPage()}>
                   <Copy size={15} /> 创建副本
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    void exportCurrentPage('html');
+                  }}
+                >
+                  <Download size={15} /> 导出 HTML
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    void exportCurrentPage('pdf');
+                  }}
+                >
+                  <Download size={15} /> 导出 PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    void exportCurrentPage('zip');
+                  }}
+                >
+                  <Download size={15} /> 导出 ZIP
+                </button>
                 {!database ? (
                   <button type="button" onClick={() => void convertToDatabase()}>
                     <Table2 size={15} /> 转换为数据库
@@ -2828,7 +2909,11 @@ function DocumentWorkspace({
           >
             {headerPage.coverAttachmentId ? (
               <div className="page-cover">
-                <img src={attachmentDownloadUrl(headerPage.coverAttachmentId)} alt="" />
+                <img
+                  src={attachmentDownloadUrl(headerPage.coverAttachmentId)}
+                  alt=""
+                  style={{ objectPosition: headerPage.coverPosition ?? 'center' }}
+                />
               </div>
             ) : null}
             {headerPage.icon ? (
@@ -2880,6 +2965,7 @@ function DocumentWorkspace({
             {onLogout && !renewTicket && aiRequest && !isSwitching ? (
               <PageAiComposer
                 pageId={page.id}
+                organizationId={page.organizationId}
                 pageTitle={page.title}
                 pageExcerpt={editorRef.current?.getText().slice(0, 6000) ?? ''}
                 request={aiRequest}
@@ -3257,6 +3343,16 @@ function CollaborativeEditor({
   );
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [mentionMenu, setMentionMenu] = useState<
+    (SlashMenuState & { items: Array<{ id: string; kind: 'page' | 'user'; label: string }> }) | null
+  >(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionKeyRef = useRef({
+    isOpen: false,
+    index: 0,
+    items: [] as Array<{ id: string; kind: 'page' | 'user'; label: string }>,
+    run: () => undefined as void,
+  });
   const [aiToolbar, setAiToolbar] = useState<{
     left: number;
     top: number;
@@ -3291,6 +3387,11 @@ function CollaborativeEditor({
         addKeyboardShortcuts() {
           return {
             Enter: () => {
+              const mention = mentionKeyRef.current;
+              if (mention.isOpen && mention.items.length) {
+                mention.run();
+                return true;
+              }
               const slash = slashKeyRef.current;
               if (!slash.isOpen || !slash.commands.length) return false;
               const selected = slash.commands[slash.index % slash.commands.length];
@@ -3298,6 +3399,11 @@ function CollaborativeEditor({
               return true;
             },
             ArrowDown: () => {
+              const mention = mentionKeyRef.current;
+              if (mention.isOpen && mention.items.length) {
+                setMentionIndex((current) => (current + 1) % mention.items.length);
+                return true;
+              }
               const slash = slashKeyRef.current;
               if (!slash.isOpen || !slash.commands.length) return false;
               setSlashIndex(
@@ -3306,6 +3412,13 @@ function CollaborativeEditor({
               return true;
             },
             ArrowUp: () => {
+              const mention = mentionKeyRef.current;
+              if (mention.isOpen && mention.items.length) {
+                setMentionIndex(
+                  (current) => (current - 1 + mention.items.length) % mention.items.length,
+                );
+                return true;
+              }
               const slash = slashKeyRef.current;
               if (!slash.isOpen || !slash.commands.length) return false;
               setSlashIndex(
@@ -3314,6 +3427,10 @@ function CollaborativeEditor({
               return true;
             },
             Escape: () => {
+              if (mentionKeyRef.current.isOpen) {
+                setMentionMenu(null);
+                return true;
+              }
               const slash = slashKeyRef.current;
               if (!slash.isOpen) return false;
               const current = editorInstance.current;
@@ -3507,6 +3624,22 @@ function CollaborativeEditor({
     onTransaction: ({ editor: currentEditor }) => {
       rerender((value) => value + 1);
       updateSlashMenu(currentEditor);
+      const mention = mentionContext(currentEditor);
+      if (!mention) {
+        setMentionMenu(null);
+        return;
+      }
+      try {
+        const coordinates = currentEditor.view.coordsAtPos(mention.to);
+        setMentionMenu((current) => ({
+          ...mention,
+          items: current?.query === mention.query ? current.items : (current?.items ?? []),
+          left: Math.min(coordinates.left, Math.max(12, window.innerWidth - 330)),
+          top: Math.min(coordinates.bottom + 7, Math.max(12, window.innerHeight - 360)),
+        }));
+      } catch {
+        setMentionMenu(null);
+      }
     },
   });
 
@@ -3756,6 +3889,26 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'html-sandbox') {
+        setSlashMenu(null);
+        void promptDialog({
+          title: 'HTML 块',
+          message: '在沙箱 iframe 中运行，不能访问当前页面。',
+          label: 'HTML',
+          defaultValue: '<p style="padding:12px">自定义内容</p>',
+          multiline: true,
+        }).then((html) => {
+          if (!html || !editor.isEditable) return;
+          editor
+            .chain()
+            .focus()
+            .deleteRange(context)
+            .insertContent({ type: 'htmlSandbox', attrs: { html } })
+            .run();
+        });
+        return;
+      }
+
       if (id === 'audio' || id === 'file' || id === 'image' || id === 'video') {
         editor.chain().focus().deleteRange(context).run();
         setSlashMenu(null);
@@ -3912,7 +4065,80 @@ function CollaborativeEditor({
     run: runSlashCommand,
   };
 
+  const insertMention = useCallback(
+    (item: { id: string; kind: 'page' | 'user'; label: string }) => {
+      if (!editor?.isEditable || !mentionMenu) return;
+      editor
+        .chain()
+        .focus()
+        .deleteRange({ from: mentionMenu.from, to: mentionMenu.to })
+        .insertContent({
+          type: 'mention',
+          attrs: { kind: item.kind, label: item.label, mentionId: item.id },
+        })
+        .insertContent(' ')
+        .run();
+      setMentionMenu(null);
+    },
+    [editor, mentionMenu],
+  );
+
+  mentionKeyRef.current = {
+    isOpen: Boolean(mentionMenu),
+    index: mentionIndex,
+    items: mentionMenu?.items ?? [],
+    run: () => {
+      const selected = mentionMenu?.items[mentionIndex % Math.max(mentionMenu.items.length, 1)];
+      if (selected) insertMention(selected);
+    },
+  };
+
   useEffect(() => setSlashIndex(0), [slashMenu?.query]);
+  useEffect(() => setMentionIndex(0), [mentionMenu?.query]);
+
+  useEffect(() => {
+    if (!mentionMenu) return;
+    let cancelled = false;
+    const query = mentionMenu.query.trim();
+    const handle = window.setTimeout(() => {
+      void Promise.all([
+        query
+          ? searchPages(organizationId, query, { titleOnly: true })
+          : Promise.resolve({ results: [] }),
+        listOrganizationMembers(organizationId),
+      ])
+        .then(([pages, members]) => {
+          if (cancelled) return;
+          const people = members.members
+            .filter((member) =>
+              query
+                ? `${member.displayName} ${member.email}`
+                    .toLocaleLowerCase()
+                    .includes(query.toLocaleLowerCase())
+                : true,
+            )
+            .slice(0, 6)
+            .map((member) => ({
+              id: member.userId,
+              kind: 'user' as const,
+              label: member.displayName,
+            }));
+          const pageItems = pages.results.slice(0, 6).map((result) => ({
+            id: result.page.id,
+            kind: 'page' as const,
+            label: result.page.title || '无标题',
+          }));
+          setMentionMenu((current) =>
+            current ? { ...current, items: [...people, ...pageItems] } : current,
+          );
+        })
+        .catch(() => undefined);
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [mentionMenu?.query, organizationId]);
 
   if (!editor) return null;
 
@@ -4107,6 +4333,45 @@ function CollaborativeEditor({
               {'askAi' in tool && tool.askAi ? <span>询问 AI</span> : null}
             </button>
           ))}
+        </div>
+      ) : null}
+      {mentionMenu ? (
+        <div
+          className="slash-menu mention-menu"
+          role="listbox"
+          aria-label="提及"
+          style={{ left: mentionMenu.left, top: mentionMenu.top }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <header>
+            <strong>提及</strong>
+            <span>人和页面 · Enter 插入</span>
+          </header>
+          <div>
+            {mentionMenu.items.length ? (
+              mentionMenu.items.map((item, index) => (
+                <button
+                  key={`${item.kind}-${item.id}`}
+                  type="button"
+                  role="option"
+                  aria-selected={index === mentionIndex}
+                  className={index === mentionIndex ? 'active' : undefined}
+                  onMouseEnter={() => setMentionIndex(index)}
+                  onClick={() => insertMention(item)}
+                >
+                  <span className="slash-command-icon">
+                    {item.kind === 'user' ? <Users size={16} /> : <FileText size={16} />}
+                  </span>
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.kind === 'user' ? '成员' : '页面'}</small>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p>输入以搜索成员或页面</p>
+            )}
+          </div>
         </div>
       ) : null}
       {slashMenu ? (
