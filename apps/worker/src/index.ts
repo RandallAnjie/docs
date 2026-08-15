@@ -17,6 +17,7 @@ import {
   type ShareLinkSummary,
   type SpaceGrantPrincipalType,
   type SpaceRole,
+  type SyncedBlockSummary,
   type TrashedPageSummary,
 } from '@rdocs/shared';
 
@@ -46,6 +47,8 @@ import { parseByteRange } from './attachment-range';
 import { listPages } from './page-tree';
 import { pageAccessSnapshot } from './page-access';
 import { ftsMatchQuery, normalizeSearchText, searchIndexText } from './search-projection';
+import { syncedBlockTicketRole } from './synced-block-access';
+import { bumpSyncedBlocksForPageSubtree } from './synced-block-acl';
 import { handleTenancyApi } from './tenancy';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
 
@@ -109,6 +112,19 @@ interface AttachmentRow {
   status: 'pending' | 'ready' | 'quarantined' | 'deleted';
   created_by: string;
   created_at: number;
+  deleted_at: number | null;
+}
+
+interface SyncedBlockRow {
+  id: string;
+  organization_id: string;
+  source_page_id: string;
+  current_generation: number;
+  editor_schema_version: number;
+  acl_version: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
   deleted_at: number | null;
 }
 
@@ -220,6 +236,50 @@ function documentRoom(env: Env, pageId: string, generation: number): DurableObje
   return env.DocumentRoom.get(
     env.DocumentRoom.idFromName(`document:${pageId}:generation:${generation}`),
   );
+}
+
+function syncedBlockRoom(env: Env, blockId: string, generation: number): DurableObjectStub {
+  return env.DocumentRoom.get(
+    env.DocumentRoom.idFromName(`synced-block:${blockId}:generation:${generation}`),
+  );
+}
+
+function syncedBlockFromRow(row: SyncedBlockRow): SyncedBlockSummary {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    sourcePageId: row.source_page_id,
+    currentGeneration: Number(row.current_generation),
+    editorSchemaVersion: Number(row.editor_schema_version),
+    aclVersion: Number(row.acl_version),
+    createdBy: row.created_by,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+async function findSyncedBlock(env: Env, blockId: string): Promise<SyncedBlockSummary | null> {
+  const row = await env.DB.prepare(
+    `SELECT id, organization_id, source_page_id, current_generation,
+            editor_schema_version, acl_version, created_by, created_at,
+            updated_at, deleted_at
+       FROM synced_blocks WHERE id = ? AND deleted_at IS NULL`,
+  )
+    .bind(blockId)
+    .first<SyncedBlockRow>();
+  return row ? syncedBlockFromRow(row) : null;
+}
+
+async function touchSyncedBlockReference(env: Env, blockId: string, pageId: string): Promise<void> {
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO synced_block_references(synced_block_id, page_id, first_seen_at, last_seen_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(synced_block_id, page_id)
+     DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+  )
+    .bind(blockId, pageId, now, now)
+    .run();
 }
 
 async function findPage(env: Env, pageId: string): Promise<PageSummary | null> {
@@ -841,19 +901,23 @@ async function revokeShareLink(
   return json({ ok: true, revokedAt });
 }
 
-async function resolvePublicShare(request: Request, env: Env, token: string): Promise<Response> {
-  if (!token || token.length > 512) return error('分享链接无效', 404);
-  const now = Date.now();
-  const share = await env.DB.prepare(
+async function findPublicShareByToken(env: Env, token: string): Promise<ShareLinkRow | null> {
+  if (!token || token.length > 512) return null;
+  return env.DB.prepare(
     `SELECT id, organization_id, page_id, token_hash, role, expires_at,
             revoked_at, created_by, created_at
        FROM share_links
       WHERE token_hash = ? AND revoked_at IS NULL
         AND (expires_at IS NULL OR expires_at > ?)`,
   )
-    .bind(await shareTokenHash(token), now)
+    .bind(await shareTokenHash(token), Date.now())
     .first<ShareLinkRow>();
+}
+
+async function resolvePublicShare(request: Request, env: Env, token: string): Promise<Response> {
+  const share = await findPublicShareByToken(env, token);
   if (!share) return error('分享链接不存在、已过期或已撤销', 404);
+  const now = Date.now();
   const page = await findPage(env, share.page_id);
   if (!page || !page.collaborationEnabled) return error('分享页面已不可用', 404);
   if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) {
@@ -892,6 +956,51 @@ async function resolvePublicShare(request: Request, env: Env, token: string): Pr
       },
     },
   );
+}
+
+async function issuePublicSyncedBlockTicket(
+  env: Env,
+  token: string,
+  containerPageId: string,
+  blockId: string,
+): Promise<Response> {
+  if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) {
+    return error('协作服务尚未配置', 503);
+  }
+  const [share, block] = await Promise.all([
+    findPublicShareByToken(env, token),
+    findSyncedBlock(env, blockId),
+  ]);
+  if (
+    !share ||
+    !block ||
+    share.page_id !== containerPageId ||
+    block.sourcePageId !== containerPageId ||
+    block.organizationId !== share.organization_id
+  ) {
+    return error('同步块不存在或无权访问', 404);
+  }
+  const page = await findPage(env, containerPageId);
+  if (!page?.collaborationEnabled) return error('分享页面已不可用', 404);
+  await touchSyncedBlockReference(env, blockId, containerPageId);
+  const issuedAt = Date.now();
+  const expiresAt = issuedAt + 5 * 60 * 1000;
+  const ticket = await signCollabTicket(
+    {
+      version: 1,
+      resourceKind: 'synced_block',
+      pageId: blockId,
+      generation: block.currentGeneration,
+      actorId: `share-${share.id}`,
+      displayName: '外部只读',
+      role: 'viewer',
+      aclVersion: block.aclVersion,
+      issuedAt,
+      expiresAt,
+    },
+    env.COLLAB_TICKET_SECRET,
+  );
+  return json({ ticket, expiresAt, generation: block.currentGeneration, role: 'viewer' });
 }
 
 async function captureRevision(
@@ -1793,6 +1902,64 @@ async function createPage(request: Request, env: Env, actorId: string): Promise<
   return json({ page }, { status: 201 });
 }
 
+async function createSyncedBlock(
+  env: Env,
+  sourcePage: PageSummary,
+  actorId: string,
+): Promise<Response> {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO synced_blocks(
+         id, organization_id, source_page_id, current_generation,
+         editor_schema_version, acl_version, created_by, updated_by,
+         created_at, updated_at, deleted_at
+       ) VALUES (?, ?, ?, 1, ?, 1, ?, ?, ?, ?, NULL)`,
+    ).bind(
+      id,
+      sourcePage.organizationId,
+      sourcePage.id,
+      EDITOR_SCHEMA_VERSION,
+      actorId,
+      actorId,
+      now,
+      now,
+    ),
+    env.DB.prepare(
+      `INSERT INTO synced_block_references(
+         synced_block_id, page_id, first_seen_at, last_seen_at
+       ) VALUES (?, ?, ?, ?)`,
+    ).bind(id, sourcePage.id, now, now),
+  ]);
+
+  const initial = markdownToYjsSnapshot('输入同步内容');
+  const contentHash = await sha256Hex(initial.snapshot);
+  const initialized = await syncedBlockRoom(env, id, 1).fetch(
+    'https://rdocs.internal/internal/initialize-generation',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-rdocs-page-id': id,
+        'x-rdocs-generation': '1',
+        'x-rdocs-revision-id': `synced_block_${id}`,
+        'x-rdocs-content-hash': contentHash,
+        'x-rdocs-actor-id': actorId,
+      },
+      body: toArrayBuffer(initial.snapshot),
+    },
+  );
+  if (!initialized.ok) {
+    await env.DB.prepare('DELETE FROM synced_blocks WHERE id = ?').bind(id).run();
+    return error('同步块初始化失败', 500);
+  }
+  const block = await findSyncedBlock(env, id);
+  if (!block) return error('同步块创建失败', 500);
+  await pageAudit(env, sourcePage, actorId, 'synced_block.created', { syncedBlockId: id });
+  return json({ syncedBlock: block }, { status: 201 });
+}
+
 async function updatePage(
   request: Request,
   env: Env,
@@ -1922,6 +2089,7 @@ async function updatePage(
         })
         .then(() => undefined),
     );
+    await bumpSyncedBlocksForPageSubtree(env, page.id, context);
   }
   return json({ page: { ...page, role } });
 }
@@ -2115,6 +2283,7 @@ async function deletePage(
     deletedCount: subtreeRows.length,
   });
   await closePageConnections(env, subtreeRows, context);
+  await bumpSyncedBlocksForPageSubtree(env, page.id, context);
   return json({ ok: true, deletedAt, deletedCount: subtreeRows.length });
 }
 
@@ -2264,6 +2433,7 @@ async function bumpPageSubtreeAcl(
     );
   });
   context.waitUntil(Promise.all(notifications).then(() => undefined));
+  await bumpSyncedBlocksForPageSubtree(env, pageId, context);
 }
 
 async function updatePageAccessMode(
@@ -2454,10 +2624,74 @@ async function issueTicket(
   return json({ ticket, expiresAt, generation: page.currentGeneration });
 }
 
+async function issueSyncedBlockTicket(
+  request: Request,
+  env: Env,
+  containerPageId: string,
+  blockId: string,
+  authenticatedUser: AuthUserSummary,
+): Promise<Response> {
+  if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) {
+    return error('协作服务尚未配置', 503);
+  }
+  const block = await findSyncedBlock(env, blockId);
+  if (!block) return error('同步块不存在', 404);
+  // Register the destination before checking access. A concurrent ACL mutation
+  // will then always bump and disconnect this synced resource.
+  await touchSyncedBlockReference(env, blockId, containerPageId);
+  const [sourceAccess, containerAccess] = await Promise.all([
+    requirePageAction(env, block.sourcePageId, authenticatedUser.id, 'view'),
+    requirePageAction(env, containerPageId, authenticatedUser.id, 'view'),
+  ]);
+  if (
+    !sourceAccess ||
+    !containerAccess ||
+    sourceAccess.page.organizationId !== block.organizationId ||
+    containerAccess.page.organizationId !== block.organizationId
+  ) {
+    return error('同步块不存在或无权访问', 404);
+  }
+  const body = (await request.json().catch(() => ({}))) as { displayName?: unknown };
+  const displayName =
+    authenticatedUser.displayName ||
+    (typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 60) : '');
+  if (!displayName) return error('协作者身份无效', 400);
+  const role = syncedBlockTicketRole(
+    { ...sourceAccess.page, role: sourceAccess.role },
+    { ...containerAccess.page, role: containerAccess.role },
+  );
+  if (!role) return error('同步块所在页面已停止协作', 403);
+  const issuedAt = Date.now();
+  const expiresAt = issuedAt + 5 * 60 * 1000;
+  const ticket = await signCollabTicket(
+    {
+      version: 1,
+      resourceKind: 'synced_block',
+      pageId: blockId,
+      generation: block.currentGeneration,
+      actorId: authenticatedUser.id,
+      displayName,
+      role,
+      aclVersion: block.aclVersion,
+      issuedAt,
+      expiresAt,
+    },
+    env.COLLAB_TICKET_SECRET,
+  );
+  return json({
+    ticket,
+    expiresAt,
+    generation: block.currentGeneration,
+    role,
+    syncedBlock: block,
+  });
+}
+
 async function setCollaborationAccess(
   request: Request,
   env: Env,
   pageId: string,
+  context: ExecutionContext,
 ): Promise<Response> {
   if (
     !env.PHASE0_ADMIN_SECRET ||
@@ -2488,6 +2722,7 @@ async function setCollaborationAccess(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ enabled: body.enabled, aclVersion: nextVersion }),
   });
+  await bumpSyncedBlocksForPageSubtree(env, pageId, context);
   return json({ page: await findPage(env, pageId) });
 }
 
@@ -2495,6 +2730,7 @@ async function syncCollaborationOverHttp(
   request: Request,
   env: Env,
   pageId: string,
+  expectedKind: 'page' | 'synced_block' = 'page',
 ): Promise<Response> {
   const origin = request.headers.get('origin');
   if (origin && !isCollaborationOriginAllowed(request.url, origin, env.APP_ORIGIN)) {
@@ -2505,23 +2741,32 @@ async function syncCollaborationOverHttp(
   const ticketValue = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
   if (!ticketValue || !env.COLLAB_TICKET_SECRET) return error('缺少协作凭证', 401);
   const ticket = await verifyCollabTicket(ticketValue, env.COLLAB_TICKET_SECRET);
-  if (!ticket || ticket.pageId !== pageId) return error('协作凭证无效或已过期', 401);
+  const resourceKind = ticket?.resourceKind ?? 'page';
+  if (!ticket || ticket.pageId !== pageId || resourceKind !== expectedKind) {
+    return error('协作凭证无效或已过期', 401);
+  }
 
-  const page = await findPageForCollaboration(env, pageId);
-  if (page && page.currentGeneration !== ticket.generation) {
+  const page = resourceKind === 'page' ? await findPageForCollaboration(env, pageId) : null;
+  const syncedBlock = resourceKind === 'synced_block' ? await findSyncedBlock(env, pageId) : null;
+  const currentGeneration = page?.currentGeneration ?? syncedBlock?.currentGeneration;
+  if (currentGeneration !== undefined && currentGeneration !== ticket.generation) {
     return json(
       {
         error: '文档已恢复到新的 generation',
         code: 'document_rebased',
-        generation: page.currentGeneration,
+        generation: currentGeneration,
       },
       {
         status: 409,
-        headers: { 'x-rdocs-document-generation': String(page.currentGeneration) },
+        headers: { 'x-rdocs-document-generation': String(currentGeneration) },
       },
     );
   }
-  if (!page || !page.collaborationEnabled || page.aclVersion !== ticket.aclVersion) {
+  const resourceAvailable =
+    resourceKind === 'page'
+      ? Boolean(page?.collaborationEnabled && page.aclVersion === ticket.aclVersion)
+      : Boolean(syncedBlock && syncedBlock.aclVersion === ticket.aclVersion);
+  if (!resourceAvailable) {
     return error('页面权限已变化', 403);
   }
 
@@ -2530,9 +2775,10 @@ async function syncCollaborationOverHttp(
   const body = await request.arrayBuffer();
   if (body.byteLength > MAX_HTTP_SYNC_BODY_BYTES) return error('同步请求过大', 413);
 
-  const room = env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(`document:${pageId}:generation:${ticket.generation}`),
-  );
+  const room =
+    resourceKind === 'page'
+      ? documentRoom(env, pageId, ticket.generation)
+      : syncedBlockRoom(env, pageId, ticket.generation);
   const headers = new Headers({
     'content-type': 'application/octet-stream',
     'x-rdocs-page-id': pageId,
@@ -2542,6 +2788,7 @@ async function syncCollaborationOverHttp(
     'x-rdocs-role': ticket.role,
     'x-rdocs-acl-version': String(ticket.aclVersion),
     'x-rdocs-editing-enabled': '1',
+    'x-rdocs-resource-kind': resourceKind,
   });
   const response = await room.fetch('https://rdocs.internal/internal/http-sync', {
     method: 'POST',
@@ -2571,19 +2818,29 @@ async function openCollaborationSocket(
   const ticket = await verifyCollabTicket(ticketValue, env.COLLAB_TICKET_SECRET);
   if (!ticket || ticket.pageId !== pageId) return error('协作凭证无效或已过期', 401);
 
-  const page = await findPage(env, pageId);
-  if (
-    !page ||
-    !page.collaborationEnabled ||
-    page.currentGeneration !== ticket.generation ||
-    page.aclVersion !== ticket.aclVersion
-  ) {
+  const resourceKind = ticket.resourceKind ?? 'page';
+  const page = resourceKind === 'page' ? await findPage(env, pageId) : null;
+  const syncedBlock = resourceKind === 'synced_block' ? await findSyncedBlock(env, pageId) : null;
+  const resourceAvailable =
+    resourceKind === 'page'
+      ? Boolean(
+          page?.collaborationEnabled &&
+          page.currentGeneration === ticket.generation &&
+          page.aclVersion === ticket.aclVersion,
+        )
+      : Boolean(
+          syncedBlock &&
+          syncedBlock.currentGeneration === ticket.generation &&
+          syncedBlock.aclVersion === ticket.aclVersion,
+        );
+  if (!resourceAvailable) {
     return error('页面权限或 generation 已变化', 403);
   }
 
-  const room = env.DocumentRoom.get(
-    env.DocumentRoom.idFromName(`document:${pageId}:generation:${ticket.generation}`),
-  );
+  const room =
+    resourceKind === 'page'
+      ? documentRoom(env, pageId, ticket.generation)
+      : syncedBlockRoom(env, pageId, ticket.generation);
   const headers = new Headers(request.headers);
   headers.set('x-rdocs-page-id', pageId);
   headers.set('x-rdocs-generation', String(ticket.generation));
@@ -2592,6 +2849,7 @@ async function openCollaborationSocket(
   headers.set('x-rdocs-role', ticket.role);
   headers.set('x-rdocs-acl-version', String(ticket.aclVersion));
   headers.set('x-rdocs-editing-enabled', '1');
+  headers.set('x-rdocs-resource-kind', resourceKind);
   return room.fetch(new Request(request, { headers }));
 }
 
@@ -2614,6 +2872,29 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     return resolvePublicShare(request, env, decodeURIComponent(publicShareMatch[1]));
   }
 
+  const publicSyncedBlockTicketMatch = url.pathname.match(
+    /^\/api\/public\/shares\/([^/]+)\/pages\/([^/]+)\/synced-blocks\/([^/]+)\/ticket$/,
+  );
+  if (
+    publicSyncedBlockTicketMatch?.[1] &&
+    publicSyncedBlockTicketMatch[2] &&
+    publicSyncedBlockTicketMatch[3] &&
+    request.method === 'POST'
+  ) {
+    if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+    const containerPageId = decodeURIComponent(publicSyncedBlockTicketMatch[2]);
+    const blockId = decodeURIComponent(publicSyncedBlockTicketMatch[3]);
+    if (!isPageId(containerPageId) || !isPageId(blockId)) {
+      return error('同步块 ID 无效', 400);
+    }
+    return issuePublicSyncedBlockTicket(
+      env,
+      decodeURIComponent(publicSyncedBlockTicketMatch[1]),
+      containerPageId,
+      blockId,
+    );
+  }
+
   const publicFormResponse = await handlePublicDatabaseFormsApi(request, env);
   if (publicFormResponse) return publicFormResponse;
 
@@ -2623,6 +2904,16 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     return isPageId(pageId)
       ? syncCollaborationOverHttp(request, env, pageId)
       : error('页面 ID 无效', 400);
+  }
+
+  const syncedBlockSyncMatch = url.pathname.match(
+    /^\/api\/synced-blocks\/([^/]+)\/collaboration-sync$/,
+  );
+  if (syncedBlockSyncMatch?.[1] && request.method === 'POST') {
+    const blockId = decodeURIComponent(syncedBlockSyncMatch[1]);
+    return isPageId(blockId)
+      ? syncCollaborationOverHttp(request, env, blockId, 'synced_block')
+      : error('同步块 ID 无效', 400);
   }
 
   const publicAttachmentMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)$/);
@@ -2683,6 +2974,27 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (url.pathname === '/api/pages' && request.method === 'GET') {
     const spaceId = url.searchParams.get('spaceId') ?? '';
     return spaceId ? listPages(env, spaceId, actorId) : error('缺少目标空间', 400);
+  }
+
+  const pageSyncedBlocksMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/synced-blocks$/);
+  if (pageSyncedBlocksMatch?.[1] && request.method === 'POST') {
+    const pageId = decodeURIComponent(pageSyncedBlocksMatch[1]);
+    if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    const authorized = await requirePageAction(env, pageId, actorId, 'edit_content');
+    if (!authorized) return error('页面不存在或无权创建同步块', 404);
+    if (!authorized.page.collaborationEnabled) return error('此页面已停止协作', 403);
+    if (authorized.page.isLocked) return error('页面已锁定，请先解锁', 423, 'page_locked');
+    return createSyncedBlock(env, authorized.page, actorId);
+  }
+
+  const syncedBlockTicketMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/synced-blocks\/([^/]+)\/ticket$/,
+  );
+  if (syncedBlockTicketMatch?.[1] && syncedBlockTicketMatch[2] && request.method === 'POST') {
+    const pageId = decodeURIComponent(syncedBlockTicketMatch[1]);
+    const blockId = decodeURIComponent(syncedBlockTicketMatch[2]);
+    if (!isPageId(pageId) || !isPageId(blockId)) return error('同步块 ID 无效', 400);
+    return issueSyncedBlockTicket(request, env, pageId, blockId, actor);
   }
 
   const spaceTreeMatch = url.pathname.match(/^\/api\/spaces\/([^/]+)\/tree$/);
@@ -2923,7 +3235,7 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (accessMatch?.[1] && request.method === 'POST') {
     const pageId = decodeURIComponent(accessMatch[1]);
     return isPageId(pageId)
-      ? setCollaborationAccess(request, env, pageId)
+      ? setCollaborationAccess(request, env, pageId, context)
       : error('页面 ID 无效', 400);
   }
 

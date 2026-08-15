@@ -24,6 +24,7 @@ import {
 } from './access';
 import { invalidateCollaborationPage } from './collaboration-access-cache';
 import type { Env } from './env';
+import { bumpSyncedBlocksForSpace } from './synced-block-acl';
 
 const MAX_NAME_LENGTH = 100;
 const MAX_SLUG_LENGTH = 50;
@@ -1427,6 +1428,7 @@ async function bumpSpaceAcl(env: Env, spaceId: string, context: ExecutionContext
     });
   });
   context.waitUntil(Promise.all(notifications).then(() => undefined));
+  await bumpSyncedBlocksForSpace(env, spaceId, context);
 }
 
 async function bumpOrganizationAcl(

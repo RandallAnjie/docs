@@ -22,6 +22,14 @@ describe('collaboration tickets', () => {
     ).resolves.toEqual(payload);
   });
 
+  it('preserves the synced resource discriminator', async () => {
+    const syncedPayload: CollabTicketPayload = { ...payload, resourceKind: 'synced_block' };
+    const ticket = await signCollabTicket(syncedPayload, 'a sufficiently long test secret');
+    await expect(
+      verifyCollabTicket(ticket, 'a sufficiently long test secret', 2_000),
+    ).resolves.toEqual(syncedPayload);
+  });
+
   it('rejects tampering and expiration', async () => {
     const ticket = await signCollabTicket(payload, 'a sufficiently long test secret');
     await expect(

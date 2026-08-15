@@ -76,6 +76,12 @@ export function markdownToYjsSnapshot(markdown: string): {
       index += 1;
       continue;
     }
+    const syncedBlock = line.trim().match(/^<!-- rdocs:synced-block:([0-9a-f-]{36}) -->$/i);
+    if (syncedBlock) {
+      nodes.push(element('syncedBlock', '', { syncedBlockId: syncedBlock[1] ?? '' }));
+      index += 1;
+      continue;
+    }
     if (line.trim() === '<!-- rdocs:columns:start -->') {
       const columnBodies: string[][] = [];
       let currentColumn: string[] | null = null;
@@ -419,6 +425,10 @@ function renderElement(node: Y.XmlElement): string {
       return '<!-- rdocs:table-of-contents -->\n\n';
     case 'breadcrumb':
       return '<!-- rdocs:breadcrumb -->\n\n';
+    case 'syncedBlock': {
+      const syncedBlockId = node.getAttribute('syncedBlockId') ?? '';
+      return syncedBlockId ? `<!-- rdocs:synced-block:${syncedBlockId} -->\n\n` : '';
+    }
     case 'pageButton': {
       const action = node.getAttribute('action') === 'openUrl' ? 'openUrl' : 'insertText';
       const label = (node.getAttribute('label') || '新按钮')

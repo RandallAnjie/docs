@@ -44,6 +44,7 @@ import type {
   SpaceRole,
   SpaceSummary,
   SpaceVisibility,
+  SyncedBlockSummary,
   TrashedPageSummary,
   JsonValue,
 } from '@rdocs/shared';
@@ -777,6 +778,32 @@ export function getCollabTicket(
     method: 'POST',
     body: JSON.stringify({ actorId: actor.id, displayName: actor.name }),
   });
+}
+
+export function createSyncedBlock(pageId: string): Promise<{ syncedBlock: SyncedBlockSummary }> {
+  return request(`/api/pages/${encodeURIComponent(pageId)}/synced-blocks`, { method: 'POST' });
+}
+
+export function getSyncedBlockTicket(
+  pageId: string,
+  blockId: string,
+  actor: { name: string },
+): Promise<CollabTicketResponse & { role: 'editor' | 'viewer'; syncedBlock: SyncedBlockSummary }> {
+  return request(
+    `/api/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/ticket`,
+    { method: 'POST', body: JSON.stringify({ displayName: actor.name }) },
+  );
+}
+
+export function getPublicSyncedBlockTicket(
+  token: string,
+  pageId: string,
+  blockId: string,
+): Promise<CollabTicketResponse & { role: 'viewer' }> {
+  return request(
+    `/api/public/shares/${encodeURIComponent(token)}/pages/${encodeURIComponent(pageId)}/synced-blocks/${encodeURIComponent(blockId)}/ticket`,
+    { method: 'POST' },
+  );
 }
 
 export function getAuthSession(): Promise<AuthSessionResponse> {

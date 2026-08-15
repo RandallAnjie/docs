@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { attachmentEditorBlocks } from './AttachmentBlocks';
 import { pageUtilityEditorBlocks, type BreadcrumbItem } from './PageUtilityBlocks';
+import { syncedBlockExtension, type SyncedBlockContext } from './SyncedBlock';
 
 export interface EmbedTarget {
   originalUrl: string;
@@ -410,6 +411,7 @@ export const ColumnsBlock = Node.create({
 
 export function createRdocsEditorBlocks(
   getBreadcrumbItems: () => readonly BreadcrumbItem[] = () => [],
+  getSyncedBlockContext: () => SyncedBlockContext | null = () => null,
 ) {
   return [
     CalloutBlock,
@@ -420,6 +422,7 @@ export function createRdocsEditorBlocks(
     ColumnBlock,
     ...attachmentEditorBlocks,
     ...pageUtilityEditorBlocks(getBreadcrumbItems),
+    syncedBlockExtension(getSyncedBlockContext),
   ];
 }
 

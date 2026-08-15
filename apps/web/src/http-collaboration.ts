@@ -16,6 +16,7 @@ interface HttpCollaborationOptions {
   renewTicket: () => Promise<string>;
   onState: (state: HttpCollaborationState) => void;
   pollIntervalMs?: number;
+  syncUrl?: string;
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -23,12 +24,12 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 export class HttpCollaborationTransport {
-  private readonly pageId: string;
   private readonly document: Y.Doc;
   private readonly awareness: Awareness;
   private readonly renewTicket: () => Promise<string>;
   private readonly onState: (state: HttpCollaborationState) => void;
   private readonly pollIntervalMs: number;
+  private readonly syncUrl: string;
   private ticket: string;
   private knownServerStateVector: Uint8Array = new Uint8Array([0]);
   private timer: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -41,13 +42,14 @@ export class HttpCollaborationTransport {
   private abortController: AbortController | undefined;
 
   constructor(options: HttpCollaborationOptions) {
-    this.pageId = options.pageId;
     this.document = options.document;
     this.awareness = options.awareness;
     this.ticket = options.ticket;
     this.renewTicket = options.renewTicket;
     this.onState = options.onState;
     this.pollIntervalMs = options.pollIntervalMs ?? 350;
+    this.syncUrl =
+      options.syncUrl ?? `/api/pages/${encodeURIComponent(options.pageId)}/collaboration-sync`;
   }
 
   start(): Promise<void> {
@@ -173,7 +175,7 @@ export class HttpCollaborationTransport {
         ? encodeAwarenessUpdate(this.awareness, [this.awareness.clientID])
         : new Uint8Array(),
     });
-    return fetch(`/api/pages/${encodeURIComponent(this.pageId)}/collaboration-sync`, {
+    return fetch(this.syncUrl, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${this.ticket}`,
