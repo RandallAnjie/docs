@@ -121,6 +121,16 @@ Rdocs 改为精确校验浏览器不可由跨站脚本伪造的 `Origin` 头；�
 
 单独重试相同类型的创建分享请求可以返回 201。失败端点不固定，请求不是并发洪泛；smoke 每一步都等待上一响应。最终一次平台错误明确返回 `upstream peer unreachable`，与此前没有 Rdocs 业务错误字段的 502 一致，因此应沿 front door 到 compute peer 的路由、健康状态和连接复用链路排查。
 
+2026-08-15 在 Git build `6ba379f` 成功激活、15 秒稳定等待之后，使用错误登记码对设备密钥 options 接口执行 20 次顺序请求（每次都等待上一次完成）。19 次按预期返回 Rdocs JSON 403；第 9 次由平台返回：
+
+```text
+HTTP/2 502
+x-request-id: cb618fb0f99a4c4a300abdbef9c3d56d
+upstream peer unreachable
+```
+
+该请求在校验错误登记码后不会创建 challenge 或修改业务数据，因此这次复现排除了并发写入、重复提交和 Rdocs 数据副作用。RF-8 在当前 RandallFlare 版本仍可稳定以低并发顺序请求复现。
+
 Rdocs 没有自动重放创建分享、评论、邀请等非幂等写请求，因为响应丢失后盲目重试可能制造重复数据。产品 smoke 已增加 20 秒单请求超时，并在失败信息中输出 `x-request-id` 和最多 500 字节的原始错误体，供后续关联平台日志。
 
 ### 建议排查与验收
