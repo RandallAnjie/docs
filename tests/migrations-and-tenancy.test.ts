@@ -14,7 +14,7 @@ import {
 } from '../apps/worker/src/access';
 import { listPages } from '../apps/worker/src/page-tree';
 import { pageAccessSnapshot } from '../apps/worker/src/page-access';
-import { handleTenancyApi } from '../apps/worker/src/tenancy';
+import { handleTenancyApi, provisionPersonalWorkspace } from '../apps/worker/src/tenancy';
 import {
   deliverDueReminders,
   deliverPageUpdateNotifications,
@@ -2777,6 +2777,33 @@ describe('Notion parity platform', () => {
     expect(snapshot?.status).toBe(200);
     const body = (await snapshot?.json()) as { properties: Array<{ id: string }> };
     expect(body.properties.map((property) => property.id)).not.toContain(propertyId);
+    database.close();
+  });
+
+  it('provisions a personal workspace for a new passkey user', async () => {
+    const database = migratedDatabase();
+    const now = Date.now();
+    const user: AuthUserSummary = {
+      id: '44444444-4444-4444-8444-444444444444',
+      email: 'new@rdocs.test',
+      displayName: '新用户',
+      avatarUrl: null,
+    };
+    database
+      .prepare(
+        `INSERT INTO users(id, email, display_name, avatar_url, status, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, 'active', ?, ?)`,
+      )
+      .run(user.id, user.email, user.displayName, now, now);
+    await provisionPersonalWorkspace(testEnv(database), user);
+    expect(
+      database
+        .prepare(`SELECT role FROM organization_members WHERE user_id = ? AND status = 'active'`)
+        .get(user.id),
+    ).toMatchObject({ role: 'owner' });
+    expect(
+      database.prepare(`SELECT COUNT(*) AS total FROM spaces WHERE created_by = ?`).get(user.id),
+    ).toMatchObject({ total: 1 });
     database.close();
   });
 });

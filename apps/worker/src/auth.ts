@@ -12,7 +12,11 @@ import {
 import type { AuthMode, AuthSessionResponse, AuthUserSummary } from '@rdocs/shared';
 
 import type { Env } from './env';
-import { findRegistrationInvitation, registrationInvitationStillValid } from './tenancy';
+import {
+  findRegistrationInvitation,
+  provisionPersonalWorkspace,
+  registrationInvitationStillValid,
+} from './tenancy';
 
 const SESSION_COOKIE = '__Host-rdocs_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -31,9 +35,6 @@ const AUTHENTICATOR_TRANSPORTS = new Set<AuthenticatorTransportFuture>([
   'smart-card',
   'usb',
 ]);
-const PHASE0_ORGANIZATION_ID = 'org_phase0';
-const PHASE0_SYSTEM_USER_ID = 'usr_phase0_system';
-
 interface SessionRow {
   session_id: string;
   user_id: string;
@@ -324,6 +325,7 @@ async function sessionResponse(
     user: auth.user,
     passkeyConfigured: Boolean(configuration),
     enrollmentConfigured: Boolean(configuration?.enrollmentSecret),
+    registrationOpen: Boolean(configuration),
     expectedOrigin: configuration?.origin ?? null,
   };
   return json(response);
@@ -359,19 +361,12 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
       const invitation = await findRegistrationInvitation(env, body.invitationToken, email);
       if (!invitation) return error('邀请不存在、已撤销或邮箱不匹配', 403);
       invitationId = invitation.id;
-    } else {
-      if (!configuration.enrollmentSecret) return error('管理员尚未开放新设备登记', 503);
+    } else if (typeof body.enrollmentSecret === 'string' && body.enrollmentSecret) {
       if (
-        typeof body.enrollmentSecret !== 'string' ||
+        !configuration.enrollmentSecret ||
         !(await secretsEqual(body.enrollmentSecret, configuration.enrollmentSecret))
       ) {
         return error('设备登记码无效', 403);
-      }
-      const existingCredential = await env.DB.prepare(
-        'SELECT 1 AS found FROM passkey_credentials LIMIT 1',
-      ).first<{ found: number }>();
-      if (existingCredential) {
-        return error('首位管理员已经登记，新成员请使用组织邀请', 409);
       }
     }
     const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?')
@@ -511,32 +506,17 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
         ).bind(userId, challenge.pending_email, challenge.pending_display_name, now, now),
         credentialInsert,
       ];
-      if (!challenge.invitation_id) {
-        statements.push(
-          env.DB.prepare(
-            `UPDATE organizations SET created_by = ?, updated_at = ?
-              WHERE id = ? AND created_by = ?`,
-          ).bind(userId, now, PHASE0_ORGANIZATION_ID, PHASE0_SYSTEM_USER_ID),
-          env.DB.prepare(
-            `UPDATE organization_members SET role = 'admin', updated_at = ?
-              WHERE organization_id = ? AND user_id = ? AND role = 'owner'`,
-          ).bind(now, PHASE0_ORGANIZATION_ID, PHASE0_SYSTEM_USER_ID),
-          env.DB.prepare(
-            `INSERT INTO organization_members(
-               organization_id, user_id, role, status, joined_at, updated_at
-             ) VALUES (?, ?, 'owner', 'active', ?, ?)
-             ON CONFLICT(organization_id, user_id) DO UPDATE SET
-               role = 'owner', status = 'active', joined_at = excluded.joined_at,
-               updated_at = excluded.updated_at`,
-          ).bind(PHASE0_ORGANIZATION_ID, userId, now, now),
-        );
-      }
       await env.DB.batch(statements);
     } else {
       await credentialInsert.run();
     }
   } catch {
     return error(createsUser ? '邮箱或设备密钥已登记，请直接登录' : '此设备密钥已登记', 409);
+  }
+
+  if (createsUser && !challenge.invitation_id) {
+    const createdUser = await findUser(env, userId);
+    if (createdUser) await provisionPersonalWorkspace(env, createdUser).catch(() => undefined);
   }
 
   const session = await createSession(env, userId);

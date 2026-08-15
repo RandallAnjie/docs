@@ -25,12 +25,19 @@ export function commentThreadIdFromHash(hash: string): string | null {
 export function resolveInAppNavigation(
   href: string,
   origin: string,
-): { type: 'page'; pageId: string; hash: string } | { type: 'home' } | null {
+):
+  | { type: 'page'; pageId: string; hash: string }
+  | { type: 'home' }
+  | { type: 'path'; path: '/login' | '/register' }
+  | null {
   try {
     const url = new URL(href, origin);
     if (url.origin !== origin) return null;
     const pageId = pageIdFromPath(url.pathname);
     if (pageId) return { type: 'page', pageId, hash: url.hash };
+    if (url.pathname === '/login' || url.pathname === '/register') {
+      return { type: 'path', path: url.pathname };
+    }
     if (url.pathname === '/' && url.search === '') return { type: 'home' };
     return null;
   } catch {
@@ -95,6 +102,28 @@ export function navigateHome(options?: { replace?: boolean }): void {
   notifyAppNavigation();
 }
 
+export function navigateToPath(
+  path: '/login' | '/register' | '/',
+  options?: { replace?: boolean },
+): void {
+  if (
+    window.location.pathname === path &&
+    window.location.search === '' &&
+    window.location.hash === ''
+  ) {
+    return;
+  }
+  if (options?.replace) window.history.replaceState(window.history.state, '', path);
+  else window.history.pushState(window.history.state, '', path);
+  notifyAppNavigation();
+}
+
+export function authViewFromPath(pathname: string): 'login' | 'register' | 'landing' {
+  if (pathname === '/login' || pathname === '/login/') return 'login';
+  if (pathname === '/register' || pathname === '/register/') return 'register';
+  return 'landing';
+}
+
 export function useAppLocation(): { pathname: string; search: string; hash: string } {
   const [location, setLocation] = useState(currentLocationSnapshot);
   useEffect(() => {
@@ -130,6 +159,7 @@ export function installInAppNavigation(): () => void {
     if (!destination) return;
     event.preventDefault();
     if (destination.type === 'home') navigateHome();
+    else if (destination.type === 'path') navigateToPath(destination.path);
     else navigateToPage(destination.pageId, { hash: destination.hash });
   };
   const onPopState = () => notifyAppNavigation();

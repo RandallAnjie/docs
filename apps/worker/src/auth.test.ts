@@ -134,6 +134,7 @@ describe('passkey authentication configuration', () => {
       authenticated: false,
       passkeyConfigured: true,
       enrollmentConfigured: false,
+      registrationOpen: true,
       expectedOrigin: 'https://docs.example.com',
     });
   });
