@@ -473,7 +473,8 @@
   cursor: default;
 }
 
-.public-site .editor-toolbar {
+.public-site .editor-toolbar,
+.public-site .editor-selection-toolbar {
   display: none;
 }
 
