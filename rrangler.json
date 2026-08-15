@@ -27,7 +27,8 @@
     "AUTH_MODE": "passkey",
     "ENVIRONMENT": "production",
     "PASSKEY_ORIGIN": "https://docs.bigrandall.io",
-    "PASSKEY_RP_ID": "docs.bigrandall.io"
+    "PASSKEY_RP_ID": "docs.bigrandall.io",
+    "AI_API_BASE": "https://token.bigrandall.io/v1"
   },
   "publish": true
 }
