@@ -3395,6 +3395,108 @@ button.page-icon-display:hover {
   max-height: min(68vh, 680px);
   background: #171717;
 }
+.rdocs-breadcrumb-block {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin: 0.9em 0;
+  color: #787774;
+  font-size: 10px;
+}
+.rdocs-breadcrumb-block nav {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.rdocs-breadcrumb-block nav > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+.rdocs-breadcrumb-block a,
+.rdocs-breadcrumb-block nav strong {
+  overflow: hidden;
+  max-width: min(28vw, 240px);
+  border-radius: 3px;
+  padding: 2px 4px;
+  color: inherit;
+  font-weight: 400;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rdocs-breadcrumb-block nav strong {
+  color: #37352f;
+}
+.rdocs-breadcrumb-block a:hover {
+  background: #efeeeb;
+  color: #37352f;
+}
+.rdocs-breadcrumb-block > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #99958d;
+  cursor: pointer;
+  opacity: 0;
+}
+.rdocs-breadcrumb-block:hover > button,
+.rdocs-breadcrumb-block > button:focus-visible {
+  opacity: 1;
+}
+.rdocs-breadcrumb-block > button:hover {
+  background: #e9e7e2;
+  color: #37352f;
+}
+.rdocs-page-button-block {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  margin: 0.9em 0;
+}
+.rdocs-page-button {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  border: 1px solid #d8d5ce;
+  border-radius: 6px;
+  background: #fff;
+  padding: 6px 10px;
+  color: #37352f;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: 0 1px 1px #0f0f0f0a;
+}
+.rdocs-page-button:hover:not(:disabled) {
+  background: #f1f1ef;
+}
+.rdocs-page-button:disabled {
+  color: #aaa69e;
+  cursor: not-allowed;
+}
+.rdocs-page-button-block > .rdocs-node-actions {
+  opacity: 0;
+}
+.rdocs-page-button-block:hover > .rdocs-node-actions,
+.rdocs-page-button-block:focus-within > .rdocs-node-actions {
+  opacity: 1;
+}
 .rdocs-embed {
   overflow: hidden;
   margin: 1.3em 0;

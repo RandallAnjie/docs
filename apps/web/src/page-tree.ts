@@ -4,6 +4,11 @@ export interface PageTreeNode extends PageSummary {
   children: PageTreeNode[];
 }
 
+export interface PageBreadcrumbItem {
+  id: string;
+  title: string;
+}
+
 function hasSafeParent(page: PageSummary, pagesById: ReadonlyMap<string, PageSummary>): boolean {
   if (!page.parentId || page.parentId === page.id || !pagesById.has(page.parentId)) return false;
 
@@ -48,6 +53,22 @@ export function ancestorPageIds(
     parentId = pagesById.get(parentId)?.parentId ?? null;
   }
   return ancestors;
+}
+
+export function pageBreadcrumbItems(
+  pageId: string,
+  pages: readonly PageSummary[],
+): PageBreadcrumbItem[] {
+  const pagesById = new Map(pages.map((page) => [page.id, page]));
+  const path: PageBreadcrumbItem[] = [];
+  const visited = new Set<string>();
+  let current = pagesById.get(pageId);
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    path.unshift({ id: current.id, title: current.title || '无标题' });
+    current = current.parentId ? pagesById.get(current.parentId) : undefined;
+  }
+  return path;
 }
 
 export function descendantPageIds(

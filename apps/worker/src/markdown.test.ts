@@ -53,6 +53,12 @@ describe('Markdown import and export', () => {
 
 <!-- rdocs:table-of-contents -->
 
+<!-- rdocs:breadcrumb -->
+
+[⚡ 插入结论](rdocs-button:insertText?payload=%E7%BB%93%E8%AE%BA%EF%BC%9A)
+
+[⚡ 打开 Rdocs](rdocs-button:openUrl?payload=https%3A%2F%2Fdocs.bigrandall.io%2F)
+
 [📎 需求.pdf](/api/attachments/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)
 
 [🎵 访谈.mp3](/api/attachments/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb)
@@ -78,6 +84,13 @@ $$`;
     expect(exported).toContain('[🔖 Rdocs](https://docs.bigrandall.io/)');
     expect(exported).toContain('[▶ YouTube 嵌入](https://www.youtube.com/watch?v=dQw4w9WgXcQ)');
     expect(exported).toContain('<!-- rdocs:table-of-contents -->');
+    expect(exported).toContain('<!-- rdocs:breadcrumb -->');
+    expect(exported).toContain(
+      '[⚡ 插入结论](rdocs-button:insertText?payload=%E7%BB%93%E8%AE%BA%EF%BC%9A)',
+    );
+    expect(exported).toContain(
+      '[⚡ 打开 Rdocs](rdocs-button:openUrl?payload=https%3A%2F%2Fdocs.bigrandall.io%2F)',
+    );
     expect(exported).toContain(
       '[📎 需求.pdf](/api/attachments/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)',
     );
