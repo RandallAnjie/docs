@@ -6,7 +6,11 @@ import StarterKit from '@tiptap/starter-kit';
 import { describe, expect, it } from 'vitest';
 
 import { normalizeBookmarkUrl, normalizeEmbedUrl, rdocsEditorBlocks } from './EditorBlocks';
-import { moveTopLevelBlock, topLevelBlocks } from './editor-block-operations';
+import {
+  moveTopLevelBlock,
+  removeAttachmentNodes,
+  topLevelBlocks,
+} from './editor-block-operations';
 
 describe('editor block URL normalization', () => {
   it('accepts HTTP(S) bookmarks and rejects executable protocols', () => {
@@ -91,11 +95,38 @@ describe('editor block URL normalization', () => {
             },
           ],
         },
+        {
+          type: 'attachmentFile',
+          attrs: {
+            attachmentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            byteSize: 100,
+            mimeType: 'application/pdf',
+            name: '需求.pdf',
+          },
+        },
+        {
+          type: 'attachmentAudio',
+          attrs: {
+            attachmentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            byteSize: 200,
+            mimeType: 'audio/mpeg',
+            name: '访谈.mp3',
+          },
+        },
+        {
+          type: 'attachmentVideo',
+          attrs: {
+            attachmentId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+            byteSize: 300,
+            mimeType: 'video/mp4',
+            name: '演示.mp4',
+          },
+        },
       ],
     });
 
     expect(() => document.check()).not.toThrow();
-    expect(document.toJSON().content).toHaveLength(8);
+    expect(document.toJSON().content).toHaveLength(11);
   });
 
   it('moves complete top-level blocks without changing their content', () => {
@@ -118,5 +149,43 @@ describe('editor block URL normalization', () => {
       'A',
       'C',
     ]);
+  });
+
+  it('removes deleted attachment nodes and keeps required containers valid', () => {
+    const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const schema = getSchema([StarterKit, ...rdocsEditorBlocks]);
+    const document = schema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          content: [
+            {
+              type: 'column',
+              content: [
+                {
+                  type: 'attachmentAudio',
+                  attrs: {
+                    attachmentId,
+                    byteSize: 200,
+                    mimeType: 'audio/mpeg',
+                    name: '访谈.mp3',
+                  },
+                },
+              ],
+            },
+            { type: 'column', content: [{ type: 'paragraph' }] },
+          ],
+        },
+      ],
+    });
+    const state = EditorState.create({ doc: document, schema });
+    const transaction = removeAttachmentNodes(state, attachmentId);
+
+    expect(transaction).not.toBeNull();
+    const updated = transaction ? state.apply(transaction) : state;
+    expect(() => updated.doc.check()).not.toThrow();
+    expect(JSON.stringify(updated.doc.toJSON())).not.toContain(attachmentId);
+    expect(updated.doc.firstChild?.firstChild?.firstChild?.type.name).toBe('paragraph');
   });
 });

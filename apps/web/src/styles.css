@@ -3288,7 +3288,8 @@ button.page-icon-display:hover {
   gap: 2px;
   padding-right: 7px;
 }
-.rdocs-node-actions button {
+.rdocs-node-actions button,
+.rdocs-node-actions > a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3300,9 +3301,99 @@ button.page-icon-display:hover {
   color: #8c8982;
   cursor: pointer;
 }
-.rdocs-node-actions button:hover {
+.rdocs-node-actions button:hover,
+.rdocs-node-actions > a:hover {
   background: #e9e7e2;
   color: #37352f;
+}
+.rdocs-file-block {
+  display: flex;
+  align-items: stretch;
+  margin: 1.1em 0;
+  border: 1px solid #dedbd4;
+  border-radius: 8px;
+  background: #fff;
+}
+.rdocs-file-block:hover {
+  background: #f8f7f4;
+}
+.rdocs-file-block > a {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px;
+  color: #37352f;
+  text-decoration: none;
+}
+.rdocs-file-block > a > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.rdocs-file-block strong,
+.rdocs-file-block small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rdocs-file-block strong {
+  font-size: 11px;
+}
+.rdocs-file-block small {
+  color: #8d8981;
+  font-size: 8px;
+}
+.rdocs-file-block-icon {
+  display: inline-flex;
+  flex: 0 0 35px;
+  align-items: center;
+  justify-content: center;
+  width: 35px;
+  height: 35px;
+  border-radius: 6px;
+  background: #f1f1ef;
+  color: #77736c;
+}
+.rdocs-media-block {
+  overflow: hidden;
+  margin: 1.2em 0;
+  border: 1px solid #dedbd4;
+  border-radius: 8px;
+  background: #faf9f7;
+}
+.rdocs-media-block > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 35px;
+  border-bottom: 1px solid #e9e6e0;
+  padding-left: 11px;
+  color: #716e67;
+  font-size: 9px;
+}
+.rdocs-media-block > header > span:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rdocs-media-block audio {
+  display: block;
+  width: calc(100% - 24px);
+  min-height: 46px;
+  margin: 12px;
+}
+.rdocs-media-block video {
+  display: block;
+  width: 100%;
+  max-height: min(68vh, 680px);
+  background: #171717;
 }
 .rdocs-embed {
   overflow: hidden;

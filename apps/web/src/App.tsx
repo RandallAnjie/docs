@@ -47,6 +47,7 @@ import {
   MessageSquare,
   Minus,
   MoreHorizontal,
+  Music2,
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
@@ -61,6 +62,7 @@ import {
   Trash2,
   Users,
   Upload,
+  Video,
 } from 'lucide-react';
 import {
   useCallback,
@@ -73,6 +75,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
+import { flushSync } from 'react-dom';
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
@@ -119,7 +122,7 @@ import {
   uploadAttachment,
 } from './api';
 import { HttpCollaborationTransport } from './http-collaboration';
-import { AttachmentPanel } from './AttachmentPanel';
+import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
 import { CommentsPanel } from './CommentsPanel';
 import { DatabaseCanvas } from './DatabaseCanvas';
 import type { LocalIdentity } from './identity';
@@ -136,6 +139,7 @@ import { SpaceAccessDialog } from './SpaceAccessDialog';
 import { SpaceTrashDialog } from './SpaceTrashDialog';
 import { TemplateDialog } from './TemplateDialog';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { removeAttachmentNodes } from './editor-block-operations';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -161,15 +165,18 @@ type SlashCommandId =
   | 'details'
   | 'divider'
   | 'embed'
+  | 'file'
   | 'heading-1'
   | 'heading-2'
   | 'inline-math'
+  | 'audio'
   | 'numbered-list'
   | 'paragraph'
   | 'quote'
   | 'table'
   | 'table-of-contents'
   | 'task-list'
+  | 'video'
   | 'block-math';
 
 interface SlashCommandDefinition {
@@ -252,6 +259,24 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     keywords: 'bookmark link url 书签',
   },
   {
+    id: 'file',
+    label: '文件',
+    description: '上传并插入私有文件',
+    keywords: 'file attachment upload 文件 附件',
+  },
+  {
+    id: 'audio',
+    label: '音频',
+    description: '上传可播放的音频',
+    keywords: 'audio music upload 音频 音乐',
+  },
+  {
+    id: 'video',
+    label: '视频',
+    description: '上传可播放的视频',
+    keywords: 'video movie upload 视频',
+  },
+  {
     id: 'embed',
     label: '嵌入',
     description: '嵌入视频、设计稿或代码',
@@ -325,6 +350,12 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <ListTree size={17} />;
     case 'bookmark':
       return <Bookmark size={17} />;
+    case 'file':
+      return <Paperclip size={17} />;
+    case 'audio':
+      return <Music2 size={17} />;
+    case 'video':
+      return <Video size={17} />;
     case 'embed':
       return <span>▶</span>;
     case 'inline-math':
@@ -1631,6 +1662,7 @@ function DocumentWorkspace({
   const sidebarNavigation = useRef<HTMLElement>(null);
   const httpTransportRef = useRef<HttpCollaborationTransport | null>(null);
   const editorRef = useRef<Editor | null>(null);
+  const attachmentPanelRef = useRef<AttachmentPanelHandle>(null);
   const pageTree = useMemo(() => buildPageTree(pages), [pages]);
   const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
   const canManagePage = page.role === 'space_admin';
@@ -1990,7 +2022,7 @@ function DocumentWorkspace({
     }
   };
 
-  const insertAttachment = (attachment: AttachmentSummary) => {
+  const insertAttachment = useCallback((attachment: AttachmentSummary) => {
     const editor = editorRef.current;
     if (!editor) return;
     const href = attachmentDownloadUrl(attachment.id);
@@ -2002,23 +2034,46 @@ function DocumentWorkspace({
         .run();
       return;
     }
-    editor
-      .chain()
-      .focus()
-      .insertContent({
-        type: 'paragraph',
-        content: [
-          {
-            type: 'text',
-            text: `📎 ${attachment.originalName}`,
-            marks: [
-              { type: 'link', attrs: { href, target: '_blank', rel: 'noopener noreferrer' } },
-            ],
-          },
-        ],
-      })
-      .run();
-  };
+    const commonAttributes = {
+      attachmentId: attachment.id,
+      byteSize: attachment.byteSize,
+      mimeType: attachment.mimeType,
+      name: attachment.originalName,
+    };
+    if (attachment.mimeType.startsWith('audio/')) {
+      editor
+        .chain()
+        .focus()
+        .insertContent({ type: 'attachmentAudio', attrs: commonAttributes })
+        .run();
+      return;
+    }
+    if (attachment.mimeType.startsWith('video/')) {
+      editor
+        .chain()
+        .focus()
+        .insertContent({ type: 'attachmentVideo', attrs: commonAttributes })
+        .run();
+      return;
+    }
+    editor.chain().focus().insertContent({ type: 'attachmentFile', attrs: commonAttributes }).run();
+  }, []);
+
+  const removeDeletedAttachmentFromDocument = useCallback((attachment: AttachmentSummary) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const transaction = removeAttachmentNodes(editor.state, attachment.id);
+    if (transaction) editor.view.dispatch(transaction);
+  }, []);
+
+  const requestAttachmentUpload = useCallback((kind: 'audio' | 'file' | 'video') => {
+    flushSync(() => {
+      setContextPanelOpen(true);
+      setContextTab('attachments');
+    });
+    const accept = kind === 'audio' ? 'audio/*' : kind === 'video' ? 'video/*' : undefined;
+    attachmentPanelRef.current?.openPicker(accept);
+  }, []);
 
   return (
     <div
@@ -2312,6 +2367,7 @@ function DocumentWorkspace({
                 onSelectionQuote={setCommentSelection}
                 editable={canEdit}
                 onReady={handleEditorReady}
+                onRequestAttachment={requestAttachmentUpload}
               />
             ) : (
               <div className="editor-loading">
@@ -2362,7 +2418,13 @@ function DocumentWorkspace({
               getCurrentSnapshot={() => (collab ? Y.encodeStateAsUpdate(collab.ydoc) : null)}
             />
           ) : (
-            <AttachmentPanel pageId={page.id} canEdit={canEdit} onInsert={insertAttachment} />
+            <AttachmentPanel
+              ref={attachmentPanelRef}
+              pageId={page.id}
+              canEdit={canEdit}
+              onInsert={insertAttachment}
+              onDeleted={removeDeletedAttachmentFromDocument}
+            />
           )}
         </aside>
       ) : null}
@@ -2543,12 +2605,14 @@ function CollaborativeEditor({
   onSelectionQuote,
   editable,
   onReady,
+  onRequestAttachment,
 }: {
   collab: { ydoc: Y.Doc; provider: WebsocketProvider };
   identity: LocalIdentity;
   onSelectionQuote: (selection: CommentSelection | null) => void;
   editable: boolean;
   onReady: (editor: Editor | null) => void;
+  onRequestAttachment: (kind: 'audio' | 'file' | 'video') => void;
 }) {
   const [, rerender] = useState(0);
   const editorInstance = useRef<Editor | null>(null);
@@ -2747,6 +2811,13 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'audio' || id === 'file' || id === 'video') {
+        editor.chain().focus().deleteRange(context).run();
+        onRequestAttachment(id);
+        setSlashMenu(null);
+        return;
+      }
+
       const chain = editor.chain().focus().deleteRange(context);
       switch (id) {
         case 'paragraph':
@@ -2818,7 +2889,7 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor],
+    [editor, onRequestAttachment],
   );
 
   useEffect(() => setSlashIndex(0), [slashMenu?.query]);
