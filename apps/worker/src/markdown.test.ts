@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
 
 import {
   markdownToYjsSnapshot,
@@ -119,5 +120,18 @@ $$`;
     const source = `[📎 需求\\\\终稿\\].pdf](/api/attachments/${attachmentId})`;
 
     expect(yjsSnapshotToMarkdown(markdownToYjsSnapshot(source).snapshot)).toContain(source);
+  });
+
+  it('exports a recoverable synced-block deletion as an explicit note', () => {
+    const document = new Y.Doc();
+    const placeholder = new Y.XmlElement('deletedSyncedBlock');
+    placeholder.setAttribute('syncedBlockId', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    placeholder.setAttribute('deletionOperationId', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    document.getXmlFragment('default').insert(0, [placeholder]);
+
+    expect(yjsSnapshotToMarkdown(Y.encodeStateAsUpdate(document))).toContain(
+      '已删除的同步块（可在 Rdocs 中于 30 天内整体撤销）',
+    );
+    document.destroy();
   });
 });

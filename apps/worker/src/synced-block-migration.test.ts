@@ -40,6 +40,12 @@ describe('cross-page synced block migration', () => {
         'utf8',
       ),
     );
+    database.exec(
+      readFileSync(
+        new URL('../../../migrations/0025_synced_block_delete_undo.sql', import.meta.url),
+        'utf8',
+      ),
+    );
 
     database
       .prepare(
@@ -58,11 +64,22 @@ describe('cross-page synced block migration', () => {
 
     expect(
       database.prepare('SELECT editor_schema_version FROM pages WHERE id = ?').get('source-page'),
-    ).toEqual({ editor_schema_version: 7 });
+    ).toEqual({ editor_schema_version: 9 });
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     expect(
-      database.prepare("SELECT lifecycle_state FROM synced_blocks WHERE id = 'block-1'").get(),
-    ).toEqual({ lifecycle_state: 'active' });
+      database
+        .prepare(
+          `SELECT lifecycle_state, deletion_operation_id,
+                  deletion_expires_at, deletion_restore_lease_at
+             FROM synced_blocks WHERE id = 'block-1'`,
+        )
+        .get(),
+    ).toEqual({
+      lifecycle_state: 'active',
+      deletion_operation_id: null,
+      deletion_expires_at: null,
+      deletion_restore_lease_at: null,
+    });
 
     database.prepare("DELETE FROM pages WHERE id = 'source-page'").run();
     expect(database.prepare('SELECT COUNT(*) AS count FROM synced_blocks').get()).toEqual({

@@ -444,6 +444,8 @@ function renderElement(node: Y.XmlElement): string {
       const syncedBlockId = node.getAttribute('syncedBlockId') ?? '';
       return syncedBlockId ? `<!-- rdocs:synced-block:${syncedBlockId} -->\n\n` : '';
     }
+    case 'deletedSyncedBlock':
+      return '> 已删除的同步块（可在 Rdocs 中于 30 天内整体撤销）\n\n';
     case 'pageLink': {
       const pageId = node.getAttribute('pageId') ?? '';
       const title = node.getAttribute('title') ?? '关联页面';

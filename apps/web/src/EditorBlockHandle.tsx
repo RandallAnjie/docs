@@ -339,7 +339,9 @@ export function EditorBlockHandle({
             <button
               type="button"
               role="menuitem"
-              disabled={busy || targetNodeName === 'syncedBlock'}
+              disabled={
+                busy || targetNodeName === 'syncedBlock' || targetNodeName === 'deletedSyncedBlock'
+              }
               onClick={() => void convertToSyncedBlock()}
             >
               <RefreshCw size={14} /> 转为同步块

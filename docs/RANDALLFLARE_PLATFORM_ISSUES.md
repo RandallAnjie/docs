@@ -2,7 +2,7 @@
 
 更新时间：2026-08-15 UTC
 
-本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。原 WebSocket 与发布链路问题已于 2026-08-14 修复并完成现网复验；Rdocs v0.1 迁移时又发现一项独立的 CLI migration 账本问题（RF-7）。现网验证使用：
+本文只记录 RandallFlare 平台问题，不要求通过修改 Rdocs 来规避。原 WebSocket 与发布链路问题已于 2026-08-14 修复并完成现网复验；后续持续记录 CLI migration 账本、D1 导出、边缘可靠性和自定义域名元数据问题。现网验证使用：
 
 - Worker：`rdocs`
 - 正式 URL：`https://docs.bigrandall.io`
@@ -14,17 +14,18 @@
 
 ## 结论与优先级
 
-| ID   | 优先级    | 状态           | 问题                                                       |
-| ---- | --------- | -------------- | ---------------------------------------------------------- |
-| RF-1 | P0        | 已修复、已复验 | 集群已转发的请求被禁止执行远端 DO WebSocket handoff        |
-| RF-2 | P0        | 已修复、已复验 | Durable Object 的 `bindingName` 与 `className` 被混用      |
-| RF-3 | P0 验收项 | 已修复、已复验 | 两个已连接 WebSocket 的 peer send/broadcast 曾不送达       |
-| RF-4 | P1        | 已修复、已复验 | Git build 成功不等于边缘版本已激活                         |
-| RF-5 | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值               |
-| RF-6 | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
-| RF-7 | P1        | 仍可复现       | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
-| RF-8 | P1        | 待修复         | 低并发顺序请求间歇返回边缘 502/503                         |
-| RF-9 | P1        | 待平台确认     | 自定义域名转发后的 Worker `request.url` 不是公开 Origin    |
+| ID    | 优先级    | 状态           | 问题                                                       |
+| ----- | --------- | -------------- | ---------------------------------------------------------- |
+| RF-1  | P0        | 已修复、已复验 | 集群已转发的请求被禁止执行远端 DO WebSocket handoff        |
+| RF-2  | P0        | 已修复、已复验 | Durable Object 的 `bindingName` 与 `className` 被混用      |
+| RF-3  | P0 验收项 | 已修复、已复验 | 两个已连接 WebSocket 的 peer send/broadcast 曾不送达       |
+| RF-4  | P1        | 已修复、已复验 | Git build 成功不等于边缘版本已激活                         |
+| RF-5  | P1        | 已修复、已复验 | `envJson` 已更新，但 Worker 运行时仍读取旧值               |
+| RF-6  | P2        | 已修复、已复验 | `rrangler` 对所有参数执行冒号拆分，破坏 URL/JSON/IPv6      |
+| RF-7  | P1        | 仍可复现       | `rrangler d1 migrations apply` 写入 migration 名时参数丢失 |
+| RF-8  | P1        | 待修复         | 低并发顺序请求间歇返回边缘 502/503                         |
+| RF-9  | P1        | 待平台确认     | 自定义域名转发后的 Worker `request.url` 不是公开 Origin    |
+| RF-10 | P1        | 待修复         | `d1 export` 产生无法直接恢复的 FTS5 影子表 SQL             |
 
 修复按 `RF-1 → RF-2 → RF-3 验收 → RF-4/RF-5 → RF-6` 的顺序完成。
 
@@ -109,12 +110,45 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行页面通知与收件箱迁移 `0024_page_notifications_and_inbox.sql` 时第十七次复现：现有通知表无损重建，`event_key`/`archived_at`、页面通知订阅表和 4 个索引均成功创建，生产库由 48 张表增加到 49 张表，通知和订阅初始均为空且外键违规为 0，但第 24 条账本仍写成 `(24, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-bdoFCm/before-0024.sql`（165,046 bytes，SHA-256 `3a9fd2eaaa566ad38ca19c6053fd5c3b1f248f97260f175c0413d51546412c5d`）。只修复第 24 条 Rdocs 账本记录后，迁移列表 `0001`–`0024` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行同步块删除撤销迁移 `0025_synced_block_delete_undo.sql` 时第十八次复现：3 个删除操作字段、2 个部分索引和 85 个页面的 `editor_schema_version = 9` 均已正确落库，外键违规为 0，但第 25 条账本仍写成 `(25, NULL, NULL)`。迁移前原始导出位于 `/tmp/rdocs-db-backup-OyE3vB/before-0025.sql`（178,082 bytes，SHA-256 `ee7f8a51cdfebc69d1964e3654d834910da3254d514b034e821c44f181edb028`）；因该导出同时暴露 RF-10，另生成并实际重放验证了 `/tmp/rdocs-db-backup-OyE3vB/before-0025-restorable.sql`（169,545 bytes，SHA-256 `3b2265b1f80a33f2e73d722fa4352a490376899396a7c607a203888c5524d764`）。只修复第 25 条 Rdocs 账本记录后，迁移列表 `0001`–`0025` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
 - `d1_migrations.name` 应为 `TEXT NOT NULL UNIQUE`，避免参数丢失静默成功。
 - 增加测试：迁移 SQL 成功后账本记录非 NULL；二次 apply 必须输出 `already up to date`，不能重跑 `ALTER TABLE`。
 - 用包含单引号、Unicode 和长文件名的 migration 名验证参数编码。
+
+## RF-10：D1 导出包含不可恢复的 FTS5 影子表
+
+### 现象
+
+`rrangler d1 export rdocs-db` 报告成功并导出 49 张表，但 SQL 同时包含：
+
+- `CREATE VIRTUAL TABLE page_search_fts USING fts5(...)` 与 17 条逻辑搜索记录；
+- FTS5 自动创建的 `page_search_fts_config/content/data/docsize/idx` 五张影子表的 `CREATE TABLE` 和 `INSERT`；
+- 影子表 BLOB 被序列化成文本 `'[object Object]'`。
+
+在空白 SQLite 中直接重放原始文件会在 `page_search_fts_config` 处失败：
+
+```text
+object name reserved for internal use: page_search_fts_config
+```
+
+原因是创建虚拟表时 SQLite 已自动创建同名影子表；即使跳过重复建表，`'[object Object]'` 也不是可恢复的 FTS 索引 BLOB。因此 CLI 当前的“导出成功”不能证明文件可恢复。
+
+### Rdocs 本次安全处理
+
+原始导出保持不变并记录 SHA-256。另从恢复副本中精确剔除 70 行名称含 `page_search_fts_` 的影子表 DDL/DML，保留虚拟表定义和 17 条逻辑 `page_search_fts` 插入。清理后的 SQL 已在独立 Node SQLite 中完整重放；SQLite 自动重建 5 张影子表，85 个页面、搜索逻辑记录、迁移账本和外键检查均通过，随后也成功演练 `0025`。
+
+这只是 Rdocs 临时备份产物处理，没有修改 RandallFlare 代码、配置或生产数据导出实现。
+
+### 建议修复与验收
+
+- D1 导出应跳过 FTS5/RTREE 等虚拟表的内部影子表，只导出虚拟表 DDL 和逻辑行。
+- 如果平台选择导出 BLOB，必须使用可逆的 SQLite blob literal（例如 `X'...'`），不能走 JavaScript 默认字符串化。
+- 导出命令返回成功前，应在空白 SQLite 中自动重放并运行 `PRAGMA integrity_check` 与 `PRAGMA foreign_key_check`。
+- 增加包含 Unicode 文本、空索引、删除后段合并和多 segment 的 FTS5 恢复测试。
 
 ## RF-9：自定义域名转发后的 Worker URL 与公开 Origin 不一致
 

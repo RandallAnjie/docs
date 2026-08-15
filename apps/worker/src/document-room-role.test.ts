@@ -3,9 +3,13 @@ import * as Y from 'yjs';
 
 import {
   collaborationRoleCanEdit,
+  documentDeletedSyncedBlockCount,
   documentContainsSyncedBlock,
   documentPageLinkIds,
   documentSyncedBlockIds,
+  documentSyncedBlockResourceIds,
+  syncedBlockDeleteUpdate,
+  syncedBlockRestoreUpdate,
   syncedBlockUnsyncUpdate,
   yjsUpdateChangesDocument,
 } from './document-room';
@@ -86,6 +90,17 @@ describe('synced block reference projection', () => {
     document.destroy();
   });
 
+  it('rejects a recoverable deletion placeholder inside a new synced resource', () => {
+    const document = new Y.Doc();
+    const placeholder = new Y.XmlElement('deletedSyncedBlock');
+    placeholder.setAttribute('syncedBlockId', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    placeholder.setAttribute('deletionOperationId', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    document.getXmlFragment('default').insert(0, [placeholder]);
+
+    expect(documentContainsSyncedBlock(document)).toBe(true);
+    document.destroy();
+  });
+
   it('replaces every matching reference with independent source content', () => {
     const blockId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const source = new Y.Doc();
@@ -134,6 +149,58 @@ describe('synced block reference projection', () => {
     expect(target.getXmlFragment('default').length).toBe(0);
 
     empty.destroy();
+    target.destroy();
+  });
+
+  it('restores cascade-deleted references without overwriting later page edits', () => {
+    const blockId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const operationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const target = new Y.Doc();
+    const first = new Y.XmlElement('syncedBlock');
+    first.setAttribute('syncedBlockId', blockId);
+    const column = new Y.XmlElement('column');
+    const second = new Y.XmlElement('syncedBlock');
+    second.setAttribute('syncedBlockId', blockId);
+    column.insert(0, [second]);
+    target.getXmlFragment('default').insert(0, [first, column]);
+
+    const deleted = syncedBlockDeleteUpdate(target, blockId, operationId);
+    expect(deleted.replacements).toBe(2);
+    expect(deleted.remaining).toBe(0);
+    Y.applyUpdate(target, deleted.update);
+    expect(documentSyncedBlockIds(target)).toEqual([]);
+    expect(documentSyncedBlockResourceIds(target)).toEqual([blockId]);
+    expect(documentDeletedSyncedBlockCount(target, blockId, operationId)).toBe(2);
+
+    const laterParagraph = new Y.XmlElement('paragraph');
+    laterParagraph.insert(0, [new Y.XmlText('written after deletion')]);
+    target.getXmlFragment('default').insert(1, [laterParagraph]);
+    const restored = syncedBlockRestoreUpdate(target, blockId, operationId);
+    expect(restored.replacements).toBe(2);
+    expect(restored.remaining).toBe(0);
+    Y.applyUpdate(target, restored.update);
+    expect(documentSyncedBlockIds(target)).toEqual([blockId]);
+    expect(documentDeletedSyncedBlockCount(target, blockId, operationId)).toBe(0);
+    expect(target.getXmlFragment('default').toString()).toContain('written after deletion');
+    target.destroy();
+  });
+
+  it('does not restore a placeholder created by another deletion operation', () => {
+    const blockId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const originalOperation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const target = new Y.Doc();
+    const block = new Y.XmlElement('syncedBlock');
+    block.setAttribute('syncedBlockId', blockId);
+    target.getXmlFragment('default').insert(0, [block]);
+    Y.applyUpdate(target, syncedBlockDeleteUpdate(target, blockId, originalOperation).update);
+
+    const restored = syncedBlockRestoreUpdate(
+      target,
+      blockId,
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    );
+    expect(restored.replacements).toBe(0);
+    expect(documentDeletedSyncedBlockCount(target, blockId, originalOperation)).toBe(1);
     target.destroy();
   });
 });
