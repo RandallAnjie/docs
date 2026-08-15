@@ -91,7 +91,12 @@ export function normalizeDatabaseCellValue(
       }
       const timezone = candidate.timezone === undefined ? null : text(candidate.timezone, 100);
       if (candidate.timezone !== undefined && timezone === null) return rejected('时区格式无效');
-      return accepted({ start, end, timezone });
+      return accepted({
+        start,
+        end,
+        timezone,
+        includeTime: candidate.includeTime === true,
+      });
     }
     case 'relation':
     case 'person':

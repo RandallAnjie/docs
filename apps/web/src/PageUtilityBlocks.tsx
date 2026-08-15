@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 
 import type { PageLinkPreview } from '@rdocs/shared';
 
+import { markdownToEditorContent } from './ai-markdown';
 import { getPageLinkPreview } from './api';
 import { pageButtonDialog } from './dialogs';
 
@@ -27,7 +28,7 @@ interface PageLinkBlockOptions {
   getContext: () => PageLinkContext | null;
 }
 
-export type PageButtonAction = 'insertText' | 'openUrl';
+export type PageButtonAction = 'insertText' | 'openUrl' | 'insertTemplate';
 
 export function normalizePageButtonUrl(value: string): string | null {
   try {
@@ -110,10 +111,14 @@ function PageButtonNodeView(props: NodeViewProps) {
     if (!props.editor.isEditable) return;
     const position = typeof props.getPos === 'function' ? props.getPos() : undefined;
     if (typeof position !== 'number') return;
+    const content =
+      action === 'insertTemplate'
+        ? markdownToEditorContent(payload)
+        : buttonInsertionContent(payload);
     props.editor
       .chain()
       .focus()
-      .insertContentAt(position + props.node.nodeSize, buttonInsertionContent(payload))
+      .insertContentAt(position + props.node.nodeSize, content)
       .run();
   };
 

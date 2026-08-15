@@ -107,7 +107,9 @@ import {
   type DatabaseFilterOperator,
 } from './database-view';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
-import { confirmDialog } from './dialogs';
+import { autofillDatabaseProperty } from './api';
+import { datePart, fromDateParts, parseDateCell } from './date-value';
+import { confirmDialog, showToast } from './dialogs';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   title: '标题',
@@ -258,8 +260,10 @@ function toInputValue(property: DatabasePropertySummary, value: JsonValue | unde
 
 function fromInputValue(property: DatabasePropertySummary, value: string): JsonValue {
   if (property.type === 'number') return value === '' ? null : Number(value);
-  if (property.type === 'date')
-    return value ? { start: new Date(`${value}T00:00:00.000Z`).toISOString() } : null;
+  if (property.type === 'date') {
+    const parsed = fromDateParts(value, '', property.config.includeTime === true);
+    return parsed;
+  }
   if (property.type === 'multi_select') {
     return [
       ...new Set(
@@ -754,8 +758,53 @@ function DatabaseCell({
   if (property.type === 'place') {
     return <PlaceCell value={value} disabled={disabled} onSave={onSave} />;
   }
-  const inputType =
-    property.type === 'number' ? 'number' : property.type === 'date' ? 'date' : 'text';
+  if (property.type === 'date') {
+    const parsed = parseDateCell(value);
+    const includeTime = property.config.includeTime === true || Boolean(parsed?.includeTime);
+    return (
+      <div className={`database-input-cell date-range ${saving ? 'saving' : ''}`}>
+        <input
+          type={includeTime ? 'datetime-local' : 'date'}
+          value={parsed ? datePart(parsed.start, includeTime) : draft}
+          disabled={disabled}
+          onChange={(event) => {
+            const next = fromDateParts(
+              event.target.value,
+              parsed?.end ? datePart(parsed.end, includeTime) : '',
+              includeTime,
+            );
+            void onSave(next);
+          }}
+          aria-label={`${property.name}开始`}
+        />
+        <input
+          type={includeTime ? 'datetime-local' : 'date'}
+          value={parsed?.end ? datePart(parsed.end, includeTime) : ''}
+          disabled={disabled}
+          onChange={(event) => {
+            const next = fromDateParts(
+              parsed ? datePart(parsed.start, includeTime) : draft,
+              event.target.value,
+              includeTime,
+            );
+            void onSave(next);
+          }}
+          aria-label={`${property.name}结束`}
+        />
+        {rowPageId && actorId && reminderSourceId ? (
+          <DatabaseDateReminder
+            actorId={actorId}
+            canEdit={!disabled}
+            dateValue={parsed?.start.slice(0, 10) ?? draft}
+            pageId={rowPageId}
+            propertyName={property.name}
+            sourceId={reminderSourceId}
+          />
+        ) : null}
+      </div>
+    );
+  }
+  const inputType = property.type === 'number' ? 'number' : 'text';
   return (
     <div className={`database-input-cell ${saving ? 'saving' : ''}`}>
       <input
@@ -780,16 +829,6 @@ function DatabaseCell({
         >
           <ExternalLink size={13} />
         </a>
-      ) : null}
-      {property.type === 'date' && rowPageId && actorId && reminderSourceId ? (
-        <DatabaseDateReminder
-          actorId={actorId}
-          canEdit={!disabled}
-          dateValue={draft}
-          pageId={rowPageId}
-          propertyName={property.name}
-          sourceId={reminderSourceId}
-        />
       ) : null}
     </div>
   );
@@ -2098,20 +2137,29 @@ function MapDatabaseView(props: DatabaseViewProps) {
 }
 
 function DashboardDatabaseView(props: DatabaseViewProps) {
+  const widgets = Array.isArray(props.view.config.widgets)
+    ? props.view.config.widgets.filter((item): item is string => typeof item === 'string')
+    : ['count', 'chart', 'feed'];
   return (
     <div className="database-dashboard-view">
-      <section>
-        <h3>总记录</h3>
-        <strong>{props.rows.length}</strong>
-      </section>
-      <section className="wide">
-        <h3>数据概览</h3>
-        <ChartDatabaseView {...props} />
-      </section>
-      <section className="wide">
-        <h3>最近更新</h3>
-        <FeedDatabaseView {...props} />
-      </section>
+      {widgets.includes('count') ? (
+        <section>
+          <h3>总记录</h3>
+          <strong>{props.rows.length}</strong>
+        </section>
+      ) : null}
+      {widgets.includes('chart') ? (
+        <section className="wide">
+          <h3>数据概览</h3>
+          <ChartDatabaseView {...props} />
+        </section>
+      ) : null}
+      {widgets.includes('feed') ? (
+        <section className="wide">
+          <h3>最近更新</h3>
+          <FeedDatabaseView {...props} />
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -2667,6 +2715,7 @@ function PropertyDialog({
   const [buttonUrl, setButtonUrl] = useState(
     typeof property?.config.url === 'string' ? property.config.url : 'https://',
   );
+  const [includeTime, setIncludeTime] = useState(property?.config.includeTime === true);
   const [databases, setDatabases] = useState<DatabaseSnapshot['database'][]>([]);
   const [targetSnapshot, setTargetSnapshot] = useState<DatabaseSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2730,6 +2779,7 @@ function PropertyDialog({
       config.targetPropertyId = targetPropertyId;
       config.calculation = calculation;
     }
+    if (type === 'date') config.includeTime = includeTime;
     if (type === 'unique_id') config.prefix = prefix;
     if (type === 'button') {
       config.label = buttonLabel.trim() || name;
@@ -2829,6 +2879,34 @@ function PropertyDialog({
               placeholder="未开始, 进行中, 已完成"
             />
           </label>
+        ) : null}
+        {type === 'date' ? (
+          <label className="database-dialog-checkbox">
+            <input
+              type="checkbox"
+              checked={includeTime}
+              onChange={(event) => setIncludeTime(event.target.checked)}
+            />
+            包含时间
+          </label>
+        ) : null}
+        {property && ['title', 'text'].includes(property.type) ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void autofillDatabaseProperty(databaseId, { propertyId: property.id })
+                .then((result) => {
+                  showToast(`已自动填写 ${result.updated} 行`, 'success');
+                  return onChanged();
+                })
+                .catch((reason: unknown) =>
+                  setError(reason instanceof Error ? reason.message : '无法自动填写'),
+                );
+            }}
+          >
+            用 AI 填写此列
+          </button>
         ) : null}
         {type === 'formula' ? (
           <label>
@@ -3155,6 +3233,9 @@ function DatabaseAutomationDialog({
   const [increment, setIncrement] = useState('1');
   const [webhookUrl, setWebhookUrl] = useState('https://');
   const [webhookSecret, setWebhookSecret] = useState('');
+  const [conditionPropertyId, setConditionPropertyId] = useState('');
+  const [conditionOp, setConditionOp] = useState('eq');
+  const [conditionValue, setConditionValue] = useState('');
   const [manualRowId, setManualRowId] = useState(snapshot.rows[0]?.id ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3182,6 +3263,13 @@ function DatabaseAutomationDialog({
     setError(null);
     const triggerConfig: Record<string, JsonValue> =
       triggerType === 'property_changed' ? { propertyId: triggerPropertyId } : {};
+    if (conditionPropertyId) {
+      triggerConfig.condition = {
+        propertyId: conditionPropertyId,
+        op: conditionOp,
+        value: conditionValue,
+      };
+    }
     const targetProperty = snapshot.properties.find((property) => property.id === targetPropertyId);
     let actionConfig: Record<string, JsonValue> = {};
     if (actionType === 'webhook') {
@@ -3357,6 +3445,44 @@ function DatabaseAutomationDialog({
                 ))}
               </select>
             </label>
+            <label>
+              仅当属性
+              <select
+                value={conditionPropertyId}
+                onChange={(event) => setConditionPropertyId(event.target.value)}
+              >
+                <option value="">不限制</option>
+                {snapshot.properties.map((property) => (
+                  <option key={property.id} value={property.id}>
+                    {property.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {conditionPropertyId ? (
+              <>
+                <label>
+                  条件
+                  <select
+                    value={conditionOp}
+                    onChange={(event) => setConditionOp(event.target.value)}
+                  >
+                    <option value="eq">等于</option>
+                    <option value="neq">不等于</option>
+                    <option value="contains">包含</option>
+                    <option value="is_empty">为空</option>
+                    <option value="not_empty">不为空</option>
+                  </select>
+                </label>
+                <label>
+                  值
+                  <input
+                    value={conditionValue}
+                    onChange={(event) => setConditionValue(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : null}
             {triggerType === 'property_changed' ? (
               <label>
                 触发属性

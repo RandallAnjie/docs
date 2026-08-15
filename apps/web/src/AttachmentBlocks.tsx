@@ -53,8 +53,12 @@ function FileAttachmentNodeView(props: NodeViewProps) {
   const name = String(props.node.attrs.name ?? '附件');
   const mimeType = String(props.node.attrs.mimeType ?? 'application/octet-stream');
   const size = byteLabel(Number(props.node.attrs.byteSize ?? 0));
+  const isPdf = mimeType === 'application/pdf' || name.toLowerCase().endsWith('.pdf');
   return (
     <NodeViewWrapper className="rdocs-file-block" contentEditable={false} data-drag-handle>
+      {isPdf ? (
+        <iframe className="rdocs-pdf-preview" src={attachmentUrl(attachmentId)} title={name} />
+      ) : null}
       <a href={attachmentUrl(attachmentId)} download>
         <span className="rdocs-file-block-icon">
           <File size={19} />

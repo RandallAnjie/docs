@@ -70,7 +70,7 @@ export interface BookmarkDialogResult {
 }
 
 export interface PageButtonDialogResult {
-  action: 'insertText' | 'openUrl';
+  action: 'insertText' | 'insertTemplate' | 'openUrl';
   label: string;
   payload: string;
 }
@@ -231,7 +231,7 @@ export async function embedDialog<T>(options: {
 }
 
 export async function pageButtonDialog(options: {
-  defaultAction?: 'insertText' | 'openUrl';
+  defaultAction?: 'insertText' | 'insertTemplate' | 'openUrl';
   defaultLabel?: string;
   defaultPayload?: string;
   normalizeUrl: (value: string) => string | null;
@@ -255,6 +255,7 @@ export async function pageButtonDialog(options: {
         defaultValue: options.defaultAction ?? 'insertText',
         options: [
           { value: 'insertText', label: '插入预设内容' },
+          { value: 'insertTemplate', label: '插入 Markdown 模板' },
           { value: 'openUrl', label: '打开网页' },
         ],
       },
@@ -269,10 +270,13 @@ export async function pageButtonDialog(options: {
           }
         : {
             name: 'payload',
-            label: '插入内容',
+            label: current.action === 'insertTemplate' ? 'Markdown 模板' : '插入内容',
             type: 'textarea',
-            defaultValue: options.defaultPayload ?? '新内容',
-            placeholder: '换行会创建多个段落',
+            defaultValue:
+              options.defaultPayload ??
+              (current.action === 'insertTemplate' ? '## 标题\n\n正文' : '新内容'),
+            placeholder:
+              current.action === 'insertTemplate' ? '支持标题、列表和粗体' : '换行会创建多个段落',
             required: true,
           },
     ],
@@ -286,7 +290,12 @@ export async function pageButtonDialog(options: {
   });
   if (!values) return null;
   return {
-    action: values.action === 'openUrl' ? 'openUrl' : 'insertText',
+    action:
+      values.action === 'openUrl'
+        ? 'openUrl'
+        : values.action === 'insertTemplate'
+          ? 'insertTemplate'
+          : 'insertText',
     label: (values.label ?? '').trim().slice(0, 100),
     payload: (values.payload ?? '').slice(0, 10_000),
   };

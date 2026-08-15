@@ -261,7 +261,7 @@ async function consumeChallenge(env: Env, challenge: ChallengeRow): Promise<bool
   return Boolean(result.meta.changes);
 }
 
-async function createSession(
+export async function createSession(
   env: Env,
   userId: string,
 ): Promise<{ cookie: string; expiresAt: number }> {

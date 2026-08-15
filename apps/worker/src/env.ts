@@ -14,4 +14,5 @@ export interface Env {
   XAI_API_KEY?: string;
   AI_API_KEY?: string;
   AI_API_BASE?: string;
+  MAIL_WEBHOOK_URL?: string;
 }

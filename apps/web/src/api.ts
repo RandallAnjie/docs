@@ -178,8 +178,8 @@ export async function importMarkdown(spaceId: string, file: File): Promise<Creat
   return (await response.json()) as CreatePageResponse;
 }
 
-export async function exportMarkdown(pageId: string): Promise<void> {
-  const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/export/markdown`, {
+async function downloadExport(path: string, fallbackName: string): Promise<void> {
+  const response = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
   });
@@ -189,13 +189,45 @@ export async function exportMarkdown(pageId: string): Promise<void> {
   }
   const disposition = response.headers.get('content-disposition') ?? '';
   const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  const name = encodedName ? decodeURIComponent(encodedName) : 'Rdocs.md';
+  const name = encodedName ? decodeURIComponent(encodedName) : fallbackName;
   const url = URL.createObjectURL(await response.blob());
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+export async function exportMarkdown(pageId: string): Promise<void> {
+  await downloadExport(`/api/pages/${encodeURIComponent(pageId)}/export/markdown`, 'Rdocs.md');
+}
+
+export async function exportPageHtml(pageId: string): Promise<void> {
+  await downloadExport(`/api/pages/${encodeURIComponent(pageId)}/export/html`, 'Rdocs.html');
+}
+
+export async function exportPagePdf(pageId: string): Promise<void> {
+  await downloadExport(`/api/pages/${encodeURIComponent(pageId)}/export/pdf`, 'Rdocs.pdf');
+}
+
+export async function exportPageZip(pageId: string): Promise<void> {
+  await downloadExport(`/api/pages/${encodeURIComponent(pageId)}/export/zip`, 'Rdocs.zip');
+}
+
+export async function importMarkdownZip(
+  spaceId: string,
+  file: File,
+): Promise<{ imported: number }> {
+  const response = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}/import/zip`, {
+    method: 'POST',
+    headers: { 'x-rdocs-file-name': encodeURIComponent(file.name) },
+    body: file,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `导入失败（${response.status}）`);
+  }
+  return (await response.json()) as { imported: number };
 }
 
 export function listPages(spaceId?: string): Promise<ListPagesResponse> {
@@ -968,6 +1000,7 @@ export function updatePageAppearance(
   input: {
     icon?: string | null;
     coverAttachmentId?: string | null;
+    coverPosition?: 'top' | 'center' | 'bottom';
     fontStyle?: PageSummary['fontStyle'];
     isFullWidth?: boolean;
     isSmallText?: boolean;
@@ -1537,6 +1570,34 @@ export function releaseLegalHold(organizationId: string, holdId: string) {
 export function getAiSettings(organizationId: string) {
   return request<{ settings: import('@rdocs/shared').AiSettingsSummary }>(
     `/api/organizations/${encodeURIComponent(organizationId)}/ai`,
+  );
+}
+
+export async function runWorkspaceAi(organizationId: string, input: { prompt: string }) {
+  const response = await fetch(
+    `/api/organizations/${encodeURIComponent(organizationId)}/ai/research`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  const body = (await response.json().catch(() => null)) as {
+    job?: import('@rdocs/shared').AiJobSummary;
+    error?: string;
+  } | null;
+  if (body?.job) return { job: body.job };
+  if (response.status === 401) window.dispatchEvent(new Event('rdocs:auth-required'));
+  throw new Error(body?.error ?? `AI 请求失败（${response.status}）`);
+}
+
+export function autofillDatabaseProperty(
+  databaseId: string,
+  input: { propertyId: string; prompt?: string },
+) {
+  return request<{ updated: number; job: import('@rdocs/shared').AiJobSummary }>(
+    `/api/databases/${encodeURIComponent(databaseId)}/ai/autofill`,
+    { method: 'POST', body: JSON.stringify(input) },
   );
 }
 

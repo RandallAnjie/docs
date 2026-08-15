@@ -8,6 +8,7 @@ import type {
 } from '@rdocs/shared';
 
 import { getPublicDatabaseForm, submitPublicDatabaseForm } from './api';
+import { formFieldVisible } from './form-logic';
 
 function options(field: PublicDatabaseFormField): string[] {
   return Array.isArray(field.config.options)
@@ -107,6 +108,7 @@ export function PublicDatabaseForm({ token }: { token: string }) {
           {form.description ? <p>{form.description}</p> : null}
         </header>
         {form.fields.map((field) => {
+          if (!formFieldVisible(field, values)) return null;
           const fieldOptions = options(field);
           const fieldValue = values[field.id];
           return (

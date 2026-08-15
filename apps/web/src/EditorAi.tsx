@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import type { AiJobKind, AiJobSummary } from '@rdocs/shared';
 
-import { runPageAi } from './api';
+import { runPageAi, runWorkspaceAi } from './api';
 
 export interface EditorAiRequest {
   from: number | null;
@@ -24,6 +24,7 @@ function failure(reason: unknown): string {
 
 export function PageAiComposer({
   pageId,
+  organizationId,
   pageTitle,
   pageExcerpt,
   request,
@@ -33,6 +34,7 @@ export function PageAiComposer({
   onReplace,
 }: {
   pageId: string;
+  organizationId?: string;
   pageTitle: string;
   pageExcerpt: string;
   request: EditorAiRequest;
@@ -116,6 +118,24 @@ export function PageAiComposer({
             </button>
           ),
         )}
+        {organizationId ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              const next = prompt.trim() || '这个工作区里和当前问题相关的内容有哪些？';
+              setPrompt(next);
+              setBusy(true);
+              setError(null);
+              void runWorkspaceAi(organizationId, { prompt: next })
+                .then((result) => setJob(result.job))
+                .catch((reason: unknown) => setError(failure(reason)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            搜索工作区
+          </button>
+        ) : null}
       </div>
       <form onSubmit={submit}>
         <textarea
