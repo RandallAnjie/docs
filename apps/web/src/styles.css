@@ -4403,6 +4403,82 @@ button {
   font-size: 13px;
   cursor: pointer;
 }
+.database-new-split {
+  position: relative;
+  display: inline-flex;
+  overflow: visible;
+  border-radius: 5px;
+  background: #2383e2;
+}
+.database-new-split > button {
+  min-height: 28px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-new-split > button + button {
+  border-left: 1px solid rgb(255 255 255 / 24%);
+  padding-inline: 5px;
+}
+.database-new-split > button:hover {
+  background: rgb(0 0 0 / 10%);
+}
+.database-template-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 5px);
+  right: 0;
+  width: 230px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #e1e0dd;
+  border-radius: 8px;
+  background: #fff;
+  padding: 5px;
+  box-shadow: 0 8px 24px rgb(15 15 15 / 14%);
+}
+.database-template-menu button {
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #37352f;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.database-template-menu button:hover {
+  background: #f2f2f0;
+}
+.database-template-menu button span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-template-menu button small {
+  color: #9b9994;
+  font-size: 10px;
+}
+.database-template-menu hr {
+  height: 1px;
+  border: 0;
+  background: #efefed;
+  margin: 4px -5px;
+}
 .database-tabs button {
   position: relative;
   display: inline-flex;
@@ -5364,30 +5440,167 @@ button {
   color: #a09e99;
 }
 .database-timeline-view {
+  --timeline-days: 30;
   padding: 8px 0 20px;
   overflow-x: auto;
 }
+.database-timeline-toolbar {
+  min-width: max(640px, calc(190px + var(--timeline-days) * 32px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.database-timeline-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.database-timeline-toolbar button,
+.database-timeline-toolbar select {
+  min-height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 4px 7px;
+  color: #6f6d68;
+  font: inherit;
+  font-size: 12px;
+}
+.database-timeline-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.database-timeline-toolbar button:hover,
+.database-timeline-toolbar select:hover {
+  background: #f2f2f0;
+  color: #37352f;
+}
+.database-timeline-axis,
 .database-timeline-view article {
   display: grid;
-  grid-template-columns: 140px minmax(180px, 45%);
-  gap: 12px;
+  grid-template-columns: 190px minmax(calc(var(--timeline-days) * 32px), 1fr);
   align-items: center;
-  min-width: 600px;
+  min-width: max(640px, calc(190px + var(--timeline-days) * 32px));
+}
+.database-timeline-axis {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 34px;
+  border: 1px solid #e9e8e6;
+  background: #fff;
+}
+.database-timeline-axis > span {
+  padding: 0 10px;
+  color: #787671;
+  font-size: 11px;
+  font-weight: 600;
+}
+.database-timeline-axis > div {
+  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(var(--timeline-days), minmax(32px, 1fr));
+}
+.database-timeline-axis time {
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid #efefed;
+  padding: 9px 3px 0;
+  color: #898781;
+  font-size: 9px;
+  text-align: center;
+  white-space: nowrap;
+}
+.database-timeline-view article {
+  min-height: 42px;
   height: 42px;
   border-bottom: 1px solid #efefed;
 }
-.database-timeline-view time {
-  font-size: 11px;
-  color: #898781;
+.database-timeline-view article > a {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 10px;
+  color: #37352f;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.database-timeline-view a {
-  display: block;
-  background: #e7f3f8;
+.database-timeline-track {
+  position: relative;
+  align-self: stretch;
+  background-image: repeating-linear-gradient(
+    to right,
+    #efefed 0,
+    #efefed 1px,
+    transparent 1px,
+    transparent calc(100% / var(--timeline-days))
+  );
+}
+.database-timeline-bar {
+  position: absolute;
+  top: 7px;
+  left: var(--timeline-left);
+  width: max(24px, var(--timeline-width));
+  height: 28px;
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr) 6px;
+  align-items: center;
+  overflow: hidden;
   border-left: 3px solid #4299c6;
   border-radius: 4px;
-  padding: 6px 9px;
-  margin-left: calc(var(--timeline-offset) * 42px);
+  background: #dfeff6;
+  color: #205c78;
+  cursor: grab;
+  font-size: 11px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 7%);
+}
+.database-timeline-bar:active {
+  cursor: grabbing;
+}
+.database-timeline-bar span {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-timeline-bar button {
+  width: 6px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: ew-resize;
+}
+.database-timeline-bar button:hover,
+.database-timeline-bar button:focus-visible {
+  background: rgb(66 153 198 / 28%);
+  outline: none;
+}
+.database-timeline-unscheduled {
+  width: min(100%, 620px);
+  margin-top: 10px;
+  color: #787671;
   font-size: 12px;
+}
+.database-timeline-unscheduled summary {
+  cursor: pointer;
+}
+.database-timeline-unscheduled div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+}
+.database-timeline-unscheduled a {
+  border-radius: 5px;
+  background: #f2f2f0;
+  padding: 5px 8px;
 }
 
 .database-chart-view {
@@ -5797,6 +6010,146 @@ button {
   max-height: min(720px, calc(100vh - 40px));
   overflow: auto;
 }
+.database-template-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(780px, calc(100vh - 40px));
+  overflow: auto;
+}
+.database-template-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.database-template-dialog h2,
+.database-template-dialog h3,
+.database-template-dialog p {
+  margin: 0;
+}
+.database-template-dialog header p {
+  margin-top: 4px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-template-dialog header > button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #787671;
+  font-size: 20px;
+  cursor: pointer;
+}
+.database-template-list {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 20px;
+}
+.database-template-list > p {
+  border-radius: 6px;
+  background: #f7f7f5;
+  padding: 14px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-template-list article {
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto auto 28px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #efefed;
+}
+.database-template-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  background: #f2f2f0;
+  color: #6f6d68;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.database-template-list article > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.database-template-list strong,
+.database-template-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-template-list strong {
+  font-size: 13px;
+}
+.database-template-list small {
+  color: #898781;
+  font-size: 11px;
+}
+.database-template-list article > button,
+.database-template-list article > a,
+.database-template-default {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #6f6d68;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 11px;
+  text-decoration: none;
+}
+.database-template-list article > button,
+.database-template-list article > a {
+  cursor: pointer;
+}
+.database-template-list article > button:hover,
+.database-template-list article > a:hover {
+  background: #f2f2f0;
+}
+.database-template-list article > button.danger {
+  color: #c94b47;
+}
+.database-template-default {
+  background: #fbf3db;
+  color: #8a6d1d;
+}
+.database-template-dialog > form {
+  border-top: 1px solid #e9e8e6;
+  padding-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+.database-template-dialog > form h3 {
+  font-size: 14px;
+}
+.database-template-dialog > form > label,
+.database-template-fields > label {
+  display: grid;
+  gap: 6px;
+  color: #5f5e5a;
+  font-size: 12px;
+  font-weight: 550;
+}
+.database-template-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.database-template-dialog input:not([type='checkbox']),
+.database-template-dialog select {
+  min-width: 0;
+  border: 1px solid #d9d8d5;
+  border-radius: 5px;
+  background: #fff;
+  padding: 8px 9px;
+  font: inherit;
+  font-weight: 400;
+}
 .database-trash-dialog > header {
   display: flex;
   align-items: flex-start;
@@ -5945,6 +6298,26 @@ button {
   }
   .database-view-type-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .database-template-fields {
+    grid-template-columns: 1fr;
+  }
+  .database-template-list article {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    padding: 7px 0;
+  }
+  .database-template-list article > a,
+  .database-template-list article > button:not(.danger) {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .database-template-list article > button.danger {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  .database-template-default {
+    grid-column: 3;
+    grid-row: 1;
   }
 }
 

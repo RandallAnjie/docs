@@ -86,6 +86,7 @@ function migratedDatabase(): DatabaseSync {
     '0011_database_relations_and_sequences.sql',
     '0012_database_sequence_rollout_guards.sql',
     '0013_public_database_forms.sql',
+    '0014_database_templates.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -172,7 +173,7 @@ describe('database migrations', () => {
           "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name LIKE 'database_%'",
         )
         .get(),
-    ).toMatchObject({ total: 9 });
+    ).toMatchObject({ total: 10 });
     const rolloutOwner = seedTenant(database, 'rollout-guard');
     const seed = {
       id: 'page_rollout_parent',
@@ -412,6 +413,63 @@ describe('structured database integration', () => {
     expect(duplicateResponse?.status).toBe(201);
     expect(duplicate.row.sequenceNumber).toBe(4);
     expect(duplicate.row.values[titlePropertyId!]).toBe('发布 Rdocs 副本');
+    const templateResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/templates`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: '标准任务',
+          description: '默认任务结构',
+          sourceRowId: rowResult.row.id,
+        }),
+      }),
+      env,
+      owner,
+    );
+    const templateResult = (await templateResponse?.json()) as {
+      template: { id: string; pageId: string; isDefault: boolean; values: Record<string, unknown> };
+    };
+    expect(templateResponse?.status).toBe(201);
+    expect(templateResult.template.isDefault).toBe(true);
+    expect(templateResult.template.values[titlePropertyId!]).toBe('发布 Rdocs');
+    const templateSnapshotResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}`),
+      env,
+      owner,
+    );
+    const templateSnapshot = (await templateSnapshotResponse?.json()) as {
+      templates: Array<{ id: string; values: Record<string, unknown> }>;
+    };
+    expect(templateSnapshot.templates).toEqual([
+      expect.objectContaining({ id: templateResult.template.id, values: {} }),
+    ]);
+    const treeWithTemplate = (await (
+      await listPages(env, 'spc_database-owner', owner.id)
+    ).json()) as { pages: Array<{ id: string }> };
+    expect(treeWithTemplate.pages.map((page) => page.id)).not.toContain(
+      templateResult.template.pageId,
+    );
+    const templatedRowResponse = await handleDatabasesApi(
+      new Request(
+        `https://docs.test/api/databases/${databaseId}/templates/${templateResult.template.id}/rows`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+      ),
+      env,
+      owner,
+    );
+    const templatedRow = (await templatedRowResponse?.json()) as {
+      row: { id: string; sequenceNumber: number; values: Record<string, unknown> };
+    };
+    expect(templatedRowResponse?.status).toBe(201);
+    expect(templatedRow.row.sequenceNumber).toBe(5);
+    expect(templatedRow.row.values[titlePropertyId!]).toBe('发布 Rdocs');
+    await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${databaseId}/rows/${templatedRow.row.id}`, {
+        method: 'DELETE',
+      }),
+      env,
+      owner,
+    );
     await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}/rows/${duplicate.row.id}`, {
         method: 'DELETE',
@@ -419,6 +477,15 @@ describe('structured database integration', () => {
       env,
       owner,
     );
+    const deleteTemplateResponse = await handleDatabasesApi(
+      new Request(
+        `https://docs.test/api/databases/${databaseId}/templates/${templateResult.template.id}`,
+        { method: 'DELETE' },
+      ),
+      env,
+      owner,
+    );
+    expect(deleteTemplateResponse?.status).toBe(200);
     const archivedResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/databases/${databaseId}?archived=true`),
       env,

@@ -5,9 +5,11 @@ import type { DatabasePropertySummary, DatabaseRowSummary } from '@rdocs/shared'
 import {
   applyDatabaseView,
   databaseCalendarDays,
+  databaseDateRange,
   databaseAggregationValue,
   groupDatabaseRows,
   moveDatabaseDate,
+  resizeDatabaseDate,
   orderedVisibleDatabaseProperties,
 } from './database-view';
 
@@ -97,6 +99,25 @@ describe('applyDatabaseView', () => {
     ).toEqual({
       start: '2026-08-20T09:30:00.000Z',
       end: '2026-08-22T09:30:00.000Z',
+      timezone: 'Asia/Shanghai',
+    });
+    expect(databaseDateRange('2026-08-15')).toEqual({
+      start: '2026-08-15',
+      end: '2026-08-15',
+    });
+    expect(
+      resizeDatabaseDate(
+        {
+          start: '2026-08-15T09:30:00.000Z',
+          end: '2026-08-17T18:00:00.000Z',
+          timezone: 'Asia/Shanghai',
+        },
+        'end',
+        '2026-08-20',
+      ),
+    ).toEqual({
+      start: '2026-08-15T09:30:00.000Z',
+      end: '2026-08-20T18:00:00.000Z',
       timezone: 'Asia/Shanghai',
     });
   });

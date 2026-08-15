@@ -281,6 +281,7 @@ async function searchPages(
                      JOIN pages p ON p.id = projection.page_id
                      JOIN page_access_state a ON a.page_id = p.id
                     WHERE projection.organization_id = ? AND p.deleted_at IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM database_templates t WHERE t.page_id = p.id)
                       AND (LOWER(p.title) LIKE ? ESCAPE '\\'
                            OR projection.normalized_body LIKE ? ESCAPE '\\'`;
   const statement = match
@@ -343,6 +344,7 @@ async function listPageActivity(
          JOIN pages p ON p.id = activity.page_id
          JOIN page_access_state a ON a.page_id = p.id
         WHERE activity.user_id = ? AND p.organization_id = ? AND p.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM database_templates t WHERE t.page_id = p.id)
         ORDER BY activity.${activityColumn} DESC LIMIT 50`,
     )
       .bind(actorId, organizationId)

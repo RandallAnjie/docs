@@ -177,6 +177,20 @@ export interface DatabaseRowSummary {
   archivedAt: number | null;
 }
 
+export interface DatabaseTemplateSummary {
+  id: string;
+  databaseId: string;
+  pageId: string;
+  name: string;
+  description: string;
+  values: Record<string, JsonValue>;
+  isDefault: boolean;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface DatabaseSummary {
   id: string;
   organizationId: string;
@@ -195,6 +209,7 @@ export interface DatabaseSnapshot {
   properties: DatabasePropertySummary[];
   views: DatabaseViewSummary[];
   rows: DatabaseRowSummary[];
+  templates: DatabaseTemplateSummary[];
 }
 
 export interface DatabaseFormLinkSummary {

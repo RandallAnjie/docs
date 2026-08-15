@@ -7,6 +7,7 @@ import {
   type DatabaseRowSummary,
   type DatabaseSnapshot,
   type DatabaseSummary,
+  type DatabaseTemplateSummary,
   type DatabaseViewSummary,
   type DatabaseViewType,
   type DatabaseFormLinkSummary,
@@ -19,11 +20,13 @@ import { effectivePageGrantRole, findActiveMembership, requirePageAction } from 
 import { evaluateDatabaseFormulaProperties } from './database-formula-graph';
 import { isComputedDatabaseProperty, normalizeDatabaseCellValue } from './database-values';
 import type { Env } from './env';
+import { copyPageContent, PageContentCopyError } from './page-content-copy';
 import { searchIndexText } from './search-projection';
 
 const MAX_DATABASE_ROWS = 500;
 const MAX_DATABASE_PROPERTIES = 100;
 const MAX_DATABASE_VIEWS = 50;
+const MAX_DATABASE_TEMPLATES = 50;
 const MAX_PROPERTY_NAME_LENGTH = 100;
 const MAX_VIEW_NAME_LENGTH = 100;
 const MAX_CONFIG_BYTES = 50_000;
@@ -158,6 +161,20 @@ interface FormLinkRecord {
   database_updated_at?: number;
 }
 
+interface TemplateRecord {
+  id: string;
+  database_id: string;
+  page_id: string;
+  name: string;
+  description: string;
+  values_json: string;
+  is_default: number;
+  created_by: string;
+  updated_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 interface DatabaseAuthorization {
   database: DatabaseRecord;
   role: SpaceRole;
@@ -232,6 +249,22 @@ function formLinkSummary(record: FormLinkRecord): DatabaseFormLinkSummary {
     expiresAt: record.expires_at === null ? null : Number(record.expires_at),
     createdAt: Number(record.created_at),
     revokedAt: record.revoked_at === null ? null : Number(record.revoked_at),
+  };
+}
+
+function templateSummary(record: TemplateRecord, includeValues = false): DatabaseTemplateSummary {
+  return {
+    id: record.id,
+    databaseId: record.database_id,
+    pageId: record.page_id,
+    name: record.name,
+    description: record.description,
+    values: includeValues ? parsedObject(record.values_json) : {},
+    isDefault: Boolean(record.is_default),
+    createdBy: record.created_by,
+    updatedBy: record.updated_by,
+    createdAt: Number(record.created_at),
+    updatedAt: Number(record.updated_at),
   };
 }
 
@@ -446,7 +479,8 @@ async function databaseAudit(
   database: DatabaseRecord,
   actorId: string,
   eventType: string,
-  targetType: 'database' | 'database_property' | 'database_view' | 'database_row',
+  targetType:
+    'database' | 'database_property' | 'database_view' | 'database_row' | 'database_template',
   targetId: string,
   metadata: Record<string, unknown> = {},
 ): Promise<void> {
@@ -689,7 +723,7 @@ async function snapshot(
   rowState: 'active' | 'archived' = 'active',
 ): Promise<DatabaseSnapshot> {
   const archivedFilter = rowState === 'archived' ? 'IS NOT NULL' : 'IS NULL';
-  const [propertyRecords, viewRecords, rows, cells] = await Promise.all([
+  const [propertyRecords, viewRecords, templateRecords, rows, cells] = await Promise.all([
     env.DB.prepare(
       `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
          FROM database_properties WHERE database_id = ? ORDER BY sort_order LIMIT ?`,
@@ -702,6 +736,14 @@ async function snapshot(
     )
       .bind(authorization.database.id, MAX_DATABASE_VIEWS)
       .all<ViewRecord>(),
+    env.DB.prepare(
+      `SELECT id, database_id, page_id, name, description, values_json, is_default,
+              created_by, updated_by, created_at, updated_at
+         FROM database_templates WHERE database_id = ?
+        ORDER BY is_default DESC, updated_at DESC LIMIT ?`,
+    )
+      .bind(authorization.database.id, MAX_DATABASE_TEMPLATES)
+      .all<TemplateRecord>(),
     env.DB.prepare(
       `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
               created_at, updated_at, archived_at
@@ -790,6 +832,7 @@ async function snapshot(
     properties,
     views,
     rows: rowSummaries,
+    templates: templateRecords.results.map((record) => templateSummary(record)),
   };
 }
 
@@ -1656,6 +1699,37 @@ function relationEdgeStatements(
   return statements;
 }
 
+async function cleanupCreatedRow(
+  env: Env,
+  authorization: DatabaseAuthorization,
+  row: DatabaseRowSummary,
+  properties: readonly PropertyRecord[],
+  actorId: string,
+): Promise<void> {
+  const copiedObjects = (
+    await env.DB.prepare('SELECT r2_key FROM attachments WHERE page_id = ?')
+      .bind(row.pageId)
+      .all<{ r2_key: string }>()
+  ).results;
+  const emptyRelations = new Map<PropertyRecord, JsonValue>(
+    properties.filter((property) => property.type === 'relation').map((property) => [property, []]),
+  );
+  await env.DB.batch([
+    ...relationEdgeStatements(
+      env,
+      authorization.database,
+      row.id,
+      actorId,
+      Date.now(),
+      emptyRelations,
+    ),
+    env.DB.prepare('DELETE FROM page_search_fts WHERE page_id = ?').bind(row.pageId),
+    env.DB.prepare('DELETE FROM attachments WHERE page_id = ?').bind(row.pageId),
+    env.DB.prepare('DELETE FROM pages WHERE id = ?').bind(row.pageId),
+  ]);
+  await Promise.all(copiedObjects.map((object) => env.ATTACHMENTS.delete(object.r2_key)));
+}
+
 async function createRow(
   request: Request,
   env: Env,
@@ -1864,6 +1938,12 @@ async function duplicateRow(
   if (!row || !(await requirePageAction(env, row.page_id, actor.id, 'view'))) {
     return error('数据行不存在或无权复制', 404);
   }
+  const sourcePage = await env.DB.prepare(
+    'SELECT current_generation FROM pages WHERE id = ? AND deleted_at IS NULL',
+  )
+    .bind(row.page_id)
+    .first<{ current_generation: number }>();
+  if (!sourcePage) return error('数据行正文不存在', 404);
   const cells = (
     await env.DB.prepare(
       `SELECT c.row_id, c.property_id, c.value_json
@@ -1871,21 +1951,27 @@ async function duplicateRow(
         WHERE c.database_id = ? AND c.row_id = ?
           AND p.type NOT IN (
             'formula', 'rollup', 'created_time', 'created_by', 'last_edited_time',
-            'last_edited_by', 'button', 'unique_id', 'files'
+            'last_edited_by', 'button', 'unique_id'
           )`,
     )
       .bind(authorization.database.id, rowId)
       .all<CellRecord>()
   ).results;
   const properties = await databaseProperties(env, authorization.database.id);
+  const propertyById = new Map(properties.map((property) => [property.id, property]));
   const title = properties.find((property) => property.type === 'title');
-  const values = Object.fromEntries(
+  const sourceValues = Object.fromEntries(
     cells.map((cell) => [cell.property_id, parsedValue(cell.value_json)]),
-  );
+  ) as Record<string, JsonValue>;
+  const values = Object.fromEntries(
+    Object.entries(sourceValues).filter(
+      ([propertyId]) => propertyById.get(propertyId)?.type !== 'files',
+    ),
+  ) as Record<string, JsonValue>;
   if (title && typeof values[title.id] === 'string') {
     values[title.id] = `${values[title.id]} 副本`.slice(0, 2_000);
   }
-  const response = await createRow(
+  const createdResponse = await createRow(
     new Request('https://rdocs.internal/api/database-row-duplicate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1895,17 +1981,479 @@ async function duplicateRow(
     authorization,
     actor,
   );
-  if (response.ok) {
+  if (!createdResponse.ok) return createdResponse;
+  const createdPayload = (await createdResponse.clone().json()) as { row?: DatabaseRowSummary };
+  if (!createdPayload.row) return error('数据行副本创建失败', 500);
+  const duplicate = createdPayload.row;
+  try {
+    const attachmentIds = await copyPageContent(env, {
+      organizationId: authorization.database.organization_id,
+      sourcePageId: row.page_id,
+      sourceGeneration: Number(sourcePage.current_generation),
+      targetPageId: duplicate.pageId,
+      actorId: actor.id,
+    });
+    const fileValues = Object.fromEntries(
+      Object.entries(sourceValues).flatMap(([propertyId, value]) => {
+        if (propertyById.get(propertyId)?.type !== 'files' || !Array.isArray(value)) return [];
+        return [
+          [
+            propertyId,
+            value.flatMap((attachmentId) =>
+              typeof attachmentId === 'string' && attachmentIds.has(attachmentId)
+                ? [attachmentIds.get(attachmentId)!]
+                : [],
+            ),
+          ],
+        ];
+      }),
+    );
+    const finalResponse = Object.keys(fileValues).length
+      ? await updateRow(
+          new Request('https://rdocs.internal/api/database-row-copy-files', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ values: fileValues }),
+          }),
+          env,
+          authorization,
+          duplicate.id,
+          actor,
+        )
+      : createdResponse;
+    if (!finalResponse.ok) throw new PageContentCopyError('记录副本的文件属性初始化失败');
     await databaseAudit(
       env,
       authorization.database,
       actor.id,
       'database.row.duplicated',
       'database_row',
-      rowId,
+      duplicate.id,
+      { sourceRowId: rowId, attachmentCount: attachmentIds.size },
+    );
+    return finalResponse;
+  } catch (reason) {
+    await cleanupCreatedRow(env, authorization, duplicate, properties, actor.id);
+    return reason instanceof PageContentCopyError
+      ? error(reason.message, reason.status)
+      : error('数据行副本正文或附件复制失败', 500);
+  }
+}
+
+async function createDatabaseTemplate(
+  request: Request,
+  env: Env,
+  authorization: DatabaseAuthorization,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  if (authorization.database.is_locked) return error('数据库已锁定，不能创建模板', 409);
+  const input = await requestBody(request);
+  const name = entityName(input?.name, 100);
+  const description =
+    typeof input?.description === 'string' ? input.description.trim().slice(0, 500) : '';
+  const sourceRowId = typeof input?.sourceRowId === 'string' ? input.sourceRowId : '';
+  if (!name) return error('模板名称无效', 400);
+  if (!isPageId(sourceRowId)) return error('请选择用于创建模板的记录', 400);
+  const count = await env.DB.prepare(
+    'SELECT COUNT(*) AS count FROM database_templates WHERE database_id = ?',
+  )
+    .bind(authorization.database.id)
+    .first<{ count: number }>();
+  if (Number(count?.count ?? 0) >= MAX_DATABASE_TEMPLATES) return error('模板数量已达上限', 409);
+  const existing = await env.DB.prepare(
+    'SELECT 1 AS found FROM database_templates WHERE database_id = ? AND name = ?',
+  )
+    .bind(authorization.database.id, name)
+    .first<{ found: number }>();
+  if (existing) return error('已有同名模板', 409);
+  const source = await env.DB.prepare(
+    `SELECT r.id, r.page_id, p.current_generation
+       FROM database_rows r JOIN pages p ON p.id = r.page_id
+      WHERE r.id = ? AND r.database_id = ? AND r.archived_at IS NULL AND p.deleted_at IS NULL`,
+  )
+    .bind(sourceRowId, authorization.database.id)
+    .first<{ id: string; page_id: string; current_generation: number }>();
+  if (!source || !(await requirePageAction(env, source.page_id, actor.id, 'view'))) {
+    return error('源记录不存在或无权读取', 404);
+  }
+  const cells = (
+    await env.DB.prepare(
+      `SELECT c.row_id, c.property_id, c.value_json
+         FROM database_cells c JOIN database_properties p ON p.id = c.property_id
+        WHERE c.database_id = ? AND c.row_id = ?
+          AND p.type NOT IN (
+            'formula', 'rollup', 'created_time', 'created_by', 'last_edited_time',
+            'last_edited_by', 'button', 'unique_id'
+          )`,
+    )
+      .bind(authorization.database.id, sourceRowId)
+      .all<CellRecord>()
+  ).results;
+  const candidateValues = Object.fromEntries(
+    cells.map((cell) => [cell.property_id, parsedValue(cell.value_json)]),
+  ) as Record<string, JsonValue>;
+  const normalized = await normalizedRowValues(
+    env,
+    authorization,
+    actor.id,
+    candidateValues,
+    source.page_id,
+  );
+  if ('error' in normalized) return error(`源记录无法用于模板：${normalized.error}`, 400);
+  const values = Object.fromEntries(
+    [...normalized.values].map(([property, value]) => [property.id, value]),
+  ) as Record<string, JsonValue>;
+  const templateId = crypto.randomUUID();
+  const pageId = crypto.randomUUID();
+  const now = Date.now();
+  const isDefault = input?.isDefault === true || Number(count?.count ?? 0) === 0;
+  const statements: D1PreparedStatement[] = [];
+  statements.push(
+    env.DB.prepare(
+      `INSERT INTO pages(
+         id, organization_id, space_id, parent_id, title, sort_key,
+         current_generation, editor_schema_version, created_by, updated_by, created_at, updated_at
+       ) SELECT ?, d.organization_id, p.space_id, d.page_id, ?, ?, 1, ?, ?, ?, ?, ?
+           FROM databases d JOIN pages p ON p.id = d.page_id WHERE d.id = ?`,
+    ).bind(
+      pageId,
+      `模板 · ${name}`,
+      `template:${now.toString().padStart(20, '0')}:${templateId}`,
+      EDITOR_SCHEMA_VERSION,
+      actor.id,
+      actor.id,
+      now,
+      now,
+      authorization.database.id,
+    ),
+    env.DB.prepare(
+      `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, updated_at)
+       VALUES (?, 1, 1, ?)`,
+    ).bind(pageId, now),
+    env.DB.prepare(
+      `INSERT INTO page_search_projection(
+         page_id, organization_id, space_id, generation, collab_seq, title, normalized_body, updated_at
+       ) SELECT ?, d.organization_id, p.space_id, 1, 0, ?, '', ?
+           FROM databases d JOIN pages p ON p.id = d.page_id WHERE d.id = ?`,
+    ).bind(pageId, `模板 · ${name}`, now, authorization.database.id),
+    env.DB.prepare(
+      'INSERT INTO page_search_fts(page_id, title, normalized_body) VALUES (?, ?, ?)',
+    ).bind(pageId, searchIndexText(`模板 · ${name}`), searchIndexText(`模板 · ${name}`)),
+    env.DB.prepare(
+      `INSERT INTO database_templates(
+         id, organization_id, database_id, page_id, name, description, values_json,
+         is_default, created_by, updated_by, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)`,
+    ).bind(
+      templateId,
+      authorization.database.organization_id,
+      authorization.database.id,
+      pageId,
+      name,
+      description,
+      0,
+      actor.id,
+      actor.id,
+      now,
+      now,
+    ),
+  );
+  await env.DB.batch(statements);
+  try {
+    const attachmentIds = await copyPageContent(env, {
+      organizationId: authorization.database.organization_id,
+      sourcePageId: source.page_id,
+      sourceGeneration: Number(source.current_generation),
+      targetPageId: pageId,
+      actorId: actor.id,
+    });
+    const properties = await databaseProperties(env, authorization.database.id);
+    const typeById = new Map(properties.map((property) => [property.id, property.type]));
+    const templateValues = Object.fromEntries(
+      Object.entries(values).map(([propertyId, value]) => [
+        propertyId,
+        typeById.get(propertyId) === 'files' && Array.isArray(value)
+          ? value.flatMap((attachmentId) =>
+              typeof attachmentId === 'string' && attachmentIds.has(attachmentId)
+                ? [attachmentIds.get(attachmentId)!]
+                : [],
+            )
+          : value,
+      ]),
+    );
+    await env.DB.prepare(
+      'UPDATE database_templates SET values_json = ?, updated_by = ?, updated_at = ? WHERE id = ?',
+    )
+      .bind(JSON.stringify(templateValues), actor.id, Date.now(), templateId)
+      .run();
+    if (isDefault) {
+      const defaultedAt = Date.now();
+      await env.DB.batch([
+        env.DB.prepare(
+          'UPDATE database_templates SET is_default = 0, updated_by = ?, updated_at = ? WHERE database_id = ?',
+        ).bind(actor.id, defaultedAt, authorization.database.id),
+        env.DB.prepare(
+          'UPDATE database_templates SET is_default = 1, updated_by = ?, updated_at = ? WHERE id = ?',
+        ).bind(actor.id, defaultedAt, templateId),
+      ]);
+    }
+  } catch (reason) {
+    const objects = (
+      await env.DB.prepare('SELECT r2_key FROM attachments WHERE page_id = ?')
+        .bind(pageId)
+        .all<{ r2_key: string }>()
+    ).results;
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM page_search_fts WHERE page_id = ?').bind(pageId),
+      env.DB.prepare('DELETE FROM attachments WHERE page_id = ?').bind(pageId),
+      env.DB.prepare('DELETE FROM pages WHERE id = ?').bind(pageId),
+    ]);
+    await Promise.all(objects.map((object) => env.ATTACHMENTS.delete(object.r2_key)));
+    return reason instanceof PageContentCopyError
+      ? error(reason.message, reason.status)
+      : error('数据库模板创建失败', 500);
+  }
+  const template = await env.DB.prepare(
+    `SELECT id, database_id, page_id, name, description, values_json, is_default,
+            created_by, updated_by, created_at, updated_at
+       FROM database_templates WHERE id = ?`,
+  )
+    .bind(templateId)
+    .first<TemplateRecord>();
+  if (!template) return error('数据库模板创建失败', 500);
+  await databaseAudit(
+    env,
+    authorization.database,
+    actor.id,
+    'database.template.created',
+    'database_template',
+    templateId,
+    { sourceRowId },
+  );
+  return json({ template: templateSummary(template, true) }, { status: 201 });
+}
+
+async function updateDatabaseTemplate(
+  request: Request,
+  env: Env,
+  authorization: DatabaseAuthorization,
+  templateId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  if (authorization.database.is_locked) return error('数据库已锁定，不能修改模板', 409);
+  const current = await env.DB.prepare(
+    `SELECT id, database_id, page_id, name, description, values_json, is_default,
+            created_by, updated_by, created_at, updated_at
+       FROM database_templates WHERE id = ? AND database_id = ?`,
+  )
+    .bind(templateId, authorization.database.id)
+    .first<TemplateRecord>();
+  if (!current) return error('模板不存在', 404);
+  const input = await requestBody(request);
+  if (!input) return error('请求格式无效', 400);
+  const name = input.name === undefined ? current.name : entityName(input.name, 100);
+  if (!name) return error('模板名称无效', 400);
+  if (name !== current.name) {
+    const duplicateName = await env.DB.prepare(
+      'SELECT 1 AS found FROM database_templates WHERE database_id = ? AND name = ? AND id <> ?',
+    )
+      .bind(authorization.database.id, name, templateId)
+      .first<{ found: number }>();
+    if (duplicateName) return error('已有同名模板', 409);
+  }
+  const description =
+    input.description === undefined
+      ? current.description
+      : typeof input.description === 'string'
+        ? input.description.trim().slice(0, 500)
+        : null;
+  if (description === null) return error('模板说明无效', 400);
+  const isDefault = input.isDefault === undefined ? Boolean(current.is_default) : input.isDefault;
+  if (typeof isDefault !== 'boolean') return error('默认模板状态无效', 400);
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
+  if (isDefault) {
+    statements.push(
+      env.DB.prepare(
+        'UPDATE database_templates SET is_default = 0, updated_by = ?, updated_at = ? WHERE database_id = ?',
+      ).bind(actor.id, now, authorization.database.id),
     );
   }
-  return response;
+  statements.push(
+    env.DB.prepare(
+      `UPDATE database_templates
+          SET name = ?, description = ?, is_default = ?, updated_by = ?, updated_at = ?
+        WHERE id = ? AND database_id = ?`,
+    ).bind(
+      name,
+      description,
+      isDefault ? 1 : 0,
+      actor.id,
+      now,
+      templateId,
+      authorization.database.id,
+    ),
+    env.DB.prepare('UPDATE pages SET title = ?, updated_by = ?, updated_at = ? WHERE id = ?').bind(
+      `模板 · ${name}`,
+      actor.id,
+      now,
+      current.page_id,
+    ),
+    env.DB.prepare(
+      'UPDATE page_search_projection SET title = ?, updated_at = ? WHERE page_id = ?',
+    ).bind(`模板 · ${name}`, now, current.page_id),
+    env.DB.prepare('DELETE FROM page_search_fts WHERE page_id = ?').bind(current.page_id),
+    env.DB.prepare(
+      `INSERT INTO page_search_fts(page_id, title, normalized_body)
+       SELECT page_id, ?, normalized_body FROM page_search_projection WHERE page_id = ?`,
+    ).bind(searchIndexText(`模板 · ${name}`), current.page_id),
+  );
+  await env.DB.batch(statements);
+  const template = await env.DB.prepare(
+    `SELECT id, database_id, page_id, name, description, values_json, is_default,
+            created_by, updated_by, created_at, updated_at
+       FROM database_templates WHERE id = ?`,
+  )
+    .bind(templateId)
+    .first<TemplateRecord>();
+  if (!template) return error('模板不存在', 404);
+  await databaseAudit(
+    env,
+    authorization.database,
+    actor.id,
+    'database.template.updated',
+    'database_template',
+    templateId,
+  );
+  return json({ template: templateSummary(template) });
+}
+
+async function deleteDatabaseTemplate(
+  env: Env,
+  authorization: DatabaseAuthorization,
+  templateId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  if (authorization.database.is_locked) return error('数据库已锁定，不能删除模板', 409);
+  const template = await env.DB.prepare(
+    'SELECT page_id FROM database_templates WHERE id = ? AND database_id = ?',
+  )
+    .bind(templateId, authorization.database.id)
+    .first<{ page_id: string }>();
+  if (!template) return error('模板不存在', 404);
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM database_templates WHERE id = ? AND database_id = ?').bind(
+      templateId,
+      authorization.database.id,
+    ),
+    env.DB.prepare(
+      'UPDATE pages SET deleted_at = ?, updated_by = ?, updated_at = ? WHERE id = ?',
+    ).bind(now, actor.id, now, template.page_id),
+  ]);
+  await databaseAudit(
+    env,
+    authorization.database,
+    actor.id,
+    'database.template.deleted',
+    'database_template',
+    templateId,
+  );
+  return json({ ok: true });
+}
+
+async function createRowFromTemplate(
+  request: Request,
+  env: Env,
+  authorization: DatabaseAuthorization,
+  templateId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const template = await env.DB.prepare(
+    `SELECT t.id, t.database_id, t.page_id, t.name, t.description, t.values_json, t.is_default,
+            t.created_by, t.updated_by, t.created_at, t.updated_at, p.current_generation
+       FROM database_templates t JOIN pages p ON p.id = t.page_id
+      WHERE t.id = ? AND t.database_id = ? AND p.deleted_at IS NULL`,
+  )
+    .bind(templateId, authorization.database.id)
+    .first<TemplateRecord & { current_generation: number }>();
+  if (!template) return error('模板不存在', 404);
+  const input = (await requestBody(request)) ?? {};
+  const overrides = jsonObject(input.values ?? {});
+  if (!overrides) return error('模板覆盖值无效', 400);
+  const properties = await databaseProperties(env, authorization.database.id);
+  const typeById = new Map(properties.map((property) => [property.id, property.type]));
+  const templateValues = parsedObject(template.values_json);
+  const mergedValues = { ...templateValues, ...overrides };
+  const createValues = Object.fromEntries(
+    Object.entries(mergedValues).filter(([propertyId]) => typeById.get(propertyId) !== 'files'),
+  );
+  const createdResponse = await createRow(
+    new Request('https://rdocs.internal/api/database-template-row', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: createValues }),
+    }),
+    env,
+    authorization,
+    actor,
+  );
+  if (!createdResponse.ok) return createdResponse;
+  const payload = (await createdResponse.clone().json()) as { row?: DatabaseRowSummary };
+  if (!payload.row) return error('模板记录创建失败', 500);
+  try {
+    const attachmentIds = await copyPageContent(env, {
+      organizationId: authorization.database.organization_id,
+      sourcePageId: template.page_id,
+      sourceGeneration: Number(template.current_generation),
+      targetPageId: payload.row.pageId,
+      actorId: actor.id,
+    });
+    const fileValues = Object.fromEntries(
+      Object.entries(mergedValues).flatMap(([propertyId, value]) => {
+        if (typeById.get(propertyId) !== 'files' || !Array.isArray(value)) return [];
+        return [
+          [
+            propertyId,
+            value.flatMap((attachmentId) =>
+              typeof attachmentId === 'string' && attachmentIds.has(attachmentId)
+                ? [attachmentIds.get(attachmentId)!]
+                : [],
+            ),
+          ],
+        ];
+      }),
+    );
+    const finalResponse = Object.keys(fileValues).length
+      ? await updateRow(
+          new Request('https://rdocs.internal/api/database-template-row-files', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ values: fileValues }),
+          }),
+          env,
+          authorization,
+          payload.row.id,
+          actor,
+        )
+      : createdResponse;
+    if (!finalResponse.ok) throw new PageContentCopyError('模板文件属性初始化失败');
+    await databaseAudit(
+      env,
+      authorization.database,
+      actor.id,
+      'database.row.created_from_template',
+      'database_row',
+      payload.row.id,
+      { templateId },
+    );
+    return finalResponse;
+  } catch (reason) {
+    await cleanupCreatedRow(env, authorization, payload.row, properties, actor.id);
+    return reason instanceof PageContentCopyError
+      ? error(reason.message, reason.status)
+      : error('无法从模板创建记录', 500);
+  }
 }
 
 async function listDatabaseFormLinks(
@@ -2193,6 +2741,48 @@ export async function handleDatabasesApi(
   actor: AuthUserSummary,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+
+  const templateRowMatch = url.pathname.match(
+    /^\/api\/databases\/([^/]+)\/templates\/([^/]+)\/rows$/,
+  );
+  if (templateRowMatch?.[1] && templateRowMatch[2] && request.method === 'POST') {
+    const databaseId = decodeURIComponent(templateRowMatch[1]);
+    const templateId = decodeURIComponent(templateRowMatch[2]);
+    if (!isPageId(databaseId) || !isPageId(templateId)) {
+      return error('数据库或模板 ID 无效', 400);
+    }
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+    return authorization
+      ? createRowFromTemplate(request, env, authorization, templateId, actor)
+      : error('数据库不存在或无权编辑', 404);
+  }
+
+  const templateMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/templates\/([^/]+)$/);
+  if (templateMatch?.[1] && templateMatch[2]) {
+    const databaseId = decodeURIComponent(templateMatch[1]);
+    const templateId = decodeURIComponent(templateMatch[2]);
+    if (!isPageId(databaseId) || !isPageId(templateId)) {
+      return error('数据库或模板 ID 无效', 400);
+    }
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+    if (!authorization) return error('数据库不存在或无权管理模板', 404);
+    if (request.method === 'PATCH') {
+      return updateDatabaseTemplate(request, env, authorization, templateId, actor);
+    }
+    if (request.method === 'DELETE') {
+      return deleteDatabaseTemplate(env, authorization, templateId, actor);
+    }
+  }
+
+  const templatesMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/templates$/);
+  if (templatesMatch?.[1] && request.method === 'POST') {
+    const databaseId = decodeURIComponent(templatesMatch[1]);
+    if (!isPageId(databaseId)) return error('数据库 ID 无效', 400);
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+    return authorization
+      ? createDatabaseTemplate(request, env, authorization, actor)
+      : error('数据库不存在或无权管理模板', 404);
+  }
 
   const formLinkMatch = url.pathname.match(/^\/api\/database-form-links\/([^/]+)$/);
   if (formLinkMatch?.[1] && request.method === 'DELETE') {

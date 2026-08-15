@@ -12,6 +12,7 @@ import type {
   DatabaseRowSummary,
   DatabaseSnapshot,
   DatabaseSummary,
+  DatabaseTemplateSummary,
   DatabaseViewSummary,
   DatabaseViewType,
   FavoritePageResult,
@@ -419,6 +420,48 @@ export function duplicateDatabaseRow(
   return request(
     `/api/databases/${encodeURIComponent(databaseId)}/rows/${encodeURIComponent(rowId)}/duplicate`,
     { method: 'POST' },
+  );
+}
+
+export function createDatabaseTemplate(
+  databaseId: string,
+  input: { name: string; description?: string; sourceRowId: string; isDefault?: boolean },
+): Promise<{ template: DatabaseTemplateSummary }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/templates`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateDatabaseTemplate(
+  databaseId: string,
+  templateId: string,
+  input: { name?: string; description?: string; isDefault?: boolean },
+): Promise<{ template: DatabaseTemplateSummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/templates/${encodeURIComponent(templateId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function deleteDatabaseTemplate(
+  databaseId: string,
+  templateId: string,
+): Promise<{ ok: true }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/templates/${encodeURIComponent(templateId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function createDatabaseRowFromTemplate(
+  databaseId: string,
+  templateId: string,
+  values: Record<string, JsonValue> = {},
+): Promise<{ row: DatabaseRowSummary }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/templates/${encodeURIComponent(templateId)}/rows`,
+    { method: 'POST', body: JSON.stringify({ values }) },
   );
 }
 

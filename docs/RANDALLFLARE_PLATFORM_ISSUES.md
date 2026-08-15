@@ -87,6 +87,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行公开数据库表单迁移 `0013_public_database_forms.sql` 时第六次复现：业务 schema 和系统提交身份均已创建，但第 13 条账本仍为 `(13, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-URwida/before-0013.sql`（141,591 bytes）。复验确认 `database_form_links`、`database_form_submissions` 和 `usr_rdocs_forms` 均存在，系统身份的组织成员关系为 0 且外键无违规后，只修复第 13 条 Rdocs 账本记录；迁移列表 `0001`–`0013` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行数据库模板迁移 `0014_database_templates.sql` 时第七次复现：模板表及“每个数据库最多一个默认模板”的唯一索引均已创建，但第 14 条账本仍为 `(14, NULL, NULL)`。执行前 42 表完整备份位于 `/tmp/rdocs-db-backup-yRtCv1/before-0014.sql`（142,768 bytes）。复验确认目标表、索引存在且外键无违规后，只修复第 14 条 Rdocs 账本记录；迁移列表 `0001`–`0014` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。
