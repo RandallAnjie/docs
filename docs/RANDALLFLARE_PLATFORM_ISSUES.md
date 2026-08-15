@@ -105,6 +105,8 @@ INSERT INTO d1_migrations(id, name, applied_at) VALUES (8, NULL, NULL);
 
 执行同步块生命周期迁移 `0022_synced_block_lifecycle.sql` 时第十五次复现：`lifecycle_state` 列与索引成功创建，生产库仍为 47 张表、84 个页面保持 `editor_schema_version = 7`、同步资源为空且外键违规为 0，但第 22 条账本仍写成 `(22, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-9wncYy/before-0022.sql`（161,276 bytes，SHA-256 `6490897e8e1eb7cf32fe13fa0914fbf39cb2ee14e07276d2fdd9bf9259deba49`）。只修复第 22 条 Rdocs 账本记录后，迁移列表 `0001`–`0022` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
 
+执行页面发现与反向链接迁移 `0023_page_discovery_and_links.sql` 时第十六次复现：`page_links` 表和目标索引成功创建，生产库由 47 张表增加到 48 张表，84 个页面全部更新为 `editor_schema_version = 8`，链接投影初始为空且外键违规为 0，但第 23 条账本仍写成 `(23, NULL, NULL)`。执行前完整备份位于 `/tmp/rdocs-db-backup-Ch8Ro8/before-0023.sql`（162,252 bytes，SHA-256 `4501939fed260b2fb2418309a382b91db391749414023c92b8e1d066cd2e5a8a`）。只修复第 23 条 Rdocs 账本记录后，迁移列表 `0001`–`0023` 全部显示已应用。没有修改 RandallFlare 平台代码或配置。
+
 ### 建议修复与验收
 
 - 修复 D1 exec API 的参数传递，或让 CLI 在写账本前验证 `changes=1` 且回读的 `name` 与文件名一致。

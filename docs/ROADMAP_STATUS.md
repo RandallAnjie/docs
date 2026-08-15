@@ -68,7 +68,7 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 
 ## 上线状态与仍需本人完成的动作
 
-- 已完成：备份生产 D1，并精确应用 migrations `0004`–`0022`；迁移账本、84 个页面的编辑器 schema v7、47 张表、同步资源初始空表、系统身份、设备密钥、组织所有者和外键完整性均已复验。`0022` 前备份位于 `/tmp/rdocs-db-backup-9wncYy/before-0022.sql`（161,276 bytes，SHA-256 `6490897e8e1eb7cf32fe13fa0914fbf39cb2ee14e07276d2fdd9bf9259deba49`）。
+- 已完成：备份生产 D1，并精确应用 migrations `0004`–`0023`；迁移账本、84 个页面的编辑器 schema v8、48 张表、同步资源和页面链接投影初始空表、系统身份、设备密钥、组织所有者和外键完整性均已复验。`0023` 前备份位于 `/tmp/rdocs-db-backup-Ch8Ro8/before-0023.sql`（162,252 bytes，SHA-256 `4501939fed260b2fb2418309a382b91db391749414023c92b8e1d066cd2e5a8a`）。
 - 已完成：格式、类型、单元/集成测试、构建、原生 WebSocket、generation 恢复和生产产品主链路 smoke。
 - 已完成：Rdocs v0.1 业务代码合并到 `main`，RandallFlare Git build 已自动激活并在正式域名复验。
 - 已完成：按 [设备密钥手册](PASSKEY_SETUP.md) 登记真实密钥、切换到 `passkey`、删除一次性登记 secret，并让旧 `phase0` 配置在代码中失效。
@@ -77,7 +77,7 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 ## 已知非阻塞差异
 
 - RandallFlare 已修复此前的平台阻塞；历史见 [平台修复清单](RANDALLFLARE_PLATFORM_ISSUES.md)。
-- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0022` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
+- `rrangler d1 migrations apply` 的账本参数写入仍存在 RF-7；`0008`–`0023` 本体成功后账本均写入 NULL。每次都先完整备份并核验 schema，只修复 Rdocs 对应账本行，未修改 RandallFlare。
 - 重复运行生产产品 smoke 时，三个不同写端点间歇出现过 `502 upstream peer unreachable`；完整重跑可以通过，已作为 RF-8 记录并保留 request ID，不能视为 Rdocs 业务层已消除的平台可靠性风险。
 - Rdocs 当前没有 browser→R2 直传所需的项目级短期签名配置，因此附件走鉴权 Worker，单文件限制 25 MB。功能、权限和数据保留闭环不受影响，大附件成本路径尚未达到设计推荐值。
 - 本机随附的 `workerd 2026-08-14` 当前只接受到 `2026-07-08` 的 compatibility date，导致本地完整 Worker 浏览器验收无法启动；生产 RandallFlare 不受该本地工具版本限制。
