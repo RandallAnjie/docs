@@ -83,7 +83,6 @@ import {
   beginPasskeyRegistration,
   acceptInvitation,
   attachmentDownloadUrl,
-  createOrganization,
   copyPage,
   createPage,
   createSpace,
@@ -117,6 +116,7 @@ import { RevisionPanel } from './RevisionPanel';
 import { SpaceAccessDialog } from './SpaceAccessDialog';
 import { SpaceTrashDialog } from './SpaceTrashDialog';
 import { TemplateDialog } from './TemplateDialog';
+import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -124,6 +124,12 @@ interface CommentSelection {
   quotedText: string;
   anchorStart: string;
   anchorEnd: string;
+}
+
+interface ActiveCollaborator {
+  id: string;
+  name: string;
+  color: string;
 }
 
 function currentPageId(): string | null {
@@ -508,12 +514,21 @@ function TenantHome({
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
+  const [pagesBySpace, setPagesBySpace] = useState<Record<string, PageSummary[]>>({});
   const [loading, setLoading] = useState(true);
   const [spacesLoading, setSpacesLoading] = useState(false);
-  const [organizationName, setOrganizationName] = useState('');
   const [spaceName, setSpaceName] = useState('');
   const [spaceVisibility, setSpaceVisibility] = useState<SpaceVisibility>('organization');
   const [busy, setBusy] = useState(false);
+  const [spaceDialogOpen, setSpaceDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(
+    () => new URLSearchParams(window.location.search).get('settings') === '1',
+  );
+  const [discoveryTab, setDiscoveryTab] = useState<'search' | 'favorites' | 'recent' | null>(null);
+  const [creatingPage, setCreatingPage] = useState<
+    { spaceId: string; parentId: string | null } | undefined
+  >(undefined);
+  const [collapsedPageIds, setCollapsedPageIds] = useState<ReadonlySet<string>>(new Set());
   const [trashSpace, setTrashSpace] = useState<SpaceSummary | null>(null);
   const [accessSpace, setAccessSpace] = useState<SpaceSummary | null>(null);
   const [markdownSpaceId, setMarkdownSpaceId] = useState<string | null>(null);
@@ -550,9 +565,30 @@ function TenantHome({
     }
     let active = true;
     setSpacesLoading(true);
+    setPagesBySpace({});
     listSpaces(selectedOrganizationId, true)
-      .then(({ spaces: nextSpaces }) => {
-        if (active) setSpaces(nextSpaces);
+      .then(async ({ spaces: nextSpaces }) => {
+        if (!active) return;
+        setSpaces(nextSpaces);
+        setSpacesLoading(false);
+        const pageResults = await Promise.allSettled(
+          nextSpaces
+            .filter((space) => space.archivedAt === null)
+            .map(async (space) => ({
+              spaceId: space.id,
+              pages: (await listPages(space.id)).pages,
+            })),
+        );
+        if (!active) return;
+        setPagesBySpace(
+          Object.fromEntries(
+            pageResults.flatMap((result) =>
+              result.status === 'fulfilled'
+                ? [[result.value.spaceId, result.value.pages] as const]
+                : [],
+            ),
+          ),
+        );
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '无法加载空间');
@@ -571,24 +607,6 @@ function TenantHome({
     setError(null);
   };
 
-  const submitOrganization = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await createOrganization({ name: organizationName });
-      setOrganizations((current) => [...current, result.organization]);
-      setSpaces([result.space]);
-      setOrganizationName('');
-      selectOrganization(result.organization.id);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法创建组织');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submitSpace = async (event: FormEvent) => {
     event.preventDefault();
     if (!selectedOrganizationId || busy) return;
@@ -600,7 +618,9 @@ function TenantHome({
         visibility: spaceVisibility,
       });
       setSpaces((current) => [...current, result.space]);
+      setPagesBySpace((current) => ({ ...current, [result.space.id]: [] }));
       setSpaceName('');
+      setSpaceDialogOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法创建空间');
     } finally {
@@ -619,6 +639,28 @@ function TenantHome({
       setError(reason instanceof Error ? reason.message : '无法创建页面');
       setBusy(false);
     }
+  };
+
+  const createAndOpenPage = async (space: SpaceSummary, parentId: string | null) => {
+    if (creatingPage) return;
+    setCreatingPage({ spaceId: space.id, parentId });
+    setError(null);
+    try {
+      const { page } = await createPage('未命名页面', parentId, space.id);
+      navigateToPage(page.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法创建页面');
+      setCreatingPage(undefined);
+    }
+  };
+
+  const togglePage = (pageId: string) => {
+    setCollapsedPageIds((current) => {
+      const next = new Set(current);
+      if (next.has(pageId)) next.delete(pageId);
+      else next.add(pageId);
+      return next;
+    });
   };
 
   const importMarkdownFile = async (file: File | undefined) => {
@@ -641,6 +683,11 @@ function TenantHome({
   );
   const activeSpaces = spaces.filter((space) => space.archivedAt === null);
   const archivedSpaces = spaces.filter((space) => space.archivedAt !== null);
+  const restorableArchivedSpaces = archivedSpaces.filter((space) => space.role === 'space_admin');
+  const recentPages = Object.values(pagesBySpace)
+    .flat()
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, 8);
 
   const restoreSpace = async (space: SpaceSummary) => {
     if (busy) return;
@@ -659,16 +706,7 @@ function TenantHome({
   };
 
   return (
-    <main className="tenant-shell">
-      <nav className="tenant-nav">
-        <Brand />
-        <div className="welcome-identity">
-          <IdentityBubble identity={identity} />
-          <button type="button" onClick={() => void onLogout()} aria-label="退出登录">
-            <LogOut size={15} />
-          </button>
-        </div>
-      </nav>
+    <main className="notion-home-shell">
       <input
         ref={markdownInput}
         type="file"
@@ -676,100 +714,203 @@ function TenantHome({
         hidden
         onChange={(event) => void importMarkdownFile(event.target.files?.[0])}
       />
-
-      <section className="tenant-hero">
-        <span className="eyebrow">
-          <Users size={15} /> Multi-tenant workspace
-        </span>
-        <h1>你好，{user.displayName}</h1>
-        <p>选择一个组织和空间，继续团队的知识工作。</p>
-      </section>
-
-      {loading ? (
-        <div className="tenant-state-card">
-          <div className="loading-mark" />
-          <p>正在加载组织…</p>
+      <aside className="notion-home-sidebar">
+        <WorkspaceSwitcher
+          organizations={organizations}
+          activeOrganizationId={selectedOrganizationId}
+          identity={identity}
+          onSelect={selectOrganization}
+          onCreated={({ organization, space }) => {
+            setOrganizations((current) => [...current, organization]);
+            setSpaces([space]);
+            setPagesBySpace({ [space.id]: [] });
+            selectOrganization(organization.id);
+          }}
+          onJoined={(organization) => {
+            setOrganizations((current) =>
+              current.some((candidate) => candidate.id === organization.id)
+                ? current
+                : [...current, organization],
+            );
+            selectOrganization(organization.id);
+          }}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onLogout={onLogout}
+        />
+        <div className="notion-primary-navigation">
+          <button
+            type="button"
+            disabled={!selectedOrganization}
+            onClick={() => setDiscoveryTab('search')}
+          >
+            <Search size={17} />
+            搜索
+            <kbd>⌘ K</kbd>
+          </button>
+          <a className="active" href="/">
+            <FileText size={17} /> 主页
+          </a>
+          <button
+            type="button"
+            disabled={!selectedOrganization}
+            onClick={() => setDiscoveryTab('recent')}
+          >
+            <Clock3 size={17} /> 最近访问
+          </button>
+          <button
+            type="button"
+            disabled={!selectedOrganization}
+            onClick={() => setDiscoveryTab('favorites')}
+          >
+            <Star size={17} /> 收藏
+          </button>
         </div>
-      ) : (
-        <>
-          <div className="tenant-grid">
-            <aside className="tenant-panel organization-panel">
-              <div className="tenant-panel-heading">
-                <span>你的组织</span>
-                <b>{organizations.length}</b>
-              </div>
-              <div className="organization-list">
-                {organizations.map((organization) => (
-                  <button
-                    key={organization.id}
-                    type="button"
-                    className={organization.id === selectedOrganizationId ? 'active' : ''}
-                    onClick={() => selectOrganization(organization.id)}
-                  >
-                    <span>{organization.name.slice(0, 1).toUpperCase()}</span>
-                    <div>
-                      <strong>{organization.name}</strong>
-                      <small>{organization.role}</small>
-                    </div>
-                    <ChevronRight size={15} />
-                  </button>
-                ))}
-              </div>
-              <form
-                className="tenant-inline-form"
-                onSubmit={(event) => void submitOrganization(event)}
+        <nav className="notion-space-navigation">
+          <div className="notion-section-heading">
+            <span>团队空间</span>
+            {selectedOrganization ? (
+              <button
+                type="button"
+                aria-label="新建团队空间"
+                onClick={() => setSpaceDialogOpen(true)}
               >
-                <input
-                  value={organizationName}
-                  onChange={(event) => setOrganizationName(event.target.value)}
-                  placeholder="新组织名称"
-                  maxLength={100}
-                  required
-                />
-                <button type="submit" disabled={busy} aria-label="创建组织">
-                  <Plus size={16} />
-                </button>
-              </form>
-            </aside>
+                <Plus size={15} />
+              </button>
+            ) : null}
+          </div>
+          {spacesLoading || loading ? (
+            <div className="notion-sidebar-loading">
+              <span className="mini-spinner" /> 加载中…
+            </div>
+          ) : (
+            activeSpaces.map((space) => {
+              const spacePages = pagesBySpace[space.id] ?? [];
+              const canCreate = space.role === 'space_admin' || space.role === 'editor';
+              return (
+                <section className="notion-space-group" key={space.id}>
+                  <div className="notion-space-row">
+                    <span>{space.icon || '◆'}</span>
+                    <strong>{space.name}</strong>
+                    {canCreate ? (
+                      <button
+                        type="button"
+                        aria-label={`在${space.name}中新建页面`}
+                        onClick={() => void createAndOpenPage(space, null)}
+                      >
+                        <Plus size={13} />
+                      </button>
+                    ) : null}
+                  </div>
+                  <PageTree
+                    nodes={buildPageTree(spacePages)}
+                    activePageId=""
+                    collapsedPageIds={collapsedPageIds}
+                    creatingUnder={
+                      creatingPage?.spaceId === space.id ? creatingPage.parentId : undefined
+                    }
+                    onToggle={togglePage}
+                    onCreateChild={(parentId) => void createAndOpenPage(space, parentId)}
+                    canCreate={canCreate}
+                  />
+                  {!spacePages.length ? <p className="notion-empty-pages">尚无页面</p> : null}
+                </section>
+              );
+            })
+          )}
+        </nav>
+        <div className="notion-sidebar-bottom">
+          {activeSpaces[0] ? (
+            <>
+              <button type="button" onClick={() => setTemplateSpace(activeSpaces[0] ?? null)}>
+                <Sparkles size={16} /> 模板
+              </button>
+              <button type="button" onClick={() => setTrashSpace(activeSpaces[0] ?? null)}>
+                <Trash2 size={16} /> 回收站
+              </button>
+            </>
+          ) : null}
+        </div>
+      </aside>
 
-            <section className="tenant-panel spaces-panel">
-              <div className="tenant-panel-heading">
-                <div>
-                  <span>{selectedOrganization?.name ?? '尚未创建组织'}</span>
-                  <small>
-                    {selectedOrganization ? `/${selectedOrganization.slug}` : '先创建一个组织'}
-                  </small>
+      <section className="notion-home-main">
+        <header className="notion-home-header">
+          <span>主页</span>
+          <div>
+            {selectedOrganization ? (
+              <NotificationBell organizationId={selectedOrganization.id} />
+            ) : null}
+            <IdentityBubble identity={identity} compact />
+          </div>
+        </header>
+        <div className="notion-home-content">
+          <h1>你好，{user.displayName}</h1>
+          <p className="notion-home-subtitle">继续处理你的文档，或从一个新页面开始。</p>
+          {loading ? (
+            <div className="notion-home-loading">
+              <div className="loading-mark" />
+              正在打开工作区…
+            </div>
+          ) : !selectedOrganization ? (
+            <div className="notion-home-empty">
+              <span>{firstCharacter(identity.name)}</span>
+              <h2>创建你的第一个工作区</h2>
+              <p>从左上角的菜单创建工作区，或者通过邀请链接加入其他团队。</p>
+            </div>
+          ) : (
+            <>
+              <section className="notion-home-section">
+                <div className="notion-home-section-title">
+                  <h2>最近访问</h2>
+                  <button type="button" onClick={() => setDiscoveryTab('recent')}>
+                    查看全部
+                  </button>
                 </div>
-                <b>{activeSpaces.length} 个空间</b>
-              </div>
-
-              {spacesLoading ? (
-                <div className="tenant-empty">
-                  <div className="loading-mark" />
+                {recentPages.length ? (
+                  <div className="notion-recent-grid">
+                    {recentPages.map((recentPage) => (
+                      <a key={recentPage.id} href={`/p/${encodeURIComponent(recentPage.id)}`}>
+                        <div>
+                          <FileText size={24} />
+                        </div>
+                        <strong>{recentPage.title}</strong>
+                        <small>{new Date(recentPage.updatedAt).toLocaleDateString()}</small>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="notion-inline-empty">这里会显示最近编辑过的页面。</div>
+                )}
+              </section>
+              <section className="notion-home-section">
+                <div className="notion-home-section-title">
+                  <h2>团队空间</h2>
+                  <button type="button" onClick={() => setSpaceDialogOpen(true)}>
+                    新建
+                  </button>
                 </div>
-              ) : activeSpaces.length ? (
-                <div className="space-card-grid">
+                <div className="notion-teamspace-list">
                   {activeSpaces.map((space) => (
-                    <article key={space.id} className="space-card">
-                      <div className="space-card-icon">
-                        <FileText size={19} />
-                      </div>
-                      <span>{space.visibility === 'restricted' ? '私密空间' : '组织空间'}</span>
-                      <h2>{space.name}</h2>
-                      <p>{space.role === 'space_admin' ? '空间管理员' : space.role}</p>
-                      <div className="space-card-actions">
-                        <button
-                          type="button"
-                          onClick={() => void openNewPage(space)}
-                          disabled={busy}
-                        >
-                          新建页面 <ChevronRight size={15} />
-                        </button>
-                        {space.role === 'space_admin' || space.role === 'editor' ? (
-                          <button type="button" onClick={() => setTemplateSpace(space)}>
-                            <Sparkles size={14} /> 模板
-                          </button>
-                        ) : null}
+                    <article key={space.id}>
+                      <button
+                        className="notion-teamspace-main"
+                        type="button"
+                        onClick={() => {
+                          const firstPage = pagesBySpace[space.id]?.[0];
+                          if (firstPage) navigateToPage(firstPage.id);
+                          else void openNewPage(space);
+                        }}
+                      >
+                        <span>{space.icon || '◆'}</span>
+                        <div>
+                          <strong>{space.name}</strong>
+                          <small>
+                            {pagesBySpace[space.id]?.length ?? 0} 个页面 ·{' '}
+                            {space.visibility === 'restricted' ? '仅受邀成员' : '工作区成员'}
+                          </small>
+                        </div>
+                        <ChevronRight size={16} />
+                      </button>
+                      <div className="notion-teamspace-actions">
                         {space.role === 'space_admin' || space.role === 'editor' ? (
                           <button
                             type="button"
@@ -777,85 +918,107 @@ function TenantHome({
                               setMarkdownSpaceId(space.id);
                               window.setTimeout(() => markdownInput.current?.click(), 0);
                             }}
+                            aria-label={`导入到${space.name}`}
                           >
-                            <Upload size={14} /> 导入 Markdown
+                            <Upload size={15} />
                           </button>
                         ) : null}
                         {space.role === 'space_admin' ? (
-                          <button type="button" onClick={() => setAccessSpace(space)}>
-                            <LockKeyhole size={14} /> 权限
-                          </button>
-                        ) : null}
-                        {space.role === 'space_admin' || space.role === 'editor' ? (
-                          <button type="button" onClick={() => setTrashSpace(space)}>
-                            <Trash2 size={14} /> 回收站
+                          <button
+                            type="button"
+                            onClick={() => setAccessSpace(space)}
+                            aria-label={`${space.name}权限`}
+                          >
+                            <LockKeyhole size={15} />
                           </button>
                         ) : null}
                       </div>
                     </article>
                   ))}
                 </div>
-              ) : (
-                <div className="tenant-empty">
-                  <FileText size={24} />
-                  <strong>{selectedOrganization ? '还没有可访问的空间' : '创建组织后开始'}</strong>
-                  <p>空间是页面树和权限的主要边界。</p>
-                </div>
-              )}
-
-              {archivedSpaces.length ? (
-                <div className="archived-spaces">
-                  <h3>已归档空间</h3>
-                  <div className="space-card-grid">
-                    {archivedSpaces.map((space) => (
-                      <article key={space.id} className="space-card archived">
-                        <div className="space-card-icon">
-                          <ArchiveRestore size={18} />
-                        </div>
-                        <span>已归档</span>
-                        <h2>{space.name}</h2>
-                        <p>{new Date(space.archivedAt ?? 0).toLocaleString()}</p>
-                        {space.role === 'space_admin' ? (
-                          <div className="space-card-actions">
-                            <button
-                              type="button"
-                              onClick={() => void restoreSpace(space)}
-                              disabled={busy}
-                            >
-                              <ArchiveRestore size={14} /> 恢复空间
-                            </button>
-                          </div>
-                        ) : null}
-                      </article>
-                    ))}
-                  </div>
-                </div>
+              </section>
+              {restorableArchivedSpaces.length ? (
+                <section className="notion-home-section notion-archived-section">
+                  <h2>已归档空间</h2>
+                  {restorableArchivedSpaces.map((space) => (
+                    <button
+                      key={space.id}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void restoreSpace(space)}
+                    >
+                      <ArchiveRestore size={15} /> {space.name} <span>恢复</span>
+                    </button>
+                  ))}
+                </section>
               ) : null}
+            </>
+          )}
+        </div>
+      </section>
 
-              {selectedOrganization ? (
-                <form className="space-create-form" onSubmit={(event) => void submitSpace(event)}>
-                  <input
-                    value={spaceName}
-                    onChange={(event) => setSpaceName(event.target.value)}
-                    placeholder="新空间名称"
-                    maxLength={100}
-                    required
-                  />
-                  <select
-                    value={spaceVisibility}
-                    onChange={(event) => setSpaceVisibility(event.target.value as SpaceVisibility)}
-                  >
-                    <option value="organization">组织可见</option>
-                    <option value="restricted">仅授权成员</option>
-                  </select>
-                  <button className="primary-button" type="submit" disabled={busy}>
-                    <Plus size={16} /> 创建空间
-                  </button>
-                </form>
-              ) : null}
-            </section>
-          </div>
-          {selectedOrganization && selectedOrganization.role !== 'guest' ? (
+      {spaceDialogOpen ? (
+        <div className="dialog-backdrop" role="presentation">
+          <form
+            className="rdocs-dialog workspace-action-dialog"
+            onSubmit={(event) => void submitSpace(event)}
+          >
+            <button
+              className="dialog-close-button"
+              type="button"
+              aria-label="关闭"
+              onClick={() => setSpaceDialogOpen(false)}
+            >
+              ×
+            </button>
+            <div className="dialog-icon">
+              <Users size={19} />
+            </div>
+            <h2>新建团队空间</h2>
+            <p>团队空间拥有独立的页面树和成员权限。</p>
+            <label>
+              名称
+              <input
+                autoFocus
+                required
+                maxLength={100}
+                value={spaceName}
+                onChange={(event) => setSpaceName(event.target.value)}
+                placeholder="例如：产品与设计"
+              />
+            </label>
+            <label>
+              可见范围
+              <select
+                value={spaceVisibility}
+                onChange={(event) => setSpaceVisibility(event.target.value as SpaceVisibility)}
+              >
+                <option value="organization">所有工作区成员</option>
+                <option value="restricted">仅受邀成员</option>
+              </select>
+            </label>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setSpaceDialogOpen(false)}>
+                取消
+              </button>
+              <button className="primary-button" type="submit" disabled={busy}>
+                {busy ? '正在创建…' : '创建'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      {settingsOpen && selectedOrganization && selectedOrganization.role !== 'guest' ? (
+        <div className="dialog-backdrop organization-settings-backdrop" role="presentation">
+          <div className="organization-settings-dialog">
+            <button
+              className="dialog-close-button"
+              type="button"
+              aria-label="关闭设置"
+              onClick={() => setSettingsOpen(false)}
+            >
+              ×
+            </button>
             <OrganizationSettings
               organization={selectedOrganization}
               currentUserId={user.id}
@@ -867,11 +1030,11 @@ function TenantHome({
                 )
               }
             />
-          ) : null}
-        </>
-      )}
+          </div>
+        </div>
+      ) : null}
       {error ? (
-        <p className="tenant-error" role="alert">
+        <p className="tenant-error floating-error" role="alert">
           {error}
         </p>
       ) : null}
@@ -892,6 +1055,13 @@ function TenantHome({
       ) : null}
       {templateSpace ? (
         <TemplateDialog space={templateSpace} onClose={() => setTemplateSpace(null)} />
+      ) : null}
+      {discoveryTab && selectedOrganization ? (
+        <DiscoveryDialog
+          organizationId={selectedOrganization.id}
+          initialTab={discoveryTab}
+          onClose={() => setDiscoveryTab(null)}
+        />
       ) : null}
     </main>
   );
@@ -976,7 +1146,11 @@ function DocumentWorkspace({
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [offlineReady, setOfflineReady] = useState(false);
   const [collab, setCollab] = useState<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null);
-  const [onlineCount, setOnlineCount] = useState(1);
+  const [collaborators, setCollaborators] = useState<ActiveCollaborator[]>([
+    { id: identity.id, name: identity.name, color: identity.color },
+  ]);
+  const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
+  const [organizationSpaces, setOrganizationSpaces] = useState<SpaceSummary[]>([]);
   const [commentSelection, setCommentSelection] = useState<CommentSelection | null>(null);
   const [copied, setCopied] = useState(false);
   const [contextTab, setContextTab] = useState<'comments' | 'history' | 'attachments'>('comments');
@@ -991,6 +1165,7 @@ function DocumentWorkspace({
   const [pageActionError, setPageActionError] = useState<string | null>(null);
   const [discoveryTab, setDiscoveryTab] = useState<'search' | 'favorites' | 'recent' | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const titleTimer = useRef<number | undefined>(undefined);
   const latestTitle = useRef(page.title);
   const savedTitle = useRef(page.title);
@@ -1012,6 +1187,25 @@ function DocumentWorkspace({
     [page.parentId, pages],
   );
   const siblingIndex = siblings.findIndex((candidate) => candidate.id === page.id);
+  const activeOrganization = organizations.find(
+    (organization) => organization.id === page.organizationId,
+  );
+  const activeSpace = organizationSpaces.find((space) => space.id === page.spaceId);
+
+  useEffect(() => {
+    if (renewTicket) return;
+    let active = true;
+    Promise.all([listOrganizations(), listSpaces(page.organizationId)])
+      .then(([organizationResult, spaceResult]) => {
+        if (!active) return;
+        setOrganizations(organizationResult.organizations);
+        setOrganizationSpaces(spaceResult.spaces);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [page.organizationId, renewTicket]);
 
   useLayoutEffect(() => {
     const navigation = sidebarNavigation.current;
@@ -1072,8 +1266,10 @@ function DocumentWorkspace({
     );
 
     provider.awareness.setLocalStateField('user', {
+      id: identity.id,
       name: identity.name,
       color: identity.color,
+      monogram: identityMonogram(identity),
     });
     provider.on('status', ({ status }: { status: string }) => {
       if (disposed || terminalError || httpSynced) return;
@@ -1082,9 +1278,27 @@ function DocumentWorkspace({
     provider.on('sync', (synced: boolean) => {
       if (!disposed && !terminalError && synced) setConnection('synced');
     });
-    provider.awareness.on('change', () => {
-      setOnlineCount(provider.awareness.getStates().size || 1);
-    });
+    const updateCollaborators = () => {
+      const next = new Map<string, ActiveCollaborator>();
+      const seenIdentities = new Set<string>();
+      for (const [clientId, state] of provider.awareness.getStates()) {
+        const user = state.user as Record<string, unknown> | undefined;
+        if (!user) continue;
+        const name = typeof user.name === 'string' && user.name.trim() ? user.name : '协作者';
+        const color = typeof user.color === 'string' ? user.color : '#5f7f91';
+        const id = typeof user.id === 'string' ? user.id : `${name}:${color}:${clientId}`;
+        const identityKey = `${name}\u0000${color}`;
+        if (!seenIdentities.has(identityKey)) {
+          seenIdentities.add(identityKey);
+          next.set(id, { id, name, color });
+        }
+      }
+      if (!next.size)
+        next.set(identity.id, { id: identity.id, name: identity.name, color: identity.color });
+      setCollaborators([...next.values()]);
+    };
+    updateCollaborators();
+    provider.awareness.on('change', updateCollaborators);
     provider.ws?.addEventListener('error', () => {
       if (!disposed && !httpSynced && !terminalError) setConnection('disconnected');
     });
@@ -1133,6 +1347,7 @@ function DocumentWorkspace({
       disposed = true;
       if (httpTransportRef.current === httpTransport) httpTransportRef.current = null;
       httpTransport.stop();
+      provider.awareness.off('change', updateCollaborators);
       provider.destroy();
       offlinePersistence?.destroy();
       ydoc.destroy();
@@ -1332,11 +1547,35 @@ function DocumentWorkspace({
 
   return (
     <div
-      className={`app-shell ${renewTicket ? 'public-share' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}
+      className={`app-shell ${renewTicket ? 'public-share' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${contextPanelOpen ? 'context-panel-open' : ''}`}
     >
       <aside className="sidebar">
         <div className="sidebar-top">
-          <Brand compact />
+          {renewTicket ? (
+            <a className="workspace-switcher public-workspace-switcher" href="/">
+              <span className="workspace-avatar">R</span>
+              {!sidebarCollapsed ? (
+                <span className="workspace-switcher-copy">
+                  <strong>Rdocs</strong>
+                  <small>只读分享</small>
+                </span>
+              ) : null}
+            </a>
+          ) : (
+            <WorkspaceSwitcher
+              organizations={organizations}
+              activeOrganizationId={page.organizationId}
+              identity={identity}
+              collapsed={sidebarCollapsed}
+              onSelect={(organizationId) => {
+                if (organizationId !== page.organizationId) window.location.assign('/');
+              }}
+              onCreated={() => window.location.assign('/')}
+              onJoined={() => window.location.assign('/')}
+              onOpenSettings={() => window.location.assign('/?settings=1')}
+              onLogout={onLogout}
+            />
+          )}
           <button
             className="icon-button subtle"
             type="button"
@@ -1346,20 +1585,18 @@ function DocumentWorkspace({
             {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
           </button>
         </div>
-        <div className="workspace-switcher">
-          <span className="workspace-avatar">R</span>
-          <span>
-            <strong>Rdocs</strong>
-            <small>{renewTicket ? '只读分享' : '团队知识空间'}</small>
-          </span>
-          <ChevronDown size={15} />
-        </div>
         <div className="sidebar-actions">
           {!renewTicket ? (
             <button type="button" onClick={() => setDiscoveryTab('search')}>
               <Search size={16} />
               搜索 <kbd>⌘ K</kbd>
             </button>
+          ) : null}
+          {!renewTicket ? (
+            <a href="/">
+              <FileText size={16} />
+              主页
+            </a>
           ) : null}
           {canEdit ? (
             <button
@@ -1373,7 +1610,7 @@ function DocumentWorkspace({
         </div>
         <nav className="sidebar-nav" ref={sidebarNavigation}>
           <div className="sidebar-section-heading">
-            <p>空间</p>
+            <p>{activeSpace?.name ?? '团队空间'}</p>
             <span>{pages.length}</span>
           </div>
           <PageTree
@@ -1402,7 +1639,7 @@ function DocumentWorkspace({
           <IdentityBubble identity={identity} compact />
           <span>
             <strong>{identity.name}</strong>
-            <small>{onLogout ? '设备密钥会话' : '匿名技术预览'}</small>
+            <small>{activeOrganization?.name ?? (onLogout ? '设备密钥会话' : '只读分享')}</small>
           </span>
           {onLogout ? (
             <button
@@ -1423,17 +1660,31 @@ function DocumentWorkspace({
       <main className="document-area">
         <header className="document-header">
           <div className="breadcrumbs">
-            <span>Rdocs</span>
+            <span>{activeOrganization?.name ?? 'Rdocs'}</span>
             <span>/</span>
+            {activeSpace ? (
+              <>
+                <span>{activeSpace.name}</span>
+                <span>/</span>
+              </>
+            ) : null}
             <span>{page.title}</span>
           </div>
           <div className="header-actions">
             {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
             <ConnectionPill state={connection} offlineReady={offlineReady} />
-            <div className="avatars" title={`${onlineCount} 人在线`}>
-              <span style={{ background: identity.color }}>{identityMonogram(identity)}</span>
-              {onlineCount > 1 && <b>+{onlineCount - 1}</b>}
-            </div>
+            <CollaboratorStack collaborators={collaborators} />
+            {!renewTicket ? (
+              <button
+                className={`icon-button subtle header-comment-button ${contextPanelOpen ? 'active' : ''}`}
+                type="button"
+                aria-label={contextPanelOpen ? '关闭页面面板' : '打开评论与页面面板'}
+                aria-pressed={contextPanelOpen}
+                onClick={() => setContextPanelOpen((open) => !open)}
+              >
+                <MessageSquare size={17} />
+              </button>
+            ) : null}
             {page.role === 'space_admin' && !renewTicket ? (
               <button
                 className="header-button"
@@ -1554,7 +1805,7 @@ function DocumentWorkspace({
         </div>
       </main>
 
-      {!renewTicket ? (
+      {!renewTicket && contextPanelOpen ? (
         <aside className="context-panel">
           <div className="context-tabs">
             <button
@@ -1955,12 +2206,15 @@ function identityFromUser(user: AuthUserSummary): LocalIdentity {
 }
 
 function identityMonogram(identity: LocalIdentity): string {
-  return identity.name.trim().slice(-2) || '成员';
+  return firstCharacter(identity.name);
 }
 
 function renderCollaborationCaret(user: Record<string, unknown>): HTMLElement {
   const name = typeof user.name === 'string' ? user.name : '协作者';
-  const monogram = typeof user.monogram === 'string' ? user.monogram.slice(-2) : name.slice(-2);
+  const monogram =
+    typeof user.monogram === 'string'
+      ? firstCharacter(user.monogram, '协')
+      : firstCharacter(name, '协');
   const color = typeof user.color === 'string' ? user.color : '#5f7f91';
   const caret = document.createElement('span');
   const bubble = document.createElement('span');
@@ -1974,6 +2228,54 @@ function renderCollaborationCaret(user: Record<string, unknown>): HTMLElement {
   bubble.textContent = monogram || '协';
   caret.append(bubble);
   return caret;
+}
+
+function CollaboratorStack({ collaborators }: { collaborators: ActiveCollaborator[] }) {
+  const root = useRef<HTMLDivElement>(null);
+  const [maximumVisible, setMaximumVisible] = useState(4);
+
+  useLayoutEffect(() => {
+    const documentArea = root.current?.closest('.document-area');
+    if (!documentArea) return;
+    const update = (width: number) => {
+      setMaximumVisible(
+        width >= 1180 ? 6 : width >= 900 ? 5 : width >= 680 ? 4 : width >= 480 ? 3 : 2,
+      );
+    };
+    update(documentArea.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) update(width);
+    });
+    observer.observe(documentArea);
+    return () => observer.disconnect();
+  }, []);
+
+  const visibleCount =
+    collaborators.length > maximumVisible ? Math.max(1, maximumVisible - 1) : maximumVisible;
+  const visibleCollaborators = collaborators.slice(0, visibleCount);
+  const overflow = Math.max(0, collaborators.length - visibleCollaborators.length);
+
+  return (
+    <div
+      className="collaborator-stack"
+      ref={root}
+      title={collaborators.map((collaborator) => collaborator.name).join('、')}
+      aria-label={`${collaborators.length} 人在线：${collaborators.map((collaborator) => collaborator.name).join('、')}`}
+    >
+      {visibleCollaborators.map((collaborator) => (
+        <span
+          key={collaborator.id}
+          className="collaborator-avatar"
+          style={{ background: collaborator.color }}
+          title={collaborator.name}
+        >
+          {firstCharacter(collaborator.name, '协')}
+        </span>
+      ))}
+      {overflow ? <b title={`另有 ${overflow} 位协作者`}>+{overflow}</b> : null}
+    </div>
+  );
 }
 
 function IdentityBubble({
