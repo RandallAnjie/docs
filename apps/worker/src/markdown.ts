@@ -35,6 +35,10 @@ function decodeMarkdownComponent(value: string): string {
   }
 }
 
+function encodeMarkdownComponent(value: string): string {
+  return encodeURIComponent(value.slice(0, 10_000)).replace(/-/g, '%2D');
+}
+
 function markdownTableCells(line: string): string[] {
   const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
   return trimmed
@@ -79,6 +83,17 @@ export function markdownToYjsSnapshot(markdown: string): {
     const syncedBlock = line.trim().match(/^<!-- rdocs:synced-block:([0-9a-f-]{36}) -->$/i);
     if (syncedBlock) {
       nodes.push(element('syncedBlock', '', { syncedBlockId: syncedBlock[1] ?? '' }));
+      index += 1;
+      continue;
+    }
+    const pageLink = line.trim().match(/^<!-- rdocs:page-link:([0-9a-f-]{36}):([^\s]*) -->$/i);
+    if (pageLink) {
+      nodes.push(
+        element('pageLink', '', {
+          pageId: pageLink[1] ?? '',
+          title: decodeMarkdownComponent(pageLink[2] ?? '') || '关联页面',
+        }),
+      );
       index += 1;
       continue;
     }
@@ -428,6 +443,13 @@ function renderElement(node: Y.XmlElement): string {
     case 'syncedBlock': {
       const syncedBlockId = node.getAttribute('syncedBlockId') ?? '';
       return syncedBlockId ? `<!-- rdocs:synced-block:${syncedBlockId} -->\n\n` : '';
+    }
+    case 'pageLink': {
+      const pageId = node.getAttribute('pageId') ?? '';
+      const title = node.getAttribute('title') ?? '关联页面';
+      return pageId
+        ? `<!-- rdocs:page-link:${pageId}:${encodeMarkdownComponent(title)} -->\n\n`
+        : '';
     }
     case 'pageButton': {
       const action = node.getAttribute('action') === 'openUrl' ? 'openUrl' : 'insertText';

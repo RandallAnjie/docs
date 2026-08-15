@@ -127,11 +127,18 @@ describe('editor block URL normalization', () => {
           type: 'pageButton',
           attrs: { action: 'insertText', label: '插入结论', payload: '结论：' },
         },
+        {
+          type: 'pageLink',
+          attrs: {
+            pageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            title: '关联页面',
+          },
+        },
       ],
     });
 
     expect(() => document.check()).not.toThrow();
-    expect(document.toJSON().content).toHaveLength(13);
+    expect(document.toJSON().content).toHaveLength(14);
   });
 
   it('moves complete top-level blocks without changing their content', () => {

@@ -1,8 +1,12 @@
 import { mergeAttributes, Node } from '@tiptap/core';
 import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
-import { ChevronRight, ExternalLink, Pencil, Trash2, Zap } from 'lucide-react';
+import { ChevronRight, ExternalLink, FileText, Pencil, Trash2, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
+
+import type { PageLinkPreview } from '@rdocs/shared';
+
+import { getPageLinkPreview } from './api';
 
 export interface BreadcrumbItem {
   id: string;
@@ -11,6 +15,15 @@ export interface BreadcrumbItem {
 
 interface BreadcrumbBlockOptions {
   getItems: () => readonly BreadcrumbItem[];
+}
+
+export interface PageLinkContext {
+  containerPageId: string;
+  publicShareToken?: string;
+}
+
+interface PageLinkBlockOptions {
+  getContext: () => PageLinkContext | null;
 }
 
 export type PageButtonAction = 'insertText' | 'openUrl';
@@ -138,6 +151,65 @@ function PageButtonNodeView(props: NodeViewProps) {
   );
 }
 
+function PageLinkNodeView(props: NodeViewProps) {
+  const pageId = String(props.node.attrs.pageId ?? '');
+  const fallbackTitle = String(props.node.attrs.title ?? '').trim() || '关联页面';
+  const options = props.extension.options as PageLinkBlockOptions;
+  const context = options.getContext();
+  const [preview, setPreview] = useState<PageLinkPreview | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    if (!context?.containerPageId || !pageId || context.publicShareToken) return;
+    let active = true;
+    setUnavailable(false);
+    const load = () =>
+      getPageLinkPreview(context.containerPageId, pageId)
+        .then((result) => {
+          if (!active) return;
+          setPreview(result.preview);
+          setUnavailable(false);
+        })
+        .catch(() => {
+          if (active) setUnavailable(true);
+        });
+    void load();
+    window.addEventListener('focus', load);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', load);
+    };
+  }, [context?.containerPageId, context?.publicShareToken, pageId]);
+
+  return (
+    <NodeViewWrapper className="rdocs-page-link-block" contentEditable={false} data-drag-handle>
+      <a href={`/p/${encodeURIComponent(pageId)}`}>
+        <span className="rdocs-page-link-icon">{preview?.page.icon || <FileText size={17} />}</span>
+        <span>
+          <strong>
+            {unavailable ? '无权查看或页面已删除' : (preview?.page.title ?? fallbackTitle)}
+          </strong>
+          <small>
+            {unavailable
+              ? '链接内容不可见'
+              : preview
+                ? `${preview.spaceName}${preview.snippet ? ` · ${preview.snippet}` : ''}`
+                : context?.publicShareToken
+                  ? 'Rdocs 页面'
+                  : '正在读取页面预览…'}
+          </small>
+        </span>
+        <ChevronRight size={15} />
+      </a>
+      {props.editor.isEditable ? (
+        <button type="button" title="删除页面链接" onClick={props.deleteNode}>
+          <Trash2 size={13} />
+        </button>
+      ) : null}
+    </NodeViewWrapper>
+  );
+}
+
 export const BreadcrumbBlock = Node.create<BreadcrumbBlockOptions>({
   name: 'breadcrumb',
   group: 'block',
@@ -199,6 +271,55 @@ export const PageButtonBlock = Node.create({
   },
 });
 
-export function pageUtilityEditorBlocks(getItems: () => readonly BreadcrumbItem[] = () => []) {
-  return [BreadcrumbBlock.configure({ getItems }), PageButtonBlock];
+export const PageLinkBlock = Node.create<PageLinkBlockOptions>({
+  name: 'pageLink',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  draggable: true,
+  addOptions() {
+    return { getContext: () => null };
+  },
+  addAttributes() {
+    return {
+      pageId: { default: '' },
+      title: { default: '关联页面' },
+    };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'a[data-rdocs-page-link]',
+        getAttrs: (element) => ({
+          pageId: element.getAttribute('data-page-id') ?? '',
+          title: element.textContent?.trim() || '关联页面',
+        }),
+      },
+    ];
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    return [
+      'a',
+      mergeAttributes(HTMLAttributes, {
+        'data-page-id': node.attrs.pageId,
+        'data-rdocs-page-link': '',
+        href: `/p/${encodeURIComponent(String(node.attrs.pageId ?? ''))}`,
+      }),
+      String(node.attrs.title ?? '关联页面'),
+    ];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(PageLinkNodeView);
+  },
+});
+
+export function pageUtilityEditorBlocks(
+  getItems: () => readonly BreadcrumbItem[] = () => [],
+  getPageLinkContext: () => PageLinkContext | null = () => null,
+) {
+  return [
+    BreadcrumbBlock.configure({ getItems }),
+    PageButtonBlock,
+    PageLinkBlock.configure({ getContext: getPageLinkContext }),
+  ];
 }

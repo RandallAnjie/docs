@@ -191,6 +191,28 @@ export function documentSyncedBlockIds(document: Y.Doc): string[] {
   return [...ids].sort();
 }
 
+export function documentPageLinkIds(document: Y.Doc): string[] {
+  let fragment: Y.XmlFragment;
+  try {
+    fragment = document.getXmlFragment('default');
+  } catch {
+    return [];
+  }
+  const ids = new Set<string>();
+  const visit = (type: Y.XmlFragment | Y.XmlElement) => {
+    for (const child of type.toArray()) {
+      if (!(child instanceof Y.XmlElement)) continue;
+      if (child.nodeName === 'pageLink') {
+        const id = child.getAttribute('pageId') ?? '';
+        if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id)) ids.add(id);
+      }
+      visit(child);
+    }
+  };
+  visit(fragment);
+  return [...ids].sort();
+}
+
 export function documentContainsSyncedBlock(document: Y.Doc): boolean {
   let fragment: Y.XmlFragment;
   try {
@@ -555,6 +577,7 @@ export class DocumentRoom {
         await this.afterDocumentChange(pageId, generation, actorId);
         await this.maybeUpdateSearchProjection(pageId, generation);
         await this.maybeUpdateSyncedBlockReferences(pageId);
+        await this.maybeUpdatePageLinks(pageId);
       } else {
         await this.recordSyncedBlockChange(pageId, generation, actorId);
       }
@@ -634,6 +657,7 @@ export class DocumentRoom {
     }
     if (!result.replacements || !yjsUpdateChangesDocument(this.document, result.update)) {
       await this.maybeUpdateSyncedBlockReferences(pageId, true);
+      await this.maybeUpdatePageLinks(pageId, true);
       return Response.json({ ok: true, replacements: 0 });
     }
     await this.beforeDocumentChange(pageId, generation, actorId);
@@ -644,6 +668,7 @@ export class DocumentRoom {
     await this.afterDocumentChange(pageId, generation, actorId);
     await this.maybeUpdateSearchProjection(pageId, generation);
     await this.maybeUpdateSyncedBlockReferences(pageId, true);
+    await this.maybeUpdatePageLinks(pageId, true);
     return Response.json({ ok: true, replacements: result.replacements });
   }
 
@@ -723,6 +748,7 @@ export class DocumentRoom {
       await this.afterDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
       await this.maybeUpdateSearchProjection(attachment.pageId, attachment.generation);
       await this.maybeUpdateSyncedBlockReferences(attachment.pageId);
+      await this.maybeUpdatePageLinks(attachment.pageId);
     } else {
       await this.recordSyncedBlockChange(
         attachment.pageId,
@@ -841,6 +867,33 @@ export class DocumentRoom {
     await this.setRoomMetaValue('synced_block_reference_ids', signature);
   }
 
+  private async maybeUpdatePageLinks(pageId: string, force = false): Promise<void> {
+    if (!pageId) return;
+    const ids = documentPageLinkIds(this.document).filter((id) => id !== pageId);
+    const signature = ids.join(',');
+    if (!force && (await this.roomMetaValue('page_link_ids')) === signature) return;
+    const page = await this.env.DB.prepare(
+      'SELECT organization_id FROM pages WHERE id = ? AND deleted_at IS NULL',
+    )
+      .bind(pageId)
+      .first<{ organization_id: string }>();
+    if (!page) return;
+    const now = Date.now();
+    await this.env.DB.batch([
+      this.env.DB.prepare('DELETE FROM page_links WHERE source_page_id = ?').bind(pageId),
+      ...ids.map((targetPageId) =>
+        this.env.DB.prepare(
+          `INSERT INTO page_links(source_page_id, target_page_id, first_seen_at, last_seen_at)
+           SELECT ?, target.id, ?, ? FROM pages target
+            WHERE target.id = ? AND target.organization_id = ?
+           ON CONFLICT(source_page_id, target_page_id)
+           DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+        ).bind(pageId, now, now, targetPageId, page.organization_id),
+      ),
+    ]);
+    await this.setRoomMetaValue('page_link_ids', signature);
+  }
+
   private async automaticRevisionDue(now: number): Promise<{
     lastEditAt: number | null;
     lastRevisionAt: number | null;
@@ -905,6 +958,49 @@ export class DocumentRoom {
     ) {
       await this.tryCreateAutomaticRevision(pageId, generation, actorId, '持续编辑自动保存', now);
     }
+    await this.maybeRecordPageUpdate(pageId, generation, actorId, now).catch((reason) =>
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'page_update_event_failed',
+          pageId,
+          message: reason instanceof Error ? reason.message : String(reason),
+        }),
+      ),
+    );
+  }
+
+  private async maybeRecordPageUpdate(
+    pageId: string,
+    generation: number,
+    actorId: string,
+    now: number,
+  ): Promise<void> {
+    const lastRecordedAt = await this.roomMetaNumber('last_page_update_event_at');
+    if (lastRecordedAt !== null && now - lastRecordedAt < 60_000) return;
+    const page = await this.env.DB.prepare(
+      `SELECT organization_id, current_generation FROM pages
+        WHERE id = ? AND deleted_at IS NULL`,
+    )
+      .bind(pageId)
+      .first<RevisionPageRow>();
+    if (!page || Number(page.current_generation) !== generation) return;
+    await this.env.DB.prepare(
+      `INSERT INTO audit_events(
+         id, organization_id, actor_id, event_type, target_type, target_id,
+         request_id, metadata_json, created_at
+       ) VALUES (?, ?, ?, 'page.content_updated', 'page', ?, NULL, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        page.organization_id,
+        actorId,
+        pageId,
+        JSON.stringify({ generation, collabSeq: this.currentSeq }),
+        now,
+      )
+      .run();
+    await this.setRoomMetaNumber('last_page_update_event_at', now);
   }
 
   private async tryCreateAutomaticRevision(
@@ -1147,6 +1243,7 @@ export class DocumentRoom {
         request.headers.get('x-rdocs-page-id') ?? '',
         true,
       );
+      await this.maybeUpdatePageLinks(request.headers.get('x-rdocs-page-id') ?? '', true);
     }
     return Response.json({ ok: true, idempotent: false, contentHash });
   }

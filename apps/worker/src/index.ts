@@ -10,8 +10,12 @@ import {
   type AttachmentSummary,
   type FavoritePageResult,
   type OrganizationRole,
+  type PageBacklinkSummary,
+  type PageLinkPreview,
+  type PageSearchSort,
   type PageSearchResult,
   type PageSummary,
+  type PageUpdateSummary,
   type RecentPageResult,
   type RevisionKind,
   type RevisionSummary,
@@ -96,10 +100,29 @@ interface TrashedPageRow extends PageRow {
 
 interface SearchPageRow extends PageRow {
   normalized_body: string;
+  created_at: number;
+  created_by: string;
+  creator_email: string;
+  creator_display_name: string;
+  creator_avatar_url: string | null;
 }
 
 interface ActivityPageRow extends PageRow {
   activity_at: number;
+}
+
+interface BacklinkPageRow extends PageRow {
+  last_seen_at: number;
+}
+
+interface PageUpdateRow extends PageRow {
+  event_id: string;
+  event_type: string;
+  event_created_at: number;
+  actor_id: string | null;
+  actor_email: string | null;
+  actor_display_name: string | null;
+  actor_avatar_url: string | null;
 }
 
 interface AttachmentRow {
@@ -356,6 +379,7 @@ async function searchPages(
   organizationId: string,
   actorId: string,
   rawQuery: string,
+  url: URL,
 ): Promise<Response> {
   const membership = await env.DB.prepare(
     `SELECT 1 AS found FROM organization_members
@@ -364,42 +388,133 @@ async function searchPages(
     .bind(organizationId, actorId)
     .first<{ found: number }>();
   if (!membership) return error('组织不存在或无权搜索', 404);
-  const query = normalizeSearchText(rawQuery).slice(0, 100);
+  const trimmedQuery = rawQuery.trim().slice(0, 102);
+  const exactPhrase =
+    trimmedQuery.length >= 2 && trimmedQuery.startsWith('"') && trimmedQuery.endsWith('"');
+  const query = normalizeSearchText(exactPhrase ? trimmedQuery.slice(1, -1) : trimmedQuery).slice(
+    0,
+    100,
+  );
   if (!query) return json({ results: [] });
   const like = escapedLike(query);
   const match = ftsMatchQuery(query);
-  const baseSql = `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
-                          p.icon, p.cover_attachment_id, p.font_style,
-                          p.is_full_width, p.is_small_text, p.is_locked,
-                          p.current_generation, p.editor_schema_version, p.updated_at,
-                          a.collaboration_enabled, a.acl_version,
-                          projection.normalized_body
-                     FROM page_search_projection projection
-                     JOIN pages p ON p.id = projection.page_id
-                     JOIN page_access_state a ON a.page_id = p.id
-                    WHERE projection.organization_id = ? AND p.deleted_at IS NULL
-                      AND NOT EXISTS (SELECT 1 FROM database_templates t WHERE t.page_id = p.id)
-                      AND (LOWER(p.title) LIKE ? ESCAPE '\\'
-                           OR projection.normalized_body LIKE ? ESCAPE '\\'`;
-  const statement = match
-    ? env.DB.prepare(
-        `${baseSql}
-          OR p.id IN (
-            SELECT page_id FROM page_search_fts WHERE page_search_fts MATCH ?
-          )) ORDER BY p.updated_at DESC LIMIT 100`,
-      ).bind(organizationId, like, like, match)
-    : env.DB.prepare(`${baseSql}) ORDER BY p.updated_at DESC LIMIT 100`).bind(
-        organizationId,
-        like,
-        like,
-      );
+  const titleOnly = url.searchParams.get('titleOnly') === '1';
+  const requestedSort = url.searchParams.get('sort') ?? 'best';
+  const allowedSorts = new Set<PageSearchSort>([
+    'best',
+    'created_asc',
+    'created_desc',
+    'updated_asc',
+    'updated_desc',
+  ]);
+  const sort = allowedSorts.has(requestedSort as PageSearchSort)
+    ? (requestedSort as PageSearchSort)
+    : 'best';
+  const spaceId = (url.searchParams.get('spaceId') ?? '').slice(0, 100);
+  const createdBy = (url.searchParams.get('createdBy') ?? '').slice(0, 100);
+  const inPageId = (url.searchParams.get('inPageId') ?? '').slice(0, 100);
+  const parsedDateFrom = Number(url.searchParams.get('dateFrom'));
+  const parsedDateTo = Number(url.searchParams.get('dateTo'));
+  const dateFrom =
+    Number.isSafeInteger(parsedDateFrom) && parsedDateFrom > 0 ? parsedDateFrom : null;
+  const dateTo = Number.isSafeInteger(parsedDateTo) && parsedDateTo > 0 ? parsedDateTo : null;
+  const buildSearch = (includeFts: boolean) => {
+    const conditions = [
+      'projection.organization_id = ?',
+      'p.deleted_at IS NULL',
+      'NOT EXISTS (SELECT 1 FROM database_templates t WHERE t.page_id = p.id)',
+    ];
+    const values: unknown[] = [organizationId];
+    if (titleOnly) {
+      conditions.push(`LOWER(p.title) LIKE ? ESCAPE '\\'`);
+      values.push(like);
+    } else {
+      const searchConditions = [
+        `LOWER(p.title) LIKE ? ESCAPE '\\'`,
+        `projection.normalized_body LIKE ? ESCAPE '\\'`,
+      ];
+      values.push(like, like);
+      if (includeFts && match) {
+        searchConditions.push(
+          'p.id IN (SELECT page_id FROM page_search_fts WHERE page_search_fts MATCH ?)',
+        );
+        values.push(match);
+      }
+      conditions.push(`(${searchConditions.join(' OR ')})`);
+    }
+    if (spaceId) {
+      conditions.push('p.space_id = ?');
+      values.push(spaceId);
+    }
+    if (createdBy) {
+      conditions.push('p.created_by = ?');
+      values.push(createdBy);
+    }
+    if (inPageId && isPageId(inPageId)) {
+      conditions.push(`p.id IN (
+        WITH RECURSIVE descendants(id) AS (
+          SELECT id FROM pages WHERE id = ? AND organization_id = ? AND deleted_at IS NULL
+          UNION
+          SELECT child.id FROM pages child
+          JOIN descendants parent ON child.parent_id = parent.id
+          WHERE child.organization_id = ? AND child.deleted_at IS NULL
+        ) SELECT id FROM descendants
+      )`);
+      values.push(inPageId, organizationId, organizationId);
+    }
+    if (dateFrom !== null) {
+      conditions.push('(p.created_at >= ? OR p.updated_at >= ?)');
+      values.push(dateFrom, dateFrom);
+    }
+    if (dateTo !== null) {
+      conditions.push('(p.created_at <= ? OR p.updated_at <= ?)');
+      values.push(dateTo, dateTo);
+    }
+    let orderBy = 'p.updated_at DESC, p.id ASC';
+    if (sort === 'created_asc') orderBy = 'p.created_at ASC, p.id ASC';
+    if (sort === 'created_desc') orderBy = 'p.created_at DESC, p.id ASC';
+    if (sort === 'updated_asc') orderBy = 'p.updated_at ASC, p.id ASC';
+    if (sort === 'updated_desc') orderBy = 'p.updated_at DESC, p.id ASC';
+    if (sort === 'best') {
+      orderBy = `CASE
+        WHEN LOWER(p.title) = LOWER(?) THEN 0
+        WHEN LOWER(p.title) LIKE ? ESCAPE '\\' THEN 1
+        ELSE 2 END, p.updated_at DESC, p.id ASC`;
+      values.push(query, like);
+    }
+    return {
+      sql: `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+                   p.icon, p.cover_attachment_id, p.font_style,
+                   p.is_full_width, p.is_small_text, p.is_locked,
+                   p.current_generation, p.editor_schema_version, p.updated_at,
+                   p.created_at, p.created_by,
+                   a.collaboration_enabled, a.acl_version,
+                   projection.normalized_body,
+                   creator.email AS creator_email,
+                   creator.display_name AS creator_display_name,
+                   creator.avatar_url AS creator_avatar_url
+              FROM page_search_projection projection
+              JOIN pages p ON p.id = projection.page_id
+              JOIN page_access_state a ON a.page_id = p.id
+              JOIN users creator ON creator.id = p.created_by
+             WHERE ${conditions.join(' AND ')}
+             ORDER BY ${orderBy} LIMIT 100`,
+      values,
+    };
+  };
   let rows: SearchPageRow[];
   try {
-    rows = (await statement.all<SearchPageRow>()).results;
-  } catch {
+    const built = buildSearch(Boolean(match));
     rows = (
-      await env.DB.prepare(`${baseSql}) ORDER BY p.updated_at DESC LIMIT 100`)
-        .bind(organizationId, like, like)
+      await env.DB.prepare(built.sql)
+        .bind(...built.values)
+        .all<SearchPageRow>()
+    ).results;
+  } catch {
+    const built = buildSearch(false);
+    rows = (
+      await env.DB.prepare(built.sql)
+        .bind(...built.values)
         .all<SearchPageRow>()
     ).results;
   }
@@ -409,11 +524,149 @@ async function searchPages(
     if (!access) continue;
     results.push({
       page: { ...pageFromRow(row), role: access.spaceRole },
-      snippet: searchSnippet(row.normalized_body, query),
+      snippet: titleOnly ? '标题匹配' : searchSnippet(row.normalized_body, query),
+      createdAt: Number(row.created_at),
+      createdBy: {
+        id: row.created_by,
+        email: row.creator_email,
+        displayName: row.creator_display_name,
+        avatarUrl: row.creator_avatar_url,
+      },
     });
     if (results.length >= 30) break;
   }
   return json({ results });
+}
+
+async function listPageBacklinks(
+  env: Env,
+  targetPageId: string,
+  actorId: string,
+): Promise<Response> {
+  const targetAccess = await requirePageAction(env, targetPageId, actorId, 'view');
+  if (!targetAccess) return error('页面不存在', 404);
+  const rows = (
+    await env.DB.prepare(
+      `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
+              p.current_generation, p.editor_schema_version, p.updated_at,
+              a.collaboration_enabled, a.acl_version, links.last_seen_at
+         FROM page_links links
+         JOIN pages p ON p.id = links.source_page_id
+         JOIN page_access_state a ON a.page_id = p.id
+        WHERE links.target_page_id = ? AND p.organization_id = ? AND p.deleted_at IS NULL
+        ORDER BY links.last_seen_at DESC, p.updated_at DESC LIMIT 100`,
+    )
+      .bind(targetPageId, targetAccess.page.organizationId)
+      .all<BacklinkPageRow>()
+  ).results;
+  const backlinks: PageBacklinkSummary[] = [];
+  for (const row of rows) {
+    const access = await requireEffectivePageAction(env, row.id, actorId, 'view');
+    if (!access) continue;
+    backlinks.push({
+      page: { ...pageFromRow(row), role: access.spaceRole },
+      lastSeenAt: Number(row.last_seen_at),
+    });
+  }
+  return json({ backlinks });
+}
+
+async function getPageLinkPreview(
+  env: Env,
+  containerPageId: string,
+  targetPageId: string,
+  actorId: string,
+): Promise<Response> {
+  const [containerAccess, targetAccess] = await Promise.all([
+    requirePageAction(env, containerPageId, actorId, 'view'),
+    requirePageAction(env, targetPageId, actorId, 'view'),
+  ]);
+  if (
+    !containerAccess ||
+    !targetAccess ||
+    containerAccess.page.organizationId !== targetAccess.page.organizationId
+  ) {
+    return error('关联页面不存在或无权查看', 404);
+  }
+  const details = await env.DB.prepare(
+    `SELECT s.name AS space_name, projection.normalized_body
+       FROM pages p
+       JOIN spaces s ON s.id = p.space_id
+       JOIN page_search_projection projection ON projection.page_id = p.id
+      WHERE p.id = ? AND p.deleted_at IS NULL`,
+  )
+    .bind(targetPageId)
+    .first<{ space_name: string; normalized_body: string }>();
+  if (!details) return error('关联页面不存在', 404);
+  const preview: PageLinkPreview = {
+    page: { ...targetAccess.page, role: targetAccess.role },
+    spaceName: details.space_name,
+    snippet: details.normalized_body.trim().slice(0, 180),
+  };
+  return json({ preview });
+}
+
+async function listPageUpdates(
+  env: Env,
+  organizationId: string,
+  actorId: string,
+): Promise<Response> {
+  const membership = await env.DB.prepare(
+    `SELECT 1 AS found FROM organization_members
+      WHERE organization_id = ? AND user_id = ? AND status = 'active'`,
+  )
+    .bind(organizationId, actorId)
+    .first<{ found: number }>();
+  if (!membership) return error('组织不存在或无权访问', 404);
+  const rows = (
+    await env.DB.prepare(
+      `SELECT p.id, p.organization_id, p.space_id, p.parent_id, p.title,
+              p.icon, p.cover_attachment_id, p.font_style,
+              p.is_full_width, p.is_small_text, p.is_locked,
+              p.current_generation, p.editor_schema_version, p.updated_at,
+              access.collaboration_enabled, access.acl_version,
+              event.id AS event_id, event.event_type,
+              event.created_at AS event_created_at,
+              actor.id AS actor_id, actor.email AS actor_email,
+              actor.display_name AS actor_display_name,
+              actor.avatar_url AS actor_avatar_url
+         FROM audit_events event
+         JOIN pages p ON p.id = event.target_id
+         JOIN page_access_state access ON access.page_id = p.id
+         LEFT JOIN users actor ON actor.id = event.actor_id
+        WHERE event.organization_id = ? AND event.target_type = 'page'
+          AND p.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM database_templates t WHERE t.page_id = p.id)
+        ORDER BY event.created_at DESC LIMIT 200`,
+    )
+      .bind(organizationId)
+      .all<PageUpdateRow>()
+  ).results;
+  const updates: PageUpdateSummary[] = [];
+  for (const row of rows) {
+    const access = await requireEffectivePageAction(env, row.id, actorId, 'view');
+    if (!access) continue;
+    updates.push({
+      id: row.event_id,
+      actor:
+        row.actor_id && row.actor_email && row.actor_display_name
+          ? {
+              id: row.actor_id,
+              email: row.actor_email,
+              displayName: row.actor_display_name,
+              avatarUrl: row.actor_avatar_url,
+            }
+          : null,
+      eventType: row.event_type,
+      page: { ...pageFromRow(row), role: access.spaceRole },
+      metadata: {},
+      createdAt: Number(row.event_created_at),
+    });
+    if (updates.length >= 50) break;
+  }
+  return json({ updates });
 }
 
 async function listPageActivity(
@@ -3261,7 +3514,14 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (url.pathname === '/api/search' && request.method === 'GET') {
     const organizationId = url.searchParams.get('organizationId') ?? '';
     return organizationId
-      ? searchPages(env, organizationId, actorId, url.searchParams.get('q') ?? '')
+      ? searchPages(env, organizationId, actorId, url.searchParams.get('q') ?? '', url)
+      : error('缺少组织 ID', 400);
+  }
+
+  if (url.pathname === '/api/updates' && request.method === 'GET') {
+    const organizationId = url.searchParams.get('organizationId') ?? '';
+    return organizationId
+      ? listPageUpdates(env, organizationId, actorId)
       : error('缺少组织 ID', 400);
   }
 
@@ -3286,6 +3546,25 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (url.pathname === '/api/pages' && request.method === 'GET') {
     const spaceId = url.searchParams.get('spaceId') ?? '';
     return spaceId ? listPages(env, spaceId, actorId) : error('缺少目标空间', 400);
+  }
+
+  const pageBacklinksMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/backlinks$/);
+  if (pageBacklinksMatch?.[1] && request.method === 'GET') {
+    const pageId = decodeURIComponent(pageBacklinksMatch[1]);
+    if (!isPageId(pageId)) return error('页面 ID 无效', 400);
+    return listPageBacklinks(env, pageId, actorId);
+  }
+
+  const pageLinkPreviewMatch = url.pathname.match(
+    /^\/api\/pages\/([^/]+)\/page-links\/([^/]+)\/preview$/,
+  );
+  if (pageLinkPreviewMatch?.[1] && pageLinkPreviewMatch[2] && request.method === 'GET') {
+    const containerPageId = decodeURIComponent(pageLinkPreviewMatch[1]);
+    const targetPageId = decodeURIComponent(pageLinkPreviewMatch[2]);
+    if (!isPageId(containerPageId) || !isPageId(targetPageId)) {
+      return error('页面 ID 无效', 400);
+    }
+    return getPageLinkPreview(env, containerPageId, targetPageId, actorId);
   }
 
   const pageSyncedBlocksMatch = url.pathname.match(/^\/api\/pages\/([^/]+)\/synced-blocks$/);
