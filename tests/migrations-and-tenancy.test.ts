@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 import type { AuthUserSummary } from '@rdocs/shared';
 
 import type { Env } from '../apps/worker/src/env';
-import { resolvePageAccess } from '../apps/worker/src/access';
+import {
+  requirePageAction,
+  resolvePageAccess,
+  resolveSpaceAccess,
+} from '../apps/worker/src/access';
 import { listPages } from '../apps/worker/src/page-tree';
 import { pageAccessSnapshot } from '../apps/worker/src/page-access';
 import { handleTenancyApi } from '../apps/worker/src/tenancy';
@@ -76,6 +80,7 @@ function migratedDatabase(): DatabaseSync {
     '0006_notifications.sql',
     '0007_editor_blocks.sql',
     '0008_page_acl_roles.sql',
+    '0009_complete_permissions.sql',
   ]) {
     database.exec(readFileSync(join(process.cwd(), 'migrations', migration), 'utf8'));
   }
@@ -147,12 +152,173 @@ describe('database migrations', () => {
     expect(
       readFileSync(join(process.cwd(), 'migrations', '0007_editor_blocks.sql'), 'utf8'),
     ).toContain('editor_schema_version = 2');
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS total FROM organization_members
+            WHERE organization_id = 'org_phase0' AND user_id = 'usr_phase0_system'`,
+        )
+        .get(),
+    ).toMatchObject({ total: 0 });
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     database.close();
   });
 });
 
 describe('tenant boundary integration', () => {
+  it('caps historical external members at read-only on spaces and restricted pages', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'guest-owner');
+    const guest = seedTenant(database, 'legacy-guest');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_guest-owner', ?, 'guest', 'active', ?, ?)`,
+      )
+      .run(guest.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_legacy_guest', 'org_guest-owner', 'spc_guest-owner',
+                   'user', ?, 'space_admin', ?, ?)`,
+      )
+      .run(guest.id, owner.id, now);
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, title, sort_key, created_by, updated_by, created_at, updated_at
+         ) VALUES ('page_legacy_guest', 'org_guest-owner', 'spc_guest-owner',
+                   'External read only', '1', ?, ?, ?, ?)`,
+      )
+      .run(owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+         VALUES ('page_legacy_guest', 1, 1, 'restricted', ?)`,
+      )
+      .run(now);
+    database
+      .prepare(
+        `INSERT INTO page_grants(
+           id, organization_id, page_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('page_grant_legacy_guest', 'org_guest-owner', 'page_legacy_guest',
+                   'user', ?, 'space_admin', ?, ?)`,
+      )
+      .run(guest.id, owner.id, now);
+    const env = testEnv(database);
+
+    await expect(resolveSpaceAccess(env, 'spc_guest-owner', guest.id)).resolves.toMatchObject({
+      spaceRole: 'viewer',
+    });
+    await expect(resolvePageAccess(env, 'page_legacy_guest', guest.id)).resolves.toMatchObject({
+      spaceRole: 'viewer',
+    });
+    await expect(
+      requirePageAction(env, 'page_legacy_guest', guest.id, 'view'),
+    ).resolves.not.toBeNull();
+    await expect(
+      requirePageAction(env, 'page_legacy_guest', guest.id, 'comment'),
+    ).resolves.toBeNull();
+    await expect(
+      requirePageAction(env, 'page_legacy_guest', guest.id, 'edit_content'),
+    ).resolves.toBeNull();
+    await expect(
+      requirePageAction(env, 'page_legacy_guest', guest.id, 'manage_access'),
+    ).resolves.toBeNull();
+    database.close();
+  });
+
+  it('rejects new guest identities, guest elevation, and guest group membership', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'guest-policy-owner');
+    const guest = seedTenant(database, 'guest-policy-user');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_guest-policy-owner', ?, 'guest', 'active', ?, ?)`,
+      )
+      .run(guest.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO groups(id, organization_id, name, created_by, created_at)
+         VALUES ('grp_guest_policy', 'org_guest-policy-owner', 'Editors', ?, ?)`,
+      )
+      .run(owner.id, now);
+    const env = testEnv(database);
+    const context = testContext();
+
+    const invitation = await handleTenancyApi(
+      new Request('https://docs.test/api/organizations/org_guest-policy-owner/invitations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'external@example.com', role: 'guest' }),
+      }),
+      env,
+      owner,
+      context,
+    );
+    expect(invitation?.status).toBe(400);
+    await expect(invitation?.json()).resolves.toMatchObject({ code: 'guest_role_disabled' });
+
+    const elevated = await handleTenancyApi(
+      new Request(`https://docs.test/api/spaces/spc_guest-policy-owner/grants/user/${guest.id}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'editor' }),
+      }),
+      env,
+      owner,
+      context,
+    );
+    expect(elevated?.status).toBe(400);
+    await expect(elevated?.json()).resolves.toMatchObject({ code: 'guest_read_only' });
+
+    const grouped = await handleTenancyApi(
+      new Request(
+        `https://docs.test/api/organizations/org_guest-policy-owner/groups/grp_guest_policy/members/${guest.id}`,
+        { method: 'PUT' },
+      ),
+      env,
+      owner,
+      context,
+    );
+    expect(grouped?.status).toBe(400);
+    await expect(grouped?.json()).resolves.toMatchObject({ code: 'guest_group_disabled' });
+    database.close();
+  });
+
+  it('lets an explicit user deny override organization-visible space access', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'space-deny-owner');
+    const member = seedTenant(database, 'space-deny-member');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_space-deny-owner', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    database
+      .prepare("UPDATE spaces SET visibility = 'organization' WHERE id = 'spc_space-deny-owner'")
+      .run();
+    database
+      .prepare(
+        `INSERT INTO space_grants(
+           id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+         ) VALUES ('grant_space_deny', 'org_space-deny-owner', 'spc_space-deny-owner',
+                   'user', ?, 'none', ?, ?)`,
+      )
+      .run(member.id, owner.id, now);
+
+    await expect(
+      resolveSpaceAccess(testEnv(database), 'spc_space-deny-owner', member.id),
+    ).resolves.toBeNull();
+    database.close();
+  });
+
   it('hides another tenant and rejects a cross-tenant grant', async () => {
     const database = migratedDatabase();
     const ownerA = seedTenant(database, 'alpha');

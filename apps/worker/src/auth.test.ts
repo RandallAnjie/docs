@@ -14,8 +14,8 @@ function env(overrides: Partial<Env> = {}): Env {
 }
 
 describe('passkey authentication configuration', () => {
-  it('only enables anonymous Phase 0 mode explicitly', () => {
-    expect(authMode(env({ AUTH_MODE: 'phase0' }))).toBe('phase0');
+  it('never re-enables anonymous mode from configuration', () => {
+    expect(authMode(env({ AUTH_MODE: 'phase0' }))).toBe('passkey');
     expect(authMode(env({ AUTH_MODE: 'passkey' }))).toBe('passkey');
     expect(authMode(env({ AUTH_MODE: undefined }))).toBe('passkey');
     expect(authMode(env({ AUTH_MODE: 'typo' }))).toBe('passkey');
@@ -78,16 +78,16 @@ describe('passkey authentication configuration', () => {
     );
   });
 
-  it('keeps existing Phase 0 smoke requests compatible', () => {
+  it('does not let a legacy Phase 0 value bypass Origin checks', () => {
     expect(
       isTrustedMutationOrigin(
         new Request('https://preview.example.com/api/pages', { method: 'POST' }),
         env({ AUTH_MODE: 'phase0' }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('allows only the passkey registration bootstrap endpoint during Phase 0', async () => {
+  it('keeps passkey registration fail-closed for legacy Phase 0 configuration', async () => {
     const bootstrap = await handleAuthApi(
       new Request('https://docs.example.com/api/auth/passkey/registration/options', {
         method: 'POST',
@@ -98,16 +98,6 @@ describe('passkey authentication configuration', () => {
       {} as ExecutionContext,
     );
     expect(bootstrap?.status).toBe(400);
-
-    const login = await handleAuthApi(
-      new Request('https://docs.example.com/api/auth/passkey/authentication/options', {
-        method: 'POST',
-        headers: { origin: 'https://docs.example.com' },
-      }),
-      env({ AUTH_MODE: 'phase0' }),
-      {} as ExecutionContext,
-    );
-    expect(login?.status).toBe(409);
 
     const wrongOrigin = await handleAuthApi(
       new Request('https://docs.example.com/api/auth/passkey/registration/options', {

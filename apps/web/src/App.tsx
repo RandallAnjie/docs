@@ -107,7 +107,7 @@ import {
 import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel } from './AttachmentPanel';
 import { CommentsPanel } from './CommentsPanel';
-import { getLocalIdentity, type LocalIdentity } from './identity';
+import type { LocalIdentity } from './identity';
 import { DiscoveryDialog } from './DiscoveryDialog';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell } from './NotificationBell';
@@ -141,10 +141,6 @@ function currentShareToken(): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
-function passkeySetupRequested(): boolean {
-  return window.location.pathname === '/setup/passkey';
-}
-
 function navigateToPage(pageId: string): void {
   window.location.assign(`/p/${encodeURIComponent(pageId)}`);
 }
@@ -164,8 +160,6 @@ export function App() {
   const pageId = currentPageId();
   const invitationToken = currentInvitationToken();
   const shareToken = currentShareToken();
-  const setupPasskey = passkeySetupRequested();
-  const localIdentity = useMemo(getLocalIdentity, []);
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
@@ -210,17 +204,7 @@ export function App() {
       <LoadingScreen message="正在检查设备密钥…" />
     );
   }
-  if (setupPasskey && session.mode === 'phase0') {
-    return (
-      <PasskeyGate
-        session={session}
-        invitationToken={null}
-        onAuthenticated={refreshSession}
-        bootstrapPhase0
-      />
-    );
-  }
-  if (session.mode === 'passkey' && !session.authenticated) {
+  if (!session.authenticated || !session.user) {
     return (
       <PasskeyGate
         session={session}
@@ -230,37 +214,21 @@ export function App() {
     );
   }
 
-  const identity = session.user ? identityFromUser(session.user) : localIdentity;
+  const identity = identityFromUser(session.user);
 
-  if (session.authenticated && session.user && invitationToken) {
+  if (invitationToken) {
     return <InvitationAcceptance token={invitationToken} identity={identity} />;
   }
 
   if (!pageId) {
-    if (session.authenticated && session.user) {
-      return <TenantHome identity={identity} user={session.user} onLogout={signOut} />;
-    }
-    return (
-      <Welcome
-        identity={identity}
-        authenticated={session.authenticated}
-        enrollmentConfigured={session.enrollmentConfigured}
-        onLogout={session.authenticated ? signOut : undefined}
-      />
-    );
+    return <TenantHome identity={identity} user={session.user} onLogout={signOut} />;
   }
-  return (
-    <Workspace
-      pageId={pageId}
-      identity={identity}
-      onLogout={session.authenticated ? signOut : undefined}
-    />
-  );
+  return <Workspace pageId={pageId} identity={identity} onLogout={signOut} />;
 }
 
 function SharedPage({ token }: { token: string }) {
   const identity = useMemo(
-    () => ({ id: `share-${token.slice(0, 8)}`, name: '外部访客', color: '#6d7f73' }),
+    () => ({ id: `share-${token.slice(0, 8)}`, name: '外部只读', color: '#6d7f73' }),
     [token],
   );
   const [shared, setShared] = useState<Awaited<ReturnType<typeof getPublicShare>> | null>(null);
@@ -308,15 +276,12 @@ function PasskeyGate({
   session,
   invitationToken,
   onAuthenticated,
-  bootstrapPhase0 = false,
 }: {
   session: AuthSessionResponse;
   invitationToken: string | null;
   onAuthenticated: () => Promise<void>;
-  bootstrapPhase0?: boolean;
 }) {
-  const [registering, setRegistering] = useState(Boolean(invitationToken) || bootstrapPhase0);
-  const [registrationComplete, setRegistrationComplete] = useState(false);
+  const [registering, setRegistering] = useState(Boolean(invitationToken));
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
@@ -356,8 +321,7 @@ function PasskeyGate({
       });
       const response = await startRegistration({ optionsJSON: options });
       await finishPasskeyRegistration(challengeId, response);
-      if (bootstrapPhase0) setRegistrationComplete(true);
-      else await onAuthenticated();
+      await onAuthenticated();
     } catch (reason) {
       setError(passkeyErrorMessage(reason));
     } finally {
@@ -377,28 +341,6 @@ function PasskeyGate({
     );
   } else if (!supported) {
     unavailable = <p className="auth-warning">当前浏览器不支持 WebAuthn 设备密钥。</p>;
-  }
-
-  if (registrationComplete) {
-    return (
-      <main className="auth-shell">
-        <section className="auth-card">
-          <div className="auth-key-mark">
-            <Check size={24} />
-          </div>
-          <span className="auth-eyebrow">设备密钥登记完成</span>
-          <h1>首位管理员已经就绪</h1>
-          <p>现有 Rdocs 组织和文档已经转交给这个账号。现在可以安全关闭 phase0。</p>
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => window.location.assign('/')}
-          >
-            返回 Rdocs
-          </button>
-        </section>
-      </main>
-    );
   }
 
   return (
@@ -480,7 +422,7 @@ function PasskeyGate({
             {error}
           </p>
         ) : null}
-        {!bootstrapPhase0 && !unavailable && (session.enrollmentConfigured || invitationToken) ? (
+        {!unavailable && (session.enrollmentConfigured || invitationToken) ? (
           <button
             className="auth-switch"
             type="button"
@@ -951,88 +893,6 @@ function TenantHome({
       {templateSpace ? (
         <TemplateDialog space={templateSpace} onClose={() => setTemplateSpace(null)} />
       ) : null}
-    </main>
-  );
-}
-
-function Welcome({
-  identity,
-  authenticated,
-  enrollmentConfigured,
-  onLogout,
-}: {
-  identity: LocalIdentity;
-  authenticated: boolean;
-  enrollmentConfigured: boolean;
-  onLogout?: () => Promise<void>;
-}) {
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const start = async () => {
-    setCreating(true);
-    setError(null);
-    try {
-      const { page } = await createPage('欢迎来到 Rdocs');
-      navigateToPage(page.id);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法创建页面');
-      setCreating(false);
-    }
-  };
-
-  return (
-    <main className="welcome-shell">
-      <nav className="welcome-nav">
-        <Brand />
-        <div className="welcome-identity">
-          <IdentityBubble identity={identity} />
-          {onLogout ? (
-            <button type="button" onClick={() => void onLogout()} aria-label="退出登录">
-              <LogOut size={15} />
-            </button>
-          ) : null}
-        </div>
-      </nav>
-      <section className="welcome-content">
-        <div className="eyebrow">
-          <Sparkles size={15} /> Technical preview · Phase 0
-        </div>
-        <h1>
-          把团队的想法，
-          <br />
-          写进同一个空间。
-        </h1>
-        <p>
-          Rdocs 是一套面向团队的实时协作知识库。这个首发预览先验证最重要的事：
-          多人同时编辑、持久保存、断线重连与服务重启恢复。
-        </p>
-        <div className="welcome-actions">
-          <button className="primary-button" onClick={start} disabled={creating}>
-            <FilePlus2 size={18} />
-            {creating ? '正在创建…' : '创建协作文档'}
-          </button>
-          <a className="quiet-link" href="https://github.com/RandallAnjie/docs">
-            查看源码 <span aria-hidden="true">↗</span>
-          </a>
-          {enrollmentConfigured ? (
-            <a className="quiet-link" href="/setup/passkey">
-              登记管理员设备密钥 <span aria-hidden="true">→</span>
-            </a>
-          ) : null}
-        </div>
-        {error && <p className="error-message">{error}</p>}
-        <div className="preview-note">
-          <strong>{authenticated ? '设备密钥已验证' : '预览环境说明'}</strong>
-          <span>
-            {authenticated
-              ? `当前以 ${identity.name} 登录，会话凭证不会暴露给页面脚本。`
-              : '当前页面采用匿名访客身份，仅用于技术验证，请勿写入敏感内容。'}
-          </span>
-        </div>
-      </section>
-      <div className="welcome-orbit orbit-one" />
-      <div className="welcome-orbit orbit-two" />
     </main>
   );
 }
@@ -2095,7 +1955,7 @@ function identityFromUser(user: AuthUserSummary): LocalIdentity {
 }
 
 function identityMonogram(identity: LocalIdentity): string {
-  return identity.name.trim().slice(-2) || '访客';
+  return identity.name.trim().slice(-2) || '成员';
 }
 
 function renderCollaborationCaret(user: Record<string, unknown>): HTMLElement {

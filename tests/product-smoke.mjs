@@ -1,5 +1,10 @@
 const baseUrl = process.env.RDOCS_SMOKE_URL || 'https://docs.bigrandall.io';
 const expectedOrigin = process.env.RDOCS_SMOKE_ORIGIN || 'https://docs.bigrandall.io';
+const sessionCookie = process.env.RDOCS_SMOKE_SESSION_COOKIE || '';
+
+if (!sessionCookie) {
+  throw new Error('RDOCS_SMOKE_SESSION_COOKIE is required; anonymous product smoke is disabled');
+}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -11,6 +16,7 @@ async function request(path, init = {}, expectedStatus = 200) {
     signal: init.signal ?? AbortSignal.timeout(20_000),
     headers: {
       origin: expectedOrigin,
+      cookie: sessionCookie,
       ...(init.body && typeof init.body === 'string' ? { 'content-type': 'application/json' } : {}),
       ...init.headers,
     },
@@ -39,7 +45,10 @@ let invitationId = null;
 
 try {
   const session = (await request('/api/auth/session')).body;
-  assert(session.mode === 'phase0', 'product smoke requires explicit phase0 mode');
+  assert(
+    session.mode === 'passkey' && session.authenticated,
+    'authenticated passkey session required',
+  );
 
   const organizations = (await request('/api/organizations')).body.organizations;
   const organization = organizations.find((candidate) => candidate.role === 'owner');
@@ -186,7 +195,7 @@ try {
     `/api/organizations/${organization.id}/invitations`,
     {
       method: 'POST',
-      body: JSON.stringify({ email: `smoke-${marker}@rdocs.invalid`, role: 'guest' }),
+      body: JSON.stringify({ email: `smoke-${marker}@rdocs.invalid`, role: 'member' }),
     },
     201,
   );

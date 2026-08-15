@@ -5,8 +5,8 @@ import type {
   GroupSummary,
   OrganizationMemberSummary,
   SpaceGrantPrincipalType,
+  SpaceGrantRole,
   SpaceGrantSummary,
-  SpaceRole,
   SpaceSummary,
 } from '@rdocs/shared';
 
@@ -18,13 +18,6 @@ import {
   putSpaceGrant,
   updateSpace,
 } from './api';
-
-const ROLE_LABEL: Record<SpaceRole, string> = {
-  space_admin: '空间管理',
-  editor: '可编辑',
-  commenter: '可评论',
-  viewer: '可查看',
-};
 
 type Principal = { type: SpaceGrantPrincipalType; id: string };
 
@@ -51,7 +44,7 @@ export function SpaceAccessDialog({
   const [members, setMembers] = useState<OrganizationMemberSummary[]>([]);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [principal, setPrincipal] = useState('');
-  const [role, setRole] = useState<SpaceRole>('viewer');
+  const [role, setRole] = useState<SpaceGrantRole>('viewer');
   const [name, setName] = useState(space.name);
   const [icon, setIcon] = useState(space.icon ?? '');
   const [visibility, setVisibility] = useState(space.visibility);
@@ -92,6 +85,10 @@ export function SpaceAccessDialog({
     [members],
   );
   const groupById = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
+  const selectedPrincipal = parsePrincipal(principal);
+  const selectedGuest = Boolean(
+    selectedPrincipal?.type === 'user' && memberById.get(selectedPrincipal.id)?.role === 'guest',
+  );
 
   const addGrant = async (event: FormEvent) => {
     event.preventDefault();
@@ -157,6 +154,28 @@ export function SpaceAccessDialog({
     }
   };
 
+  const changeGrant = async (grant: SpaceGrantSummary, nextRole: SpaceGrantRole) => {
+    const member = grant.principalType === 'user' ? memberById.get(grant.principalId) : undefined;
+    const effectiveCurrentRole =
+      member?.role === 'guest' && grant.role !== 'none' ? 'viewer' : grant.role;
+    if (busy || nextRole === effectiveCurrentRole) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await putSpaceGrant(
+        space.id,
+        grant.principalType,
+        grant.principalId,
+        nextRole,
+      );
+      setGrants(result.grants);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法更新空间权限');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const principalLabel = (grant: SpaceGrantSummary) => {
     if (grant.principalType === 'organization')
       return space.visibility === 'organization' ? '整个组织（显式授权）' : '整个组织';
@@ -167,18 +186,26 @@ export function SpaceAccessDialog({
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <section className="rdocs-dialog page-access-dialog" role="dialog" aria-modal="true">
+      <section
+        className="rdocs-dialog page-access-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="space-access-title"
+      >
         <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭">
           <X size={17} />
         </button>
         <div className="dialog-icon">
           <LockKeyhole size={19} />
         </div>
-        <h2>{space.name} · 空间权限</h2>
+        <h2 id="space-access-title">{space.name} · 空间权限</h2>
         <p>
           {space.visibility === 'organization'
-            ? '组织成员默认可查看；下方授权可以给成员或用户组更高权限。访客仍需显式授权。'
+            ? '正式组织成员默认只读；用户、用户组或整个组织的显式权限可以覆盖默认值。'
             : '仅下方明确授权的成员、用户组或整个组织可以进入此空间。组织所有者始终可管理。'}
+        </p>
+        <p>
+          “无权限”是显式拒绝；移除授权则恢复继承。历史外部只读成员只能被单独授予只读，不能编辑。
         </p>
 
         <form className="space-settings-form" onSubmit={(event) => void saveSettings(event)}>
@@ -223,8 +250,16 @@ export function SpaceAccessDialog({
           <>
             <form className="page-grant-form" onSubmit={(event) => void addGrant(event)}>
               <select
+                aria-label="授权成员或用户组"
                 value={principal}
-                onChange={(event) => setPrincipal(event.target.value)}
+                onChange={(event) => {
+                  const nextPrincipal = event.target.value;
+                  const parsed = parsePrincipal(nextPrincipal);
+                  setPrincipal(nextPrincipal);
+                  if (parsed?.type === 'user' && memberById.get(parsed.id)?.role === 'guest') {
+                    setRole('viewer');
+                  }
+                }}
                 required
               >
                 <option value="">选择成员或用户组…</option>
@@ -252,11 +287,15 @@ export function SpaceAccessDialog({
                     ))}
                 </optgroup>
               </select>
-              <select value={role} onChange={(event) => setRole(event.target.value as SpaceRole)}>
-                <option value="space_admin">空间管理</option>
-                <option value="editor">可编辑</option>
-                <option value="commenter">可评论</option>
-                <option value="viewer">可查看</option>
+              <select
+                aria-label="空间权限"
+                value={role}
+                onChange={(event) => setRole(event.target.value as SpaceGrantRole)}
+              >
+                <option value="none">无权限</option>
+                <option value="viewer">只读</option>
+                {!selectedGuest ? <option value="editor">读写</option> : null}
+                {!selectedGuest ? <option value="space_admin">管理员</option> : null}
               </select>
               <button type="submit" disabled={busy}>
                 <UserPlus size={15} /> 添加
@@ -264,38 +303,61 @@ export function SpaceAccessDialog({
             </form>
             <div className="page-grant-list">
               {grants.length ? (
-                grants.map((grant) => (
-                  <div key={grant.id}>
-                    <span>
-                      {grant.principalType === 'organization' ? (
-                        <Building2 size={14} />
-                      ) : grant.principalType === 'group' ? (
-                        <UsersRound size={14} />
-                      ) : (
-                        principalLabel(grant).slice(0, 1).toUpperCase()
-                      )}
-                    </span>
-                    <div>
-                      <strong>{principalLabel(grant)}</strong>
-                      <small>
-                        {grant.principalType === 'organization'
-                          ? '组织'
-                          : grant.principalType === 'group'
-                            ? '用户组'
-                            : (memberById.get(grant.principalId)?.email ?? '成员')}
-                      </small>
+                grants.map((grant) => {
+                  const member =
+                    grant.principalType === 'user' ? memberById.get(grant.principalId) : undefined;
+                  const guestReadOnly = member?.role === 'guest';
+                  const effectiveRole =
+                    guestReadOnly && grant.role !== 'none' ? 'viewer' : grant.role;
+                  const label = principalLabel(grant);
+                  return (
+                    <div key={grant.id}>
+                      <span>
+                        {grant.principalType === 'organization' ? (
+                          <Building2 size={14} />
+                        ) : grant.principalType === 'group' ? (
+                          <UsersRound size={14} />
+                        ) : (
+                          label.slice(0, 1).toUpperCase()
+                        )}
+                      </span>
+                      <div>
+                        <strong>{label}</strong>
+                        <small>
+                          {grant.principalType === 'organization'
+                            ? '组织'
+                            : grant.principalType === 'group'
+                              ? '用户组'
+                              : (memberById.get(grant.principalId)?.email ?? '成员')}
+                        </small>
+                      </div>
+                      <select
+                        aria-label={`${label} 的空间权限`}
+                        value={effectiveRole}
+                        onChange={(event) =>
+                          void changeGrant(grant, event.target.value as SpaceGrantRole)
+                        }
+                        disabled={busy}
+                      >
+                        <option value="none">无权限</option>
+                        <option value="viewer">只读</option>
+                        {!guestReadOnly ? <option value="editor">读写</option> : null}
+                        {!guestReadOnly ? <option value="space_admin">管理员</option> : null}
+                        {!guestReadOnly && grant.role === 'commenter' ? (
+                          <option value="commenter">只读（可评论）</option>
+                        ) : null}
+                      </select>
+                      <button
+                        type="button"
+                        aria-label="移除权限"
+                        onClick={() => void removeGrant(grant)}
+                        disabled={busy}
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
-                    <b>{ROLE_LABEL[grant.role]}</b>
-                    <button
-                      type="button"
-                      aria-label="移除权限"
-                      onClick={() => void removeGrant(grant)}
-                      disabled={busy}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div className="no-page-grants">还没有显式授权。</div>
               )}

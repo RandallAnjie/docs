@@ -8,6 +8,7 @@ import {
   type AuthUserSummary,
   type AttachmentSummary,
   type FavoritePageResult,
+  type OrganizationRole,
   type PageSearchResult,
   type PageSummary,
   type RecentPageResult,
@@ -48,9 +49,8 @@ import { signCollabTicket, verifyCollabTicket } from './tickets';
 
 export { DocumentRoom };
 
-const SYSTEM_USER_ID = 'usr_phase0_system';
-const PHASE0_SPACE_ID = 'spc_phase0';
 const MAX_TITLE_LENGTH = 200;
+const SYSTEM_USER_ID = 'usr_phase0_system';
 const MAX_REVISION_LABEL_LENGTH = 100;
 const MAX_REVISION_DESCRIPTION_LENGTH = 500;
 const MAX_PAGE_TREE_SIZE = 500;
@@ -155,8 +155,8 @@ function json(data: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(data), { ...init, headers });
 }
 
-function error(message: string, status: number): Response {
-  return json({ error: message }, { status });
+function error(message: string, status: number, code?: string): Response {
+  return json({ error: message, ...(code ? { code } : {}) }, { status });
 }
 
 function pageFromRow(row: PageRow): PageSummary {
@@ -795,14 +795,14 @@ async function resolvePublicShare(request: Request, env: Env, token: string): Pr
   if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) {
     return error('协作服务尚未配置', 503);
   }
-  const expiresAt = now + 5 * 60 * 1_000;
+  const expiresAt = Math.min(now + 5 * 60 * 1_000, share.expires_at ?? Number.MAX_SAFE_INTEGER);
   const ticket = await signCollabTicket(
     {
       version: 1,
       pageId: page.id,
       generation: page.currentGeneration,
       actorId: `share_${share.id}`,
-      displayName: '外部访客',
+      displayName: '外部只读',
       role: 'viewer',
       aclVersion: page.aclVersion,
       issuedAt: now,
@@ -1663,12 +1663,7 @@ async function createPage(request: Request, env: Env, actorId: string): Promise<
   if (parentId !== null && (typeof parentId !== 'string' || !isPageId(parentId))) {
     return error('父页面 ID 无效', 400);
   }
-  let spaceId =
-    typeof body.spaceId === 'string'
-      ? body.spaceId
-      : actorId === SYSTEM_USER_ID
-        ? PHASE0_SPACE_ID
-        : null;
+  let spaceId = typeof body.spaceId === 'string' ? body.spaceId : null;
   let parent: PageSummary | null = null;
   if (parentId !== null) {
     const parentAccess = await requirePageAction(env, parentId, actorId, 'create_child');
@@ -2152,6 +2147,17 @@ async function putPageGrant(
   if (!(await validPageGrantPrincipal(env, page, principalType, principalId))) {
     return error('授权主体不属于此组织', 400);
   }
+  if (principalType === 'user' && input.role !== 'none' && input.role !== 'viewer') {
+    const membership = await env.DB.prepare(
+      `SELECT role FROM organization_members
+        WHERE organization_id = ? AND user_id = ? AND status = 'active'`,
+    )
+      .bind(page.organizationId, principalId)
+      .first<{ role: OrganizationRole }>();
+    if (membership?.role === 'guest') {
+      return error('历史外部只读成员最高只能获得只读权限', 400, 'guest_read_only');
+    }
+  }
   const existing = await env.DB.prepare(
     `SELECT id FROM page_grants
       WHERE organization_id = ? AND page_id = ? AND principal_type = ? AND principal_id = ?`,
@@ -2210,7 +2216,7 @@ async function issueTicket(
   request: Request,
   env: Env,
   pageId: string,
-  authenticatedUser: AuthUserSummary | null,
+  authenticatedUser: AuthUserSummary,
 ): Promise<Response> {
   if (!env.COLLAB_TICKET_SECRET || env.COLLAB_TICKET_SECRET.length < 32) {
     return error('协作服务尚未配置', 503);
@@ -2223,9 +2229,9 @@ async function issueTicket(
     actorId?: unknown;
     displayName?: unknown;
   };
-  const actorId = authenticatedUser?.id ?? SYSTEM_USER_ID;
+  const actorId = authenticatedUser.id;
   const displayName =
-    authenticatedUser?.displayName ??
+    authenticatedUser.displayName ||
     (typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 60) : '');
   if (!actorId || !displayName) return error('协作者身份无效', 400);
   const authorized = await requirePageAction(env, pageId, actorId, 'view');
@@ -2435,20 +2441,15 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const authResponse = await handleAuthApi(request, env, context);
   if (authResponse) return authResponse;
   const auth = await authenticateRequest(request, env, context);
-  if (auth.mode === 'passkey' && !auth.user) return error('请先使用设备密钥登录', 401);
+  if (!auth.user) return error('请先使用设备密钥登录', 401);
   if (
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) &&
     !isTrustedMutationOrigin(request, env)
   ) {
     return error('请求来源不允许', 403);
   }
-  const actorId = auth.user?.id ?? SYSTEM_USER_ID;
-  const actor: AuthUserSummary = auth.user ?? {
-    id: SYSTEM_USER_ID,
-    email: 'phase0-system@rdocs.invalid',
-    displayName: 'Rdocs Phase 0',
-    avatarUrl: null,
-  };
+  const actorId = auth.user.id;
+  const actor = auth.user;
 
   const tenancyResponse = await handleTenancyApi(request, env, actor, context);
   if (tenancyResponse) return tenancyResponse;
@@ -2481,8 +2482,7 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   }
 
   if (url.pathname === '/api/pages' && request.method === 'GET') {
-    const spaceId =
-      url.searchParams.get('spaceId') ?? (actorId === SYSTEM_USER_ID ? PHASE0_SPACE_ID : '');
+    const spaceId = url.searchParams.get('spaceId') ?? '';
     return spaceId ? listPages(env, spaceId, actorId) : error('缺少目标空间', 400);
   }
 

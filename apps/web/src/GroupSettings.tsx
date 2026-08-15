@@ -186,7 +186,10 @@ export function GroupSettings({
                     <option value="">选择组织成员…</option>
                     {organizationMembers
                       .filter(
-                        (member) => member.status === 'active' && !memberIds.has(member.userId),
+                        (member) =>
+                          member.status === 'active' &&
+                          member.role !== 'guest' &&
+                          !memberIds.has(member.userId),
                       )
                       .map((member) => (
                         <option key={member.userId} value={member.userId}>
