@@ -191,6 +191,16 @@ export interface DatabaseTemplateSummary {
   updatedAt: number;
 }
 
+export interface ProjectWorkspaceSummary {
+  hubPageId: string;
+  projectsPageId: string;
+  tasksPageId: string;
+  sprintsPageId: string;
+  projectsDatabaseId: string;
+  tasksDatabaseId: string;
+  sprintsDatabaseId: string;
+}
+
 export interface DatabaseSummary {
   id: string;
   organizationId: string;

@@ -828,6 +828,127 @@ describe('structured database integration', () => {
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     database.close();
   });
+
+  it('creates an atomic project, task and Sprint workspace with live progress rollups', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'projects');
+    const outsider = seedTenant(database, 'projects-outsider');
+    const env = testEnv(database);
+    const denied = await handleDatabasesApi(
+      new Request('https://docs.test/api/spaces/spc_projects/project-workspaces', {
+        method: 'POST',
+      }),
+      env,
+      outsider,
+    );
+    expect(denied?.status).toBe(404);
+    const response = await handleDatabasesApi(
+      new Request('https://docs.test/api/spaces/spc_projects/project-workspaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '研发项目中心' }),
+      }),
+      env,
+      owner,
+    );
+    expect(response?.status).toBe(201);
+    const result = (await response?.json()) as {
+      workspace: {
+        hubPageId: string;
+        projectsPageId: string;
+        tasksPageId: string;
+        sprintsPageId: string;
+        projectsDatabaseId: string;
+        tasksDatabaseId: string;
+        sprintsDatabaseId: string;
+      };
+    };
+    expect(
+      database
+        .prepare('SELECT title, parent_id FROM pages WHERE id IN (?, ?, ?, ?) ORDER BY title')
+        .all(
+          result.workspace.hubPageId,
+          result.workspace.projectsPageId,
+          result.workspace.tasksPageId,
+          result.workspace.sprintsPageId,
+        ),
+    ).toEqual([
+      expect.objectContaining({ title: 'Sprint', parent_id: result.workspace.hubPageId }),
+      expect.objectContaining({ title: '任务', parent_id: result.workspace.hubPageId }),
+      expect.objectContaining({ title: '研发项目中心', parent_id: null }),
+      expect.objectContaining({ title: '项目', parent_id: result.workspace.hubPageId }),
+    ]);
+    expect(
+      database
+        .prepare(
+          `SELECT database_id, COUNT(*) AS total FROM database_views
+            WHERE database_id IN (?, ?, ?) GROUP BY database_id ORDER BY total`,
+        )
+        .all(
+          result.workspace.projectsDatabaseId,
+          result.workspace.tasksDatabaseId,
+          result.workspace.sprintsDatabaseId,
+        ),
+    ).toEqual([
+      expect.objectContaining({ total: 3 }),
+      expect.objectContaining({ total: 3 }),
+      expect.objectContaining({ total: 4 }),
+    ]);
+    const projectProperties = database
+      .prepare('SELECT id, name FROM database_properties WHERE database_id = ?')
+      .all(result.workspace.projectsDatabaseId) as Array<{ id: string; name: string }>;
+    const taskProperties = database
+      .prepare('SELECT id, name FROM database_properties WHERE database_id = ?')
+      .all(result.workspace.tasksDatabaseId) as Array<{ id: string; name: string }>;
+    const propertyId = (properties: Array<{ id: string; name: string }>, name: string) =>
+      properties.find((property) => property.name === name)?.id ?? '';
+    const projectRowResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${result.workspace.projectsDatabaseId}/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          values: { [propertyId(projectProperties, '项目名称')]: 'Rdocs 2.0' },
+        }),
+      }),
+      env,
+      owner,
+    );
+    const projectRow = (await projectRowResponse?.json()) as { row: { id: string } };
+    const taskRowResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${result.workspace.tasksDatabaseId}/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          values: {
+            [propertyId(taskProperties, '任务名称')]: '项目模板',
+            [propertyId(taskProperties, '完成')]: true,
+            [propertyId(taskProperties, '所属项目')]: [projectRow.row.id],
+          },
+        }),
+      }),
+      env,
+      owner,
+    );
+    expect(taskRowResponse?.status).toBe(201);
+    const taskRow = (await taskRowResponse?.json()) as { row: { id: string } };
+    expect(
+      database
+        .prepare('SELECT value_json FROM database_cells WHERE row_id = ? AND property_id = ?')
+        .get(projectRow.row.id, propertyId(projectProperties, '任务')),
+    ).toMatchObject({ value_json: JSON.stringify([taskRow.row.id]) });
+    expect(propertyId(projectProperties, '完成度')).not.toBe('');
+    const projectsSnapshot = await handleDatabasesApi(
+      new Request(`https://docs.test/api/databases/${result.workspace.projectsDatabaseId}`),
+      env,
+      owner,
+    );
+    const projects = (await projectsSnapshot?.json()) as {
+      rows: Array<{ values: Record<string, unknown> }>;
+    };
+    expect(projects.rows[0]?.values[propertyId(projectProperties, '完成度')]).toBe(100);
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    database.close();
+  });
 });
 
 describe('tenant boundary integration', () => {

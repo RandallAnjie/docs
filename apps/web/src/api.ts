@@ -30,6 +30,7 @@ import type {
   PageSearchResult,
   PageSummary,
   PublicDatabaseFormDefinition,
+  ProjectWorkspaceSummary,
   RecentPageResult,
   RestoreRevisionResponse,
   ShareLinkSummary,
@@ -128,6 +129,16 @@ export function createPage(
   return request('/api/pages', {
     method: 'POST',
     body: JSON.stringify({ title, parentId, spaceId }),
+  });
+}
+
+export function createProjectWorkspace(
+  spaceId: string,
+  name = '项目中心',
+): Promise<{ workspace: ProjectWorkspaceSummary }> {
+  return request(`/api/spaces/${encodeURIComponent(spaceId)}/project-workspaces`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
   });
 }
 

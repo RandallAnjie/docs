@@ -802,6 +802,19 @@ button {
   border-color: #c9b3a9;
   background: #fff8f5;
 }
+.template-grid .template-project-workspace {
+  grid-column: 1 / -1;
+  border-color: #cadfcf;
+  background: #f7fbf8;
+}
+.template-grid .template-project-workspace:hover {
+  border-color: #91bd9c;
+  background: #eff8f1;
+}
+.template-grid .template-project-workspace > span {
+  background: #e1f1e5;
+  color: #3f7d50;
+}
 .template-grid button > span {
   display: grid;
   grid-row: 1 / span 2;

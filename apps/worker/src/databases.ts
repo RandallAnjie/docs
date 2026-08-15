@@ -13,10 +13,16 @@ import {
   type DatabaseFormLinkSummary,
   type JsonValue,
   type PublicDatabaseFormDefinition,
+  type ProjectWorkspaceSummary,
   type SpaceRole,
 } from '@rdocs/shared';
 
-import { effectivePageGrantRole, findActiveMembership, requirePageAction } from './access';
+import {
+  effectivePageGrantRole,
+  findActiveMembership,
+  requirePageAction,
+  requireSpaceAction,
+} from './access';
 import { evaluateDatabaseFormulaProperties } from './database-formula-graph';
 import { isComputedDatabaseProperty, normalizeDatabaseCellValue } from './database-values';
 import type { Env } from './env';
@@ -525,6 +531,10 @@ function rollup(values: JsonValue[], calculation: string): JsonValue {
     case 'percent_not_empty':
       return values.length
         ? (values.filter((value) => value !== null && value !== '').length / values.length) * 100
+        : 0;
+    case 'percent_checked':
+      return values.length
+        ? (values.filter((value) => value === true).length / values.length) * 100
         : 0;
     case 'sum':
       return values.reduce<number>(
@@ -2735,12 +2745,271 @@ export async function handlePublicDatabaseFormsApi(
   );
 }
 
+async function createProjectWorkspace(
+  request: Request,
+  env: Env,
+  spaceId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const access = await requireSpaceAction(env, spaceId, actor.id, 'create_child');
+  if (!access) return error('空间不存在或无权创建项目工作区', 404);
+  const input = (await requestBody(request)) ?? {};
+  const name = entityName(input.name ?? '项目中心', 100);
+  if (!name) return error('项目工作区名称无效', 400);
+  const now = Date.now();
+  const hubPageId = crypto.randomUUID();
+  const projectsPageId = crypto.randomUUID();
+  const tasksPageId = crypto.randomUUID();
+  const sprintsPageId = crypto.randomUUID();
+  const projectsDatabaseId = crypto.randomUUID();
+  const tasksDatabaseId = crypto.randomUUID();
+  const sprintsDatabaseId = crypto.randomUUID();
+
+  const projectTitleId = crypto.randomUUID();
+  const projectStatusId = crypto.randomUUID();
+  const projectOwnerId = crypto.randomUUID();
+  const projectDateId = crypto.randomUUID();
+  const projectPriorityId = crypto.randomUUID();
+  const projectTasksId = crypto.randomUUID();
+  const projectProgressId = crypto.randomUUID();
+  const taskTitleId = crypto.randomUUID();
+  const taskStatusId = crypto.randomUUID();
+  const taskAssigneeId = crypto.randomUUID();
+  const taskDateId = crypto.randomUUID();
+  const taskPriorityId = crypto.randomUUID();
+  const taskEstimateId = crypto.randomUUID();
+  const taskDoneId = crypto.randomUUID();
+  const taskProjectId = crypto.randomUUID();
+  const taskSprintId = crypto.randomUUID();
+  const taskDependencyId = crypto.randomUUID();
+  const taskParentId = crypto.randomUUID();
+  const sprintTitleId = crypto.randomUUID();
+  const sprintStatusId = crypto.randomUUID();
+  const sprintOwnerId = crypto.randomUUID();
+  const sprintDateId = crypto.randomUUID();
+  const sprintGoalId = crypto.randomUUID();
+  const sprintTasksId = crypto.randomUUID();
+
+  const statements: D1PreparedStatement[] = [];
+  const addPage = (id: string, parentId: string | null, title: string, sortOrder: number) => {
+    const sortKey = `${now.toString().padStart(20, '0')}:${sortOrder}:${id}`;
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           current_generation, editor_schema_version, created_by, updated_by, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+      ).bind(
+        id,
+        access.organizationId,
+        spaceId,
+        parentId,
+        title,
+        sortKey,
+        EDITOR_SCHEMA_VERSION,
+        actor.id,
+        actor.id,
+        now,
+        now,
+      ),
+      env.DB.prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, updated_at)
+         VALUES (?, 1, 1, ?)`,
+      ).bind(id, now),
+      env.DB.prepare(
+        `INSERT INTO page_search_projection(
+           page_id, organization_id, space_id, generation, collab_seq,
+           title, normalized_body, updated_at
+         ) VALUES (?, ?, ?, 1, 0, ?, '', ?)`,
+      ).bind(id, access.organizationId, spaceId, title, now),
+      env.DB.prepare(
+        'INSERT INTO page_search_fts(page_id, title, normalized_body) VALUES (?, ?, ?)',
+      ).bind(id, searchIndexText(title), searchIndexText(title)),
+    );
+  };
+  addPage(hubPageId, null, name, 0);
+  addPage(projectsPageId, hubPageId, '项目', 1);
+  addPage(tasksPageId, hubPageId, '任务', 2);
+  addPage(sprintsPageId, hubPageId, 'Sprint', 3);
+
+  const addDatabase = (id: string, pageId: string) => {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO databases(
+           id, organization_id, page_id, is_locked, created_by, updated_by, created_at, updated_at
+         ) VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+      ).bind(id, access.organizationId, pageId, actor.id, actor.id, now, now),
+      env.DB.prepare(
+        `INSERT INTO database_counters(database_id, next_row_sequence) VALUES (?, 1)
+         ON CONFLICT(database_id) DO NOTHING`,
+      ).bind(id),
+    );
+  };
+  addDatabase(projectsDatabaseId, projectsPageId);
+  addDatabase(tasksDatabaseId, tasksPageId);
+  addDatabase(sprintsDatabaseId, sprintsPageId);
+
+  const addProperty = (
+    id: string,
+    databaseId: string,
+    name: string,
+    type: DatabasePropertyType,
+    sortOrder: number,
+    config: Record<string, JsonValue> = {},
+  ) => {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO database_properties(
+           id, organization_id, database_id, name, type, config_json, sort_order,
+           created_by, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        id,
+        access.organizationId,
+        databaseId,
+        name,
+        type,
+        JSON.stringify(config),
+        sortOrder,
+        actor.id,
+        now,
+        now,
+      ),
+    );
+  };
+  const statusOptions = { options: ['未开始', '进行中', '受阻', '已完成'] };
+  const sprintStatusOptions = { options: ['规划中', '进行中', '已完成'] };
+  const priorityOptions = { options: ['紧急', '高', '中', '低'] };
+  addProperty(projectTitleId, projectsDatabaseId, '项目名称', 'title', 0);
+  addProperty(projectStatusId, projectsDatabaseId, '状态', 'status', 1, statusOptions);
+  addProperty(projectOwnerId, projectsDatabaseId, '负责人', 'person', 2);
+  addProperty(projectDateId, projectsDatabaseId, '周期', 'date', 3);
+  addProperty(projectPriorityId, projectsDatabaseId, '优先级', 'select', 4, priorityOptions);
+  addProperty(projectTasksId, projectsDatabaseId, '任务', 'relation', 5, {
+    targetDatabaseId: tasksDatabaseId,
+    syncedPropertyId: taskProjectId,
+  });
+  addProperty(projectProgressId, projectsDatabaseId, '完成度', 'rollup', 6, {
+    relationPropertyId: projectTasksId,
+    targetDatabaseId: tasksDatabaseId,
+    targetPropertyId: taskDoneId,
+    calculation: 'percent_checked',
+  });
+
+  addProperty(taskTitleId, tasksDatabaseId, '任务名称', 'title', 0);
+  addProperty(taskStatusId, tasksDatabaseId, '状态', 'status', 1, statusOptions);
+  addProperty(taskAssigneeId, tasksDatabaseId, '负责人', 'person', 2);
+  addProperty(taskDateId, tasksDatabaseId, '日期', 'date', 3);
+  addProperty(taskPriorityId, tasksDatabaseId, '优先级', 'select', 4, priorityOptions);
+  addProperty(taskEstimateId, tasksDatabaseId, '估算', 'number', 5, { format: 'number' });
+  addProperty(taskDoneId, tasksDatabaseId, '完成', 'checkbox', 6);
+  addProperty(taskProjectId, tasksDatabaseId, '所属项目', 'relation', 7, {
+    targetDatabaseId: projectsDatabaseId,
+    syncedPropertyId: projectTasksId,
+  });
+  addProperty(taskSprintId, tasksDatabaseId, 'Sprint', 'relation', 8, {
+    targetDatabaseId: sprintsDatabaseId,
+    syncedPropertyId: sprintTasksId,
+  });
+  addProperty(taskDependencyId, tasksDatabaseId, '依赖任务', 'relation', 9, {
+    targetDatabaseId: tasksDatabaseId,
+  });
+  addProperty(taskParentId, tasksDatabaseId, '父任务', 'relation', 10, {
+    targetDatabaseId: tasksDatabaseId,
+  });
+
+  addProperty(sprintTitleId, sprintsDatabaseId, 'Sprint 名称', 'title', 0);
+  addProperty(sprintStatusId, sprintsDatabaseId, '状态', 'status', 1, sprintStatusOptions);
+  addProperty(sprintOwnerId, sprintsDatabaseId, '负责人', 'person', 2);
+  addProperty(sprintDateId, sprintsDatabaseId, '周期', 'date', 3);
+  addProperty(sprintGoalId, sprintsDatabaseId, '目标', 'text', 4);
+  addProperty(sprintTasksId, sprintsDatabaseId, '任务', 'relation', 5, {
+    targetDatabaseId: tasksDatabaseId,
+    syncedPropertyId: taskSprintId,
+  });
+
+  const addView = (
+    databaseId: string,
+    name: string,
+    type: DatabaseViewType,
+    sortOrder: number,
+    config: Record<string, JsonValue> = {},
+  ) => {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO database_views(
+           id, organization_id, database_id, name, type, config_json, sort_order,
+           created_by, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        access.organizationId,
+        databaseId,
+        name,
+        type,
+        JSON.stringify(config),
+        sortOrder,
+        actor.id,
+        now,
+        now,
+      ),
+    );
+  };
+  addView(projectsDatabaseId, '所有项目', 'table', 0);
+  addView(projectsDatabaseId, '按状态', 'board', 1, { groupPropertyId: projectStatusId });
+  addView(projectsDatabaseId, '项目时间线', 'timeline', 2, { datePropertyId: projectDateId });
+  addView(tasksDatabaseId, '所有任务', 'table', 0);
+  addView(tasksDatabaseId, '任务看板', 'board', 1, { groupPropertyId: taskStatusId });
+  addView(tasksDatabaseId, '任务日历', 'calendar', 2, { datePropertyId: taskDateId });
+  addView(tasksDatabaseId, '任务时间线', 'timeline', 3, { datePropertyId: taskDateId });
+  addView(sprintsDatabaseId, '所有 Sprint', 'table', 0);
+  addView(sprintsDatabaseId, 'Sprint 看板', 'board', 1, { groupPropertyId: sprintStatusId });
+  addView(sprintsDatabaseId, 'Sprint 时间线', 'timeline', 2, { datePropertyId: sprintDateId });
+
+  const summary: ProjectWorkspaceSummary = {
+    hubPageId,
+    projectsPageId,
+    tasksPageId,
+    sprintsPageId,
+    projectsDatabaseId,
+    tasksDatabaseId,
+    sprintsDatabaseId,
+  };
+  statements.push(
+    env.DB.prepare(
+      `INSERT INTO audit_events(
+         id, organization_id, actor_id, event_type, target_type,
+         target_id, metadata_json, created_at
+       ) VALUES (?, ?, ?, 'project.workspace.created', 'page', ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      access.organizationId,
+      actor.id,
+      hubPageId,
+      JSON.stringify(summary),
+      now,
+    ),
+  );
+  await env.DB.batch(statements);
+  return json({ workspace: summary }, { status: 201 });
+}
+
 export async function handleDatabasesApi(
   request: Request,
   env: Env,
   actor: AuthUserSummary,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+
+  const projectWorkspaceMatch = url.pathname.match(/^\/api\/spaces\/([^/]+)\/project-workspaces$/);
+  if (projectWorkspaceMatch?.[1] && request.method === 'POST') {
+    return createProjectWorkspace(
+      request,
+      env,
+      decodeURIComponent(projectWorkspaceMatch[1]),
+      actor,
+    );
+  }
 
   const templateRowMatch = url.pathname.match(
     /^\/api\/databases\/([^/]+)\/templates\/([^/]+)\/rows$/,

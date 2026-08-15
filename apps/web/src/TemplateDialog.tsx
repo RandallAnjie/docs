@@ -3,7 +3,7 @@ import { useState } from 'react';
 
 import type { SpaceSummary } from '@rdocs/shared';
 
-import { importMarkdown } from './api';
+import { createProjectWorkspace, importMarkdown } from './api';
 
 const TEMPLATES = [
   {
@@ -57,6 +57,19 @@ export function TemplateDialog({ space, onClose }: { space: SpaceSummary; onClos
     }
   };
 
+  const createProjects = async () => {
+    if (creatingId) return;
+    setCreatingId('project-workspace');
+    setError(null);
+    try {
+      const { workspace } = await createProjectWorkspace(space.id);
+      window.location.assign(`/p/${encodeURIComponent(workspace.projectsPageId)}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法创建项目工作区');
+      setCreatingId(null);
+    }
+  };
+
   return (
     <div className="dialog-backdrop" role="presentation">
       <section className="rdocs-dialog template-dialog" role="dialog" aria-modal="true">
@@ -69,6 +82,22 @@ export function TemplateDialog({ space, onClose }: { space: SpaceSummary; onClos
         <h2>从模板创建</h2>
         <p>在“{space.name}”中创建一个带有实用结构的新页面。</p>
         <div className="template-grid">
+          <button
+            className="template-project-workspace"
+            type="button"
+            onClick={() => void createProjects()}
+            disabled={Boolean(creatingId)}
+          >
+            <span>
+              <FolderKanban size={18} />
+            </span>
+            <strong>项目工作区</strong>
+            <small>
+              {creatingId === 'project-workspace'
+                ? '正在创建项目、任务和 Sprint…'
+                : '关联的项目、任务、Sprint、看板、日历与时间线'}
+            </small>
+          </button>
           {TEMPLATES.map((template) => {
             const Icon = template.icon;
             return (
