@@ -432,9 +432,7 @@ export async function handlePublicApi(
     if (!isPageId(pageId)) return cors(error('页面 ID 无效', 400));
     if (request.method === 'GET') {
       const authorized = await authorizePage(env, pageId, auth.user.id, 'view');
-      return cors(
-        authorized ? json({ page: authorized }) : error('页面不存在或无权访问', 404),
-      );
+      return cors(authorized ? json({ page: authorized }) : error('页面不存在或无权访问', 404));
     }
     if (request.method === 'PATCH') {
       const authorized = await authorizePage(env, pageId, auth.user.id, 'edit_content');
@@ -1285,6 +1283,16 @@ async function loadEnterpriseSettings(
   };
 }
 
+function aiApiKey(env: Env): string | null {
+  const key = env.AI_API_KEY?.trim() || env.XAI_API_KEY?.trim() || '';
+  return key || null;
+}
+
+function aiApiBase(env: Env): string {
+  const raw = env.AI_API_BASE?.trim() || 'https://api.x.ai/v1';
+  return raw.replace(/\/+$/, '');
+}
+
 async function loadAiSettings(env: Env, organizationId: string): Promise<AiSettingsSummary> {
   const row = await env.DB.prepare(
     'SELECT organization_id, enabled, model, retention, updated_at FROM ai_settings WHERE organization_id = ?',
@@ -1302,7 +1310,7 @@ async function loadAiSettings(env: Env, organizationId: string): Promise<AiSetti
     enabled: row ? Boolean(row.enabled) : true,
     model: row?.model ?? 'grok-4.5',
     retention: row?.retention ?? 'none',
-    configured: Boolean(env.XAI_API_KEY),
+    configured: Boolean(aiApiKey(env)),
     updatedAt: Number(row?.updated_at ?? 0),
   };
 }
@@ -1332,7 +1340,9 @@ async function runPageAi(
   const jobId = crypto.randomUUID();
   const now = Date.now();
   const citations = [{ pageId: authorized.id, title: authorized.title }];
-  if (!env.XAI_API_KEY) {
+  const apiKey = aiApiKey(env);
+  const apiBase = aiApiBase(env);
+  if (!apiKey) {
     await env.DB.prepare(
       `INSERT INTO ai_jobs(
          id, organization_id, actor_id, page_id, kind, status, prompt, result_text,
@@ -1362,7 +1372,8 @@ async function runPageAi(
       prompt,
       resultText: null,
       citations,
-      errorMessage: '未配置模型密钥。设置 XAI_API_KEY 后即可启用权限感知的写作、总结和问答。',
+      errorMessage:
+        '未配置模型密钥。设置 AI_API_KEY 与 AI_API_BASE 后即可启用权限感知的写作、总结和问答。',
       createdAt: now,
       completedAt: now,
     };
@@ -1375,10 +1386,10 @@ async function runPageAi(
   let status: AiJobSummary['status'] = 'succeeded';
   let errorMessage: string | null = null;
   try {
-    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+    const response = await fetch(`${apiBase}/chat/completions`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${env.XAI_API_KEY}`,
+        authorization: `Bearer ${apiKey}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({

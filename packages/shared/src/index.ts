@@ -741,6 +741,7 @@ export interface AuthSessionResponse {
   user: AuthUserSummary | null;
   passkeyConfigured: boolean;
   enrollmentConfigured: boolean;
+  registrationOpen: boolean;
   expectedOrigin: string | null;
 }
 

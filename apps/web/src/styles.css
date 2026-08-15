@@ -251,6 +251,49 @@ button {
   color: #44413b;
   white-space: nowrap;
 }
+.landing-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.landing-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 56px;
+  max-width: 720px;
+}
+.landing-feature-grid article {
+  padding: 18px 18px 16px;
+  border: 1px solid #e3ddd4;
+  border-radius: 14px;
+  background: #fbfaf7cc;
+  box-shadow: 0 10px 28px #2928240d;
+}
+.landing-feature-grid svg {
+  color: var(--accent);
+}
+.landing-feature-grid strong {
+  display: block;
+  margin: 10px 0 6px;
+  color: #2f2c27;
+  font-size: 14px;
+}
+.landing-feature-grid p {
+  margin: 0;
+  color: #716d66;
+  font-size: 13px;
+  line-height: 1.6;
+}
+@media (max-width: 720px) {
+  .landing-feature-grid {
+    grid-template-columns: 1fr;
+  }
+  .welcome-actions {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
 .welcome-orbit {
   position: absolute;
   border: 1px solid #bf785b35;
@@ -380,6 +423,7 @@ button {
 }
 .auth-switch {
   display: block;
+  width: fit-content;
   margin: 18px auto 0;
   padding: 4px;
   border: 0;
@@ -387,6 +431,7 @@ button {
   background: transparent;
   color: #615e57;
   font-size: 11px;
+  text-decoration: none;
   cursor: pointer;
 }
 .auth-switch:disabled {

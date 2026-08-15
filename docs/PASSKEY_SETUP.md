@@ -10,11 +10,15 @@ Rdocs 使用 WebAuthn 设备密钥，不走 GitHub OAuth，不保存密码，也
 - 生产和仓库配置均为 `AUTH_MODE=passkey`。
 - 服务端不再包含匿名 Phase 0 业务模式；即使误配为 `phase0` 也会保持设备密钥登录。
 - 一次性的 `PASSKEY_ENROLLMENT_SECRET` 已从 Rdocs Worker 和本机删除，不能恢复，也不影响已有设备密钥登录。
-- 未登录用户只能使用仍有效的只读页面分享链接。
+- 未登录用户默认看到落地页；登录和注册都使用设备密钥。公开只读分享与 Sites 仍不需要登录。
 
 ## 日常登录
 
-打开 `https://docs.bigrandall.io`，选择“使用设备密钥登录”，再用系统认证器完成验证。登录采用 discoverable credential，不需要先输入用户名。验证成功后，Worker 写入 `Secure`、`HttpOnly` 的应用会话 Cookie；D1 只保存会话令牌哈希。
+打开 `https://docs.bigrandall.io/login`，选择“使用设备密钥登录”，再用系统认证器完成验证。登录采用 discoverable credential，不需要先输入用户名。验证成功后，Worker 写入 `Secure`、`HttpOnly` 的应用会话 Cookie；D1 只保存会话令牌哈希。
+
+## 自助注册
+
+打开 `https://docs.bigrandall.io/register`，填写显示名称和邮箱，然后在本机创建 Passkey。邮箱只做账号标识，不设密码。注册成功后会自动创建一个个人工作区。组织邀请链接仍然可用，被邀请人用同一套设备密钥流程加入已有组织。
 
 写请求的 `Origin` 必须精确为 `https://docs.bigrandall.io`。其他域名、缺少 Origin 或没有有效会话的业务请求都会被拒绝。
 

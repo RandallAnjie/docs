@@ -246,7 +246,9 @@ export function PlatformSettings({
       {tab === 'ai' ? (
         <p>
           <Sparkles size={16} /> 页面 AI 走 SpaceXAI（xAI）。当前
-          {aiConfigured ? '已配置模型密钥。' : '未配置 XAI_API_KEY，请求会安全降级并留下审计。'}
+          {aiConfigured
+            ? '已配置模型端点与密钥。'
+            : '未配置 AI_API_KEY / AI_API_BASE，请求会安全降级并留下审计。把端点和密钥交给我后即可写入 RandallFlare。'}
         </p>
       ) : null}
 

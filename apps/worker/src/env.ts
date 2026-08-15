@@ -12,4 +12,6 @@ export interface Env {
   ENVIRONMENT?: string;
   RELEASE_SHA?: string;
   XAI_API_KEY?: string;
+  AI_API_KEY?: string;
+  AI_API_BASE?: string;
 }

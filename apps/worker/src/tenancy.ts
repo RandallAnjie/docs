@@ -450,6 +450,60 @@ async function createOrganization(
   );
 }
 
+export async function provisionPersonalWorkspace(env: Env, actor: AuthUserSummary): Promise<void> {
+  const existing = await env.DB.prepare(
+    `SELECT 1 AS found FROM organization_members
+      WHERE user_id = ? AND status = 'active' LIMIT 1`,
+  )
+    .bind(actor.id)
+    .first<{ found: number }>();
+  if (existing) return;
+  const name = `${actor.displayName} 的工作区`.slice(0, MAX_NAME_LENGTH);
+  const slug = normalizedSlug(name, 'ws');
+  if (!slug) return;
+  const organizationId = crypto.randomUUID();
+  const spaceId = crypto.randomUUID();
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO organizations(id, name, slug, created_by, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+    ).bind(organizationId, name, slug, actor.id, now, now),
+    env.DB.prepare(
+      `INSERT INTO organization_members(
+        organization_id, user_id, role, status, joined_at, updated_at
+      ) VALUES (?, ?, 'owner', 'active', ?, ?)`,
+    ).bind(organizationId, actor.id, now, now),
+    env.DB.prepare(
+      `INSERT INTO spaces(
+        id, organization_id, name, slug, icon, visibility, created_by,
+        created_at, updated_at, archived_at, deleted_at
+      ) VALUES (?, ?, '通用空间', 'general', 'book-open', 'organization', ?, ?, ?, NULL, NULL)`,
+    ).bind(spaceId, organizationId, actor.id, now, now),
+    env.DB.prepare(
+      `INSERT INTO space_grants(
+        id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+      ) VALUES (?, ?, ?, 'user', ?, 'space_admin', ?, ?)`,
+    ).bind(crypto.randomUUID(), organizationId, spaceId, actor.id, actor.id, now),
+    env.DB.prepare(
+      `INSERT INTO space_grants(
+        id, organization_id, space_id, principal_type, principal_id, role, created_by, created_at
+      ) VALUES (?, ?, ?, 'organization', ?, 'viewer', ?, ?)`,
+    ).bind(crypto.randomUUID(), organizationId, spaceId, organizationId, actor.id, now),
+    auditStatement(
+      env,
+      organizationId,
+      actor.id,
+      'organization.created',
+      'organization',
+      organizationId,
+      {
+        source: 'passkey_registration',
+      },
+    ),
+  ]);
+}
+
 async function updateOrganization(
   request: Request,
   env: Env,

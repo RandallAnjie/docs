@@ -173,6 +173,7 @@ import { SpaceAccessDialog } from './SpaceAccessDialog';
 import { SpaceTrashDialog } from './SpaceTrashDialog';
 import { TemplateDialog } from './TemplateDialog';
 import {
+  authViewFromPath,
   commentThreadIdFromHash,
   installInAppNavigation,
   navigateHome,
@@ -180,6 +181,7 @@ import {
   pageIdFromPath,
   useAppLocation,
 } from './navigation';
+import { LandingPage } from './LandingPage';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
 
@@ -515,6 +517,7 @@ async function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
 export function App() {
   const location = useAppLocation();
   const pageId = pageIdFromPath(location.pathname);
+  const authView = authViewFromPath(location.pathname);
   const invitationToken = currentInvitationToken();
   const shareToken = currentShareToken();
   const formToken = currentFormToken();
@@ -539,6 +542,12 @@ export function App() {
     if (formToken || shareToken || siteRoute) return;
     void refreshSession().catch(() => undefined);
   }, [formToken, refreshSession, shareToken, siteRoute?.pageSlug, siteRoute?.siteSlug]);
+
+  useEffect(() => {
+    if (session?.authenticated && (authView === 'login' || authView === 'register')) {
+      navigateHome({ replace: true });
+    }
+  }, [authView, session?.authenticated]);
 
   useEffect(() => {
     if (formToken || shareToken || siteRoute) return;
@@ -570,13 +579,27 @@ export function App() {
     );
   }
   if (!session.authenticated || !session.user) {
-    return (
-      <PasskeyGate
-        session={session}
-        invitationToken={invitationToken}
-        onAuthenticated={refreshSession}
-      />
-    );
+    if (invitationToken || authView === 'register') {
+      return (
+        <PasskeyGate
+          session={session}
+          mode="register"
+          invitationToken={invitationToken}
+          onAuthenticated={refreshSession}
+        />
+      );
+    }
+    if (pageId || authView === 'login') {
+      return (
+        <PasskeyGate
+          session={session}
+          mode="login"
+          invitationToken={null}
+          onAuthenticated={refreshSession}
+        />
+      );
+    }
+    return <LandingPage />;
   }
 
   const identity = identityFromUser(session.user);
@@ -716,22 +739,27 @@ function passkeyErrorMessage(reason: unknown): string {
 
 function PasskeyGate({
   session,
+  mode,
   invitationToken,
   onAuthenticated,
 }: {
   session: AuthSessionResponse;
+  mode: 'login' | 'register';
   invitationToken: string | null;
   onAuthenticated: () => Promise<void>;
 }) {
-  const [registering, setRegistering] = useState(Boolean(invitationToken));
+  const [registering, setRegistering] = useState(mode === 'register' || Boolean(invitationToken));
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [enrollmentSecret, setEnrollmentSecret] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const supported = browserSupportsWebAuthn();
   const originMatches =
     !session.expectedOrigin || window.location.origin === session.expectedOrigin;
+
+  useEffect(() => {
+    setRegistering(mode === 'register' || Boolean(invitationToken));
+  }, [invitationToken, mode]);
 
   const authenticate = async () => {
     if (busy) return;
@@ -758,7 +786,6 @@ function PasskeyGate({
       const { challengeId, options } = await beginPasskeyRegistration({
         email,
         displayName,
-        enrollmentSecret: invitationToken ? undefined : enrollmentSecret,
         invitationToken: invitationToken ?? undefined,
       });
       const response = await startRegistration({ optionsJSON: options });
@@ -830,18 +857,6 @@ function PasskeyGate({
                 required
               />
             </label>
-            {!invitationToken ? (
-              <label>
-                管理员设备登记码
-                <input
-                  type="password"
-                  value={enrollmentSecret}
-                  onChange={(event) => setEnrollmentSecret(event.target.value)}
-                  autoComplete="one-time-code"
-                  required
-                />
-              </label>
-            ) : null}
             <button className="primary-button" type="submit" disabled={busy}>
               <KeyRound size={17} />
               {busy ? '正在验证设备…' : '创建设备密钥'}
@@ -864,22 +879,14 @@ function PasskeyGate({
             {error}
           </p>
         ) : null}
-        {!unavailable && (session.enrollmentConfigured || invitationToken) ? (
-          <button
-            className="auth-switch"
-            type="button"
-            onClick={() => {
-              setRegistering((value) => !value);
-              setError(null);
-            }}
-            disabled={busy}
-          >
-            {registering ? '已有设备密钥？返回登录' : '首次使用？登记这台设备'}
-          </button>
+        {!unavailable ? (
+          <a className="auth-switch" href={registering ? '/login' : '/register'}>
+            {registering ? '已有设备密钥？返回登录' : '还没有账号？用设备密钥注册'}
+          </a>
         ) : null}
-        {!unavailable && !session.enrollmentConfigured && !invitationToken ? (
-          <p className="auth-enrollment-note">新设备登记未开放，已有设备密钥仍可正常登录。</p>
-        ) : null}
+        <a className="auth-switch" href="/" style={{ marginTop: 10 }}>
+          返回首页
+        </a>
         <small className="auth-footnote">私钥不会离开设备 · 用户验证必需 · 会话可随时撤销</small>
       </section>
     </main>

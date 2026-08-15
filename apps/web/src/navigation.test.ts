@@ -33,6 +33,14 @@ describe('page navigation helpers', () => {
       },
     );
     expect(resolveInAppNavigation('/', 'https://docs.bigrandall.io')).toEqual({ type: 'home' });
+    expect(resolveInAppNavigation('/login', 'https://docs.bigrandall.io')).toEqual({
+      type: 'path',
+      path: '/login',
+    });
+    expect(resolveInAppNavigation('/register', 'https://docs.bigrandall.io')).toEqual({
+      type: 'path',
+      path: '/register',
+    });
     expect(resolveInAppNavigation('/?settings=1', 'https://docs.bigrandall.io')).toBeNull();
     expect(
       resolveInAppNavigation('https://example.com/p/page_1', 'https://docs.bigrandall.io'),
