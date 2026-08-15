@@ -1,0 +1,331 @@
+import DragHandle from '@tiptap/extension-drag-handle-react';
+import type { Editor } from '@tiptap/core';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import {
+  ArrowDown,
+  ArrowUp,
+  CheckSquare,
+  Code2,
+  Copy,
+  GripVertical,
+  Heading1,
+  Heading2,
+  Heading3,
+  List,
+  ListOrdered,
+  MoreHorizontal,
+  Pilcrow,
+  Plus,
+  Quote,
+  Trash2,
+} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+
+import { moveTopLevelBlock, topLevelBlocks, type BlockDirection } from './editor-block-operations';
+
+const DRAG_POSITION = { placement: 'left-start', strategy: 'fixed' } as const;
+
+type BlockTransform =
+  | 'blockquote'
+  | 'bulletList'
+  | 'codeBlock'
+  | 'heading1'
+  | 'heading2'
+  | 'heading3'
+  | 'orderedList'
+  | 'paragraph'
+  | 'taskList';
+
+function firstTextblockPosition(node: ProseMirrorNode, position: number): number | null {
+  if (node.isTextblock) return position + 1;
+  let result: number | null = null;
+  node.descendants((child, offset) => {
+    if (result !== null) return false;
+    if (child.isTextblock) {
+      result = position + offset + 2;
+      return false;
+    }
+    return true;
+  });
+  return result;
+}
+
+function unwrapCurrentBlock(editor: Editor, nodeName: string, textPosition: number) {
+  const chain = editor.chain().focus().setTextSelection(textPosition);
+  switch (nodeName) {
+    case 'bulletList':
+      return chain.toggleBulletList();
+    case 'orderedList':
+      return chain.toggleOrderedList();
+    case 'taskList':
+      return chain.toggleTaskList();
+    case 'blockquote':
+      return chain.toggleBlockquote();
+    case 'codeBlock':
+      return chain.toggleCodeBlock();
+    default:
+      return chain;
+  }
+}
+
+function transformBlock(editor: Editor, position: number, transform: BlockTransform): void {
+  const node = editor.state.doc.nodeAt(position);
+  if (!node) return;
+  const textPosition = firstTextblockPosition(node, position);
+  if (textPosition === null) return;
+  const chain = unwrapCurrentBlock(editor, node.type.name, textPosition);
+
+  switch (transform) {
+    case 'heading1':
+      chain.setHeading({ level: 1 }).run();
+      break;
+    case 'heading2':
+      chain.setHeading({ level: 2 }).run();
+      break;
+    case 'heading3':
+      chain.setHeading({ level: 3 }).run();
+      break;
+    case 'bulletList':
+      chain.setParagraph().toggleBulletList().run();
+      break;
+    case 'orderedList':
+      chain.setParagraph().toggleOrderedList().run();
+      break;
+    case 'taskList':
+      chain.setParagraph().toggleTaskList().run();
+      break;
+    case 'blockquote':
+      chain.setParagraph().toggleBlockquote().run();
+      break;
+    case 'codeBlock':
+      chain.setParagraph().toggleCodeBlock().run();
+      break;
+    default:
+      chain.setParagraph().run();
+  }
+}
+
+const TRANSFORMS: Array<{
+  icon: ReactNode;
+  id: BlockTransform;
+  label: string;
+}> = [
+  { id: 'paragraph', label: '正文', icon: <Pilcrow size={14} /> },
+  { id: 'heading1', label: '一级标题', icon: <Heading1 size={14} /> },
+  { id: 'heading2', label: '二级标题', icon: <Heading2 size={14} /> },
+  { id: 'heading3', label: '三级标题', icon: <Heading3 size={14} /> },
+  { id: 'bulletList', label: '无序列表', icon: <List size={14} /> },
+  { id: 'orderedList', label: '有序列表', icon: <ListOrdered size={14} /> },
+  { id: 'taskList', label: '待办清单', icon: <CheckSquare size={14} /> },
+  { id: 'blockquote', label: '引用', icon: <Quote size={14} /> },
+  { id: 'codeBlock', label: '代码块', icon: <Code2 size={14} /> },
+];
+
+const TRANSFORMABLE_BLOCKS = new Set([
+  'blockquote',
+  'bulletList',
+  'codeBlock',
+  'heading',
+  'orderedList',
+  'paragraph',
+  'taskList',
+]);
+
+export function EditorBlockHandle({ editor }: { editor: Editor }) {
+  const controls = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [targetPosition, setTargetPosition] = useState(-1);
+  const [targetNodeName, setTargetNodeName] = useState('');
+
+  const handleNodeChange = useCallback(
+    ({ node, pos }: { node: ProseMirrorNode | null; pos: number }) => {
+      if (menuOpen) return;
+      setTargetPosition(node ? pos : -1);
+      setTargetNodeName(node?.type.name ?? '');
+    },
+    [menuOpen],
+  );
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!controls.current?.contains(event.target as globalThis.Node)) setMenuOpen(false);
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', closeWithEscape);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', closeWithEscape);
+    };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', menuOpen));
+  }, [editor, menuOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (!editor.isDestroyed) {
+        editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', false));
+      }
+    };
+  }, [editor]);
+
+  const movement = useMemo(() => {
+    const blocks = topLevelBlocks(editor.state.doc);
+    const index = blocks.findIndex((block) => block.position === targetPosition);
+    return { down: index >= 0 && index < blocks.length - 1, up: index > 0 };
+  }, [editor.state.doc, targetPosition]);
+
+  const targetNode = targetPosition >= 0 ? editor.state.doc.nodeAt(targetPosition) : null;
+  const transformable = Boolean(targetNode && TRANSFORMABLE_BLOCKS.has(targetNode.type.name));
+
+  const insertBelow = () => {
+    const current = editor.state.doc.nodeAt(targetPosition);
+    if (!current) return;
+    const insertionPosition = targetPosition + current.nodeSize;
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(insertionPosition, {
+        type: 'paragraph',
+        content: [{ type: 'text', text: '/' }],
+      })
+      .setTextSelection(insertionPosition + 2)
+      .run();
+  };
+
+  const duplicate = () => {
+    const current = editor.state.doc.nodeAt(targetPosition);
+    if (!current) return;
+    const insertionPosition = targetPosition + current.nodeSize;
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(insertionPosition, current.toJSON())
+      .setNodeSelection(insertionPosition)
+      .run();
+    setMenuOpen(false);
+  };
+
+  const remove = () => {
+    const current = editor.state.doc.nodeAt(targetPosition);
+    if (!current) return;
+    editor
+      .chain()
+      .focus()
+      .deleteRange({ from: targetPosition, to: targetPosition + current.nodeSize })
+      .run();
+    setMenuOpen(false);
+  };
+
+  const move = (direction: BlockDirection) => {
+    const transaction = moveTopLevelBlock(editor.state, targetPosition, direction);
+    if (transaction) editor.view.dispatch(transaction);
+    setMenuOpen(false);
+  };
+
+  return (
+    <DragHandle
+      editor={editor}
+      className="rdocs-drag-handle-portal"
+      computePositionConfig={DRAG_POSITION}
+      nested={false}
+      onNodeChange={handleNodeChange}
+      onElementDragStart={() => setMenuOpen(false)}
+    >
+      <div className="rdocs-block-controls" ref={controls}>
+        <button
+          type="button"
+          className="rdocs-block-add"
+          title="在下方插入内容块"
+          aria-label="在下方插入内容块"
+          disabled={targetPosition < 0}
+          draggable={false}
+          onDragStart={(event) => event.preventDefault()}
+          onClick={insertBelow}
+        >
+          <Plus size={15} />
+        </button>
+        <span className="rdocs-block-grip" title="拖动内容块" aria-label="拖动内容块">
+          <GripVertical size={16} />
+        </span>
+        <button
+          type="button"
+          className="rdocs-block-more"
+          title="内容块菜单"
+          aria-label="内容块菜单"
+          disabled={targetPosition < 0}
+          draggable={false}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', true));
+          }}
+          onDragStart={(event) => event.preventDefault()}
+          onClick={() => setMenuOpen((current) => !current)}
+        >
+          <MoreHorizontal size={15} />
+        </button>
+        {menuOpen && targetNode ? (
+          <div
+            className="rdocs-block-menu"
+            role="menu"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <strong>内容块</strong>
+              <small>{targetNodeName}</small>
+            </header>
+            {transformable ? (
+              <>
+                <label>转换为</label>
+                <div className="rdocs-block-transform-grid">
+                  {TRANSFORMS.map((transform) => (
+                    <button
+                      key={transform.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        transformBlock(editor, targetPosition, transform.id);
+                        setMenuOpen(false);
+                      }}
+                    >
+                      {transform.icon}
+                      <span>{transform.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            <label>操作</label>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!movement.up}
+              onClick={() => move('up')}
+            >
+              <ArrowUp size={14} /> 上移
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!movement.down}
+              onClick={() => move('down')}
+            >
+              <ArrowDown size={14} /> 下移
+            </button>
+            <button type="button" role="menuitem" onClick={duplicate}>
+              <Copy size={14} /> 创建副本
+            </button>
+            <button type="button" role="menuitem" className="danger" onClick={remove}>
+              <Trash2 size={14} /> 删除
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </DragHandle>
+  );
+}

@@ -52,6 +52,14 @@ describe('Markdown import and export', () => {
 
 <!-- rdocs:table-of-contents -->
 
+<!-- rdocs:columns:start -->
+<!-- rdocs:column -->
+左栏内容
+
+<!-- rdocs:column -->
+右栏内容
+<!-- rdocs:columns:end -->
+
 $$
 E = mc^2
 $$`;
@@ -63,6 +71,9 @@ $$`;
     expect(exported).toContain('[🔖 Rdocs](https://docs.bigrandall.io/)');
     expect(exported).toContain('[▶ YouTube 嵌入](https://www.youtube.com/watch?v=dQw4w9WgXcQ)');
     expect(exported).toContain('<!-- rdocs:table-of-contents -->');
+    expect(exported).toContain('<!-- rdocs:columns:start -->');
+    expect(exported).toContain('左栏内容');
+    expect(exported).toContain('右栏内容');
     expect(exported).toContain('$$\nE = mc^2\n$$');
   });
 });
