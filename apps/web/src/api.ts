@@ -35,14 +35,55 @@ import type {
   RegistrationResponseJSON,
 } from '@simplewebauthn/browser';
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...init?.headers,
-    },
-  });
+interface RequestPolicy {
+  retryTransientGet?: boolean;
+  timeoutMs?: number;
+}
+
+const TRANSIENT_UPSTREAM_STATUSES = new Set([502, 503, 504]);
+
+function retryDelay(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+}
+
+async function request<T>(path: string, init?: RequestInit, policy?: RequestPolicy): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const mayRetry = Boolean(policy?.retryTransientGet && method === 'GET');
+  const attempts = mayRetry ? 2 : 1;
+  let response: Response | null = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      response = await fetch(path, {
+        ...init,
+        signal:
+          init?.signal ?? (policy?.timeoutMs ? AbortSignal.timeout(policy.timeoutMs) : undefined),
+        headers: {
+          'content-type': 'application/json',
+          ...init?.headers,
+        },
+      });
+    } catch (reason) {
+      if (mayRetry && attempt + 1 < attempts) {
+        await retryDelay();
+        continue;
+      }
+      if (reason instanceof DOMException && reason.name === 'TimeoutError') {
+        throw new Error('请求超时，请重试');
+      }
+      throw reason;
+    }
+
+    if (response.ok) return (await response.json()) as T;
+    if (mayRetry && attempt + 1 < attempts && TRANSIENT_UPSTREAM_STATUSES.has(response.status)) {
+      if (response.body) await response.body.cancel().catch(() => undefined);
+      await retryDelay();
+      continue;
+    }
+    break;
+  }
+
+  if (!response) throw new Error('请求失败');
 
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith('/api/auth/')) {
@@ -113,7 +154,11 @@ export async function exportMarkdown(pageId: string): Promise<void> {
 }
 
 export function listPages(spaceId?: string): Promise<ListPagesResponse> {
-  return request(spaceId ? `/api/spaces/${encodeURIComponent(spaceId)}/tree` : '/api/pages');
+  return request(
+    spaceId ? `/api/spaces/${encodeURIComponent(spaceId)}/tree` : '/api/pages',
+    undefined,
+    { retryTransientGet: true, timeoutMs: 5_000 },
+  );
 }
 
 export function searchPages(
