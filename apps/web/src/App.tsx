@@ -115,6 +115,7 @@ import { DiscoveryDialog } from './DiscoveryDialog';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
+import { PublicDatabaseForm } from './PublicDatabaseForm';
 import { ancestorPageIds, buildPageTree, descendantPageIds, type PageTreeNode } from './page-tree';
 import { RevisionPanel } from './RevisionPanel';
 import { SpaceAccessDialog } from './SpaceAccessDialog';
@@ -151,6 +152,11 @@ function currentShareToken(): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
+function currentFormToken(): string | null {
+  const match = window.location.pathname.match(/^\/forms\/([^/]+)\/?$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
 function navigateToPage(pageId: string): void {
   window.location.assign(`/p/${encodeURIComponent(pageId)}`);
 }
@@ -170,6 +176,7 @@ export function App() {
   const pageId = currentPageId();
   const invitationToken = currentInvitationToken();
   const shareToken = currentShareToken();
+  const formToken = currentFormToken();
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
@@ -185,14 +192,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (formToken || shareToken) return;
     void refreshSession().catch(() => undefined);
-  }, [refreshSession]);
+  }, [formToken, refreshSession, shareToken]);
 
   useEffect(() => {
+    if (formToken || shareToken) return;
     const handleAuthRequired = () => void refreshSession().catch(() => undefined);
     window.addEventListener('rdocs:auth-required', handleAuthRequired);
     return () => window.removeEventListener('rdocs:auth-required', handleAuthRequired);
-  }, [refreshSession]);
+  }, [formToken, refreshSession, shareToken]);
 
   const signOut = useCallback(async () => {
     try {
@@ -205,6 +214,7 @@ export function App() {
     }
   }, [refreshSession]);
 
+  if (formToken) return <PublicDatabaseForm token={formToken} />;
   if (shareToken) return <SharedPage token={shareToken} />;
 
   if (!session) {

@@ -39,6 +39,11 @@ export interface DatabaseRowGroup {
   rows: DatabaseRowSummary[];
 }
 
+export interface DatabaseCalendarDay {
+  date: string;
+  inMonth: boolean;
+}
+
 function valueText(value: JsonValue | undefined): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
@@ -250,4 +255,35 @@ export function databaseAggregationValue(
   if (aggregation === 'min') return String(Math.min(...numbers));
   if (aggregation === 'max') return String(Math.max(...numbers));
   return '—';
+}
+
+export function databaseCalendarDays(month: string): DatabaseCalendarDay[] {
+  const normalized = /^\d{4}-\d{2}$/.test(month) ? month : new Date().toISOString().slice(0, 7);
+  const first = new Date(`${normalized}-01T00:00:00.000Z`);
+  if (Number.isNaN(first.getTime())) return [];
+  const mondayOffset = (first.getUTCDay() + 6) % 7;
+  const start = new Date(first);
+  start.setUTCDate(start.getUTCDate() - mondayOffset);
+  return Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(start);
+    day.setUTCDate(start.getUTCDate() + index);
+    const date = day.toISOString().slice(0, 10);
+    return { date, inMonth: date.startsWith(normalized) };
+  });
+}
+
+export function moveDatabaseDate(value: JsonValue | undefined, date: string): JsonValue {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return value ?? null;
+  if (!value || typeof value === 'string' || Array.isArray(value) || typeof value !== 'object') {
+    return date;
+  }
+  const start = typeof value.start === 'string' ? value.start : '';
+  if (!start) return date;
+  const originalDay = Date.parse(`${start.slice(0, 10)}T00:00:00.000Z`);
+  const targetDay = Date.parse(`${date}T00:00:00.000Z`);
+  const shift = targetDay - originalDay;
+  const movedStart = `${date}${start.slice(10)}`;
+  const end = typeof value.end === 'string' ? value.end : null;
+  const movedEnd = end ? new Date(new Date(end).getTime() + shift).toISOString() : null;
+  return { ...value, start: movedStart, end: movedEnd };
 }

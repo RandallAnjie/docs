@@ -4656,6 +4656,34 @@ button {
   flex-direction: column;
   padding: 6px;
 }
+.database-form-settings > label {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  color: #6f6d68;
+  font-size: 11px;
+}
+.database-form-settings input:not([type='checkbox']),
+.database-form-settings textarea {
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #e1e0dd;
+  border-radius: 5px;
+  padding: 5px 6px;
+  font: inherit;
+}
+.database-form-settings textarea {
+  min-height: 56px;
+  resize: vertical;
+}
+.database-form-required-title {
+  display: block;
+  margin: 10px 0 4px;
+  color: #6f6d68;
+  font-size: 11px;
+}
 .database-view-options footer button {
   border: 0;
   background: transparent;
@@ -4959,8 +4987,11 @@ button {
 }
 .database-row-actions-heading,
 .database-row-actions {
-  width: 34px !important;
+  width: 64px !important;
   border-right: 0 !important;
+}
+.database-row-actions {
+  white-space: nowrap;
 }
 .database-row-actions button {
   display: none;
@@ -5079,6 +5110,12 @@ button {
   padding: 10px;
   margin: 6px 0;
 }
+.database-board article[draggable='true'] {
+  cursor: grab;
+}
+.database-board article[draggable='true']:active {
+  cursor: grabbing;
+}
 .database-board article > a {
   color: #37352f;
   font-size: 14px;
@@ -5135,6 +5172,139 @@ button {
 .database-timeline-view a:hover,
 .database-feed-view a:hover {
   text-decoration: underline;
+}
+.database-calendar-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.database-calendar-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.database-calendar-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 4px 7px;
+  color: #6f6d68;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-calendar-toolbar button:hover {
+  background: #f2f2f0;
+  color: #37352f;
+}
+.database-calendar-toolbar strong {
+  min-width: 104px;
+  text-align: center;
+  font-size: 13px;
+}
+.database-calendar-weekdays,
+.database-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(110px, 1fr));
+  min-width: 770px;
+}
+.database-calendar-weekdays {
+  border-top: 1px solid #e9e8e6;
+  border-left: 1px solid #e9e8e6;
+}
+.database-calendar-weekdays span {
+  padding: 6px 8px;
+  border-right: 1px solid #e9e8e6;
+  color: #9b9994;
+  font-size: 10px;
+  text-align: right;
+}
+.database-calendar-grid {
+  border-top: 1px solid #e9e8e6;
+  border-left: 1px solid #e9e8e6;
+}
+.database-calendar-grid > section {
+  min-height: 116px;
+  padding: 5px;
+  border-right: 1px solid #e9e8e6;
+  border-bottom: 1px solid #e9e8e6;
+  background: #fff;
+}
+.database-calendar-grid > section.outside {
+  background: #fbfbfa;
+  color: #aaa8a4;
+}
+.database-calendar-grid > section.today time {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border-radius: 50%;
+  background: #d44c47;
+  color: #fff;
+}
+.database-calendar-grid section > header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 23px;
+  gap: 4px;
+}
+.database-calendar-grid section > header time {
+  color: inherit;
+  font-size: 11px;
+}
+.database-calendar-grid section > header button {
+  display: inline-flex;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  padding: 3px;
+  color: #aaa8a4;
+  cursor: pointer;
+  opacity: 0;
+}
+.database-calendar-grid section:hover > header button {
+  opacity: 1;
+}
+.database-calendar-grid section > a {
+  display: block;
+  overflow: hidden;
+  margin: 3px 0;
+  border-radius: 3px;
+  background: #eef3f0;
+  padding: 3px 5px;
+  color: #37352f;
+  font-size: 11px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-calendar-grid section > a:hover {
+  background: #e3ebe6;
+}
+.database-calendar-unscheduled {
+  margin-top: 10px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-calendar-unscheduled > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.database-calendar-unscheduled a {
+  border-radius: 4px;
+  background: #f2f2f0;
+  padding: 4px 7px;
+  color: #37352f;
+  text-decoration: none;
 }
 .database-list-view {
   padding: 6px 0;
@@ -5223,18 +5393,67 @@ button {
 .database-chart-view {
   padding: 8px 0 20px;
 }
+.database-chart-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.database-chart-toolbar > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-chart-toolbar select {
+  border: 0;
+  border-radius: 5px;
+  background: #f2f2f0;
+  padding: 4px 6px;
+  color: #37352f;
+  font: inherit;
+}
+.database-chart-toolbar > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 6px 8px;
+  color: #787671;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-chart-toolbar > button:hover {
+  background: #f2f2f0;
+  color: #37352f;
+}
 .database-bars {
   padding: 18px;
   border: 1px solid #e9e8e6;
   border-radius: 8px;
 }
-.database-bars > div {
+.database-bars > button {
   display: grid;
   grid-template-columns: 120px 1fr 42px;
   align-items: center;
   gap: 12px;
+  width: 100%;
   min-height: 34px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
   font-size: 12px;
+}
+.database-bars > button:hover {
+  background: #f7f7f5;
 }
 .database-bars i {
   display: block;
@@ -5243,6 +5462,95 @@ button {
   height: 18px;
   border-radius: 3px;
   background: #5b9bd5;
+}
+.database-line-chart,
+.database-donut-chart {
+  margin-top: 8px;
+  border: 1px solid #e9e8e6;
+  border-radius: 8px;
+  padding: 18px;
+}
+.database-line-chart svg {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  overflow: visible;
+}
+.database-line-chart polyline {
+  fill: none;
+  stroke: #5b9bd5;
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.database-line-chart g {
+  cursor: pointer;
+}
+.database-line-chart circle {
+  fill: #fff;
+  stroke: #357fb8;
+  stroke-width: 3;
+}
+.database-line-chart text {
+  fill: #787671;
+  font-size: 10px;
+  text-anchor: middle;
+}
+.database-donut-chart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+}
+.database-donut {
+  width: 190px;
+  height: 190px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  position: relative;
+}
+.database-donut::after {
+  content: '';
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  background: #fff;
+}
+.database-donut span {
+  z-index: 1;
+  font-size: 22px;
+  font-weight: 650;
+}
+.database-chart-legend {
+  display: grid;
+  min-width: 220px;
+}
+.database-chart-legend button {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 6px;
+  color: #5f5e5a;
+  text-align: left;
+  cursor: pointer;
+}
+.database-chart-legend button:hover {
+  background: #f5f5f3;
+}
+.database-chart-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.database-chart-hint {
+  margin: 8px 0 0;
+  color: #9b9994;
+  font-size: 11px;
 }
 .database-dashboard-view {
   display: grid;
@@ -5274,6 +5582,91 @@ button {
   padding: 24px;
   border: 1px solid #e5e4e1;
   border-radius: 10px;
+}
+.database-form-publishing {
+  max-width: 760px;
+  margin: 14px auto;
+  border: 1px solid #e5e4e1;
+  border-radius: 9px;
+  background: #fbfbfa;
+  padding: 14px;
+}
+.database-form-publishing > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.database-form-publishing header p {
+  margin: 4px 0 0;
+  color: #787671;
+  font-size: 11px;
+}
+.database-form-publishing header > div:last-child {
+  display: flex;
+  gap: 5px;
+}
+.database-form-publishing select,
+.database-form-publishing button {
+  border: 0;
+  border-radius: 5px;
+  background: #efefed;
+  padding: 6px 8px;
+  color: #5f5e5a;
+  font: inherit;
+  font-size: 11px;
+}
+.database-form-publishing button {
+  cursor: pointer;
+}
+.database-form-publishing header button {
+  background: #2383e2;
+  color: #fff;
+}
+.database-form-created-link {
+  display: flex;
+  gap: 5px;
+  margin-top: 12px;
+}
+.database-form-created-link input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid #d9d8d5;
+  border-radius: 5px;
+  background: #fff;
+  padding: 6px 8px;
+  color: #5f5e5a;
+  font: inherit;
+  font-size: 11px;
+}
+.database-form-created-link button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.database-form-link-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: 6px;
+  border-top: 1px solid #efefed;
+  padding-top: 6px;
+}
+.database-form-link-row > span {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #e9f5ee;
+  color: #2f7d4c;
+  font-size: 10px;
+}
+.database-form-link-row > span.revoked {
+  background: #efefed;
+  color: #898781;
+}
+.database-form-link-row small {
+  color: #898781;
 }
 .database-form-view header {
   display: flex;
@@ -5399,6 +5792,79 @@ button {
   gap: 5px;
   color: #d44c47;
 }
+.database-trash-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 40px));
+  overflow: auto;
+}
+.database-trash-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.database-trash-dialog h2,
+.database-trash-dialog p {
+  margin: 0;
+}
+.database-trash-dialog header p {
+  margin-top: 4px;
+  color: #787671;
+  font-size: 12px;
+}
+.database-trash-dialog header > button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #787671;
+  font-size: 20px;
+  cursor: pointer;
+}
+.database-trash-list {
+  display: grid;
+  gap: 3px;
+}
+.database-trash-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  border-bottom: 1px solid #efefed;
+}
+.database-trash-list article > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.database-trash-list strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+.database-trash-list span,
+.database-trash-loading {
+  color: #898781;
+  font-size: 11px;
+}
+.database-trash-list button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 6px 8px;
+  color: #5f5e5a;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-trash-list button:hover:not(:disabled) {
+  background: #f2f2f0;
+}
 .database-view-type-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -5465,11 +5931,184 @@ button {
   .database-calendar-list article {
     grid-template-columns: 100px 1fr;
   }
+  .database-calendar-shell {
+    overflow-x: auto;
+  }
+  .database-calendar-toolbar {
+    position: sticky;
+    left: 0;
+    width: calc(100vw - 36px);
+  }
   .database-form-view {
     margin: 12px 0;
     padding: 16px;
   }
   .database-view-type-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Public database forms */
+.public-form-shell {
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: grid;
+  place-items: start center;
+  padding: 56px 20px 80px;
+  background: #f7f7f5;
+  color: #37352f;
+}
+.public-form-card {
+  width: min(680px, 100%);
+  box-sizing: border-box;
+  border: 1px solid #e4e3e0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 6px 24px rgb(15 15 15 / 5%);
+  padding: 36px 42px;
+}
+.public-form-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 38px;
+  color: #37352f;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+.public-form-brand > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 5px;
+  background: #37352f;
+  color: #fff;
+}
+.public-form-card > header {
+  margin-bottom: 30px;
+}
+.public-form-card h1 {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: -0.8px;
+}
+.public-form-card header p {
+  margin: 10px 0 0;
+  color: #6f6d68;
+  line-height: 1.6;
+}
+.public-form-card fieldset {
+  min-width: 0;
+  margin: 22px 0;
+  padding: 0;
+  border: 0;
+}
+.public-form-card legend {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.public-form-card legend b {
+  color: #d44c47;
+}
+.public-form-card fieldset > input,
+.public-form-card fieldset > select,
+.public-form-card fieldset > textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d9d8d5;
+  border-radius: 6px;
+  background: #fff;
+  padding: 10px 11px;
+  color: #37352f;
+  outline: 0;
+  font: inherit;
+  font-size: 14px;
+}
+.public-form-card fieldset > textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+.public-form-card fieldset > input:focus,
+.public-form-card fieldset > select:focus,
+.public-form-card fieldset > textarea:focus {
+  border-color: #2383e2;
+  box-shadow: 0 0 0 2px rgb(35 131 226 / 16%);
+}
+.public-form-checkbox,
+.public-form-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  font-size: 13px;
+}
+.public-form-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.public-form-submit,
+.public-form-state > button {
+  border: 0;
+  border-radius: 6px;
+  background: #2383e2;
+  padding: 10px 18px;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.public-form-submit:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.public-form-error {
+  border-radius: 5px;
+  background: #fff2f2;
+  padding: 9px 10px;
+  color: #b42318;
+  font-size: 12px;
+}
+.public-form-card > footer {
+  margin-top: 24px;
+  color: #9b9994;
+  font-size: 11px;
+  text-align: center;
+}
+.public-form-state {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.public-form-state p {
+  margin: 0;
+  color: #787671;
+}
+.public-form-success-icon {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e9f5ee;
+  color: #2f7d4c;
+}
+
+@media (max-width: 640px) {
+  .public-form-shell {
+    padding: 0;
+    background: #fff;
+  }
+  .public-form-card {
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 28px 20px 60px;
   }
 }

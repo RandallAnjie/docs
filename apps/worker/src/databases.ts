@@ -9,12 +9,14 @@ import {
   type DatabaseSummary,
   type DatabaseViewSummary,
   type DatabaseViewType,
+  type DatabaseFormLinkSummary,
   type JsonValue,
+  type PublicDatabaseFormDefinition,
   type SpaceRole,
 } from '@rdocs/shared';
 
 import { effectivePageGrantRole, findActiveMembership, requirePageAction } from './access';
-import { evaluateDatabaseFormula } from './database-formulas';
+import { evaluateDatabaseFormulaProperties } from './database-formula-graph';
 import { isComputedDatabaseProperty, normalizeDatabaseCellValue } from './database-values';
 import type { Env } from './env';
 import { searchIndexText } from './search-projection';
@@ -25,6 +27,21 @@ const MAX_DATABASE_VIEWS = 50;
 const MAX_PROPERTY_NAME_LENGTH = 100;
 const MAX_VIEW_NAME_LENGTH = 100;
 const MAX_CONFIG_BYTES = 50_000;
+const PUBLIC_FORM_ACTOR_ID = 'usr_rdocs_forms';
+const PUBLIC_FORM_RATE_LIMIT_PER_MINUTE = 30;
+const PUBLIC_FORM_PROPERTY_TYPES = new Set<DatabasePropertyType>([
+  'title',
+  'text',
+  'number',
+  'select',
+  'status',
+  'multi_select',
+  'date',
+  'checkbox',
+  'url',
+  'email',
+  'phone',
+]);
 
 const PROPERTY_TYPES = new Set<DatabasePropertyType>([
   'title',
@@ -119,6 +136,28 @@ interface CellRecord {
   value_json: string;
 }
 
+interface FormLinkRecord {
+  id: string;
+  organization_id: string;
+  database_id: string;
+  view_id: string;
+  token_hash: string;
+  status: 'active' | 'revoked';
+  expires_at: number | null;
+  created_by: string;
+  created_at: number;
+  revoked_at: number | null;
+  database_title?: string;
+  view_name?: string;
+  view_config_json?: string;
+  page_id?: string;
+  is_locked?: number;
+  database_created_by?: string;
+  database_updated_by?: string;
+  database_created_at?: number;
+  database_updated_at?: number;
+}
+
 interface DatabaseAuthorization {
   database: DatabaseRecord;
   role: SpaceRole;
@@ -182,6 +221,32 @@ function parsedValue(value: string): JsonValue {
   } catch {
     return null;
   }
+}
+
+function formLinkSummary(record: FormLinkRecord): DatabaseFormLinkSummary {
+  return {
+    id: record.id,
+    databaseId: record.database_id,
+    viewId: record.view_id,
+    status: record.status,
+    expiresAt: record.expires_at === null ? null : Number(record.expires_at),
+    createdAt: Number(record.created_at),
+    revokedAt: record.revoked_at === null ? null : Number(record.revoked_at),
+  };
+}
+
+async function sha256Text(value: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)),
+  );
+  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function randomFormToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 function databaseSummary(record: DatabaseRecord, role: SpaceRole): DatabaseSummary {
@@ -621,7 +686,9 @@ async function snapshot(
   env: Env,
   authorization: DatabaseAuthorization,
   actorId: string,
+  rowState: 'active' | 'archived' = 'active',
 ): Promise<DatabaseSnapshot> {
+  const archivedFilter = rowState === 'archived' ? 'IS NOT NULL' : 'IS NULL';
   const [propertyRecords, viewRecords, rows, cells] = await Promise.all([
     env.DB.prepare(
       `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
@@ -638,7 +705,7 @@ async function snapshot(
     env.DB.prepare(
       `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
               created_at, updated_at, archived_at
-         FROM database_rows WHERE database_id = ? AND archived_at IS NULL
+         FROM database_rows WHERE database_id = ? AND archived_at ${archivedFilter}
         ORDER BY sort_key LIMIT ?`,
     )
       .bind(authorization.database.id, MAX_DATABASE_ROWS)
@@ -703,19 +770,7 @@ async function snapshot(
         values[property.id] = `${prefix}${row.sequence_number}`;
       }
     }
-    const valuesByName = Object.fromEntries(
-      properties.map((property) => [property.name, values[property.id] ?? null]),
-    );
-    for (const property of properties.filter((candidate) => candidate.type === 'formula')) {
-      const expression = property.config.expression;
-      if (typeof expression !== 'string') {
-        values[property.id] = { error: '公式尚未配置' };
-        continue;
-      }
-      const evaluated = evaluateDatabaseFormula(expression, valuesByName);
-      values[property.id] = evaluated.error ? { error: evaluated.error } : evaluated.value;
-      valuesByName[property.name] = values[property.id] ?? null;
-    }
+    Object.assign(values, evaluateDatabaseFormulaProperties(properties, values));
     return {
       id: row.id,
       databaseId: row.database_id,
@@ -1793,12 +1848,370 @@ async function updateRow(
   return json({ row: current.rows.find((candidate) => candidate.id === rowId) });
 }
 
+async function duplicateRow(
+  env: Env,
+  authorization: DatabaseAuthorization,
+  rowId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT id, database_id, page_id, sort_key, sequence_number, created_by, updated_by,
+            created_at, updated_at, archived_at
+       FROM database_rows WHERE id = ? AND database_id = ? AND archived_at IS NULL`,
+  )
+    .bind(rowId, authorization.database.id)
+    .first<RowRecord>();
+  if (!row || !(await requirePageAction(env, row.page_id, actor.id, 'view'))) {
+    return error('数据行不存在或无权复制', 404);
+  }
+  const cells = (
+    await env.DB.prepare(
+      `SELECT c.row_id, c.property_id, c.value_json
+         FROM database_cells c JOIN database_properties p ON p.id = c.property_id
+        WHERE c.database_id = ? AND c.row_id = ?
+          AND p.type NOT IN (
+            'formula', 'rollup', 'created_time', 'created_by', 'last_edited_time',
+            'last_edited_by', 'button', 'unique_id', 'files'
+          )`,
+    )
+      .bind(authorization.database.id, rowId)
+      .all<CellRecord>()
+  ).results;
+  const properties = await databaseProperties(env, authorization.database.id);
+  const title = properties.find((property) => property.type === 'title');
+  const values = Object.fromEntries(
+    cells.map((cell) => [cell.property_id, parsedValue(cell.value_json)]),
+  );
+  if (title && typeof values[title.id] === 'string') {
+    values[title.id] = `${values[title.id]} 副本`.slice(0, 2_000);
+  }
+  const response = await createRow(
+    new Request('https://rdocs.internal/api/database-row-duplicate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values }),
+    }),
+    env,
+    authorization,
+    actor,
+  );
+  if (response.ok) {
+    await databaseAudit(
+      env,
+      authorization.database,
+      actor.id,
+      'database.row.duplicated',
+      'database_row',
+      rowId,
+    );
+  }
+  return response;
+}
+
+async function listDatabaseFormLinks(
+  env: Env,
+  authorization: DatabaseAuthorization,
+): Promise<Response> {
+  const links = (
+    await env.DB.prepare(
+      `SELECT id, organization_id, database_id, view_id, token_hash, status,
+              expires_at, created_by, created_at, revoked_at
+         FROM database_form_links WHERE database_id = ? ORDER BY created_at DESC LIMIT 100`,
+    )
+      .bind(authorization.database.id)
+      .all<FormLinkRecord>()
+  ).results;
+  return json({ links: links.map(formLinkSummary) });
+}
+
+async function createDatabaseFormLink(
+  request: Request,
+  env: Env,
+  authorization: DatabaseAuthorization,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const input = await requestBody(request);
+  const viewId = typeof input?.viewId === 'string' ? input.viewId : '';
+  if (!isPageId(viewId)) return error('表单视图 ID 无效', 400);
+  const view = await env.DB.prepare(
+    `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
+       FROM database_views WHERE id = ? AND database_id = ? AND type = 'form'`,
+  )
+    .bind(viewId, authorization.database.id)
+    .first<ViewRecord>();
+  if (!view) return error('表单视图不存在', 404);
+  let expiresAt: number | null = null;
+  if (input?.expiresInDays !== undefined && input.expiresInDays !== null) {
+    if (
+      typeof input.expiresInDays !== 'number' ||
+      !Number.isInteger(input.expiresInDays) ||
+      input.expiresInDays < 1 ||
+      input.expiresInDays > 365
+    ) {
+      return error('表单有效期必须是 1–365 天', 400);
+    }
+    expiresAt = Date.now() + input.expiresInDays * 86_400_000;
+  }
+  const id = crypto.randomUUID();
+  const token = randomFormToken();
+  const tokenHash = await sha256Text(token);
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO database_form_links(
+       id, organization_id, database_id, view_id, token_hash, status,
+       expires_at, created_by, created_at, revoked_at
+     ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL)`,
+  )
+    .bind(
+      id,
+      authorization.database.organization_id,
+      authorization.database.id,
+      viewId,
+      tokenHash,
+      expiresAt,
+      actor.id,
+      now,
+    )
+    .run();
+  await databaseAudit(
+    env,
+    authorization.database,
+    actor.id,
+    'database.form_link.created',
+    'database_view',
+    viewId,
+    { formLinkId: id, expiresAt },
+  );
+  const link: FormLinkRecord = {
+    id,
+    organization_id: authorization.database.organization_id,
+    database_id: authorization.database.id,
+    view_id: viewId,
+    token_hash: tokenHash,
+    status: 'active',
+    expires_at: expiresAt,
+    created_by: actor.id,
+    created_at: now,
+    revoked_at: null,
+  };
+  return json({ link: formLinkSummary(link), token, path: `/forms/${token}` }, { status: 201 });
+}
+
+async function revokeDatabaseFormLink(
+  env: Env,
+  linkId: string,
+  actor: AuthUserSummary,
+): Promise<Response> {
+  const link = await env.DB.prepare(
+    `SELECT id, organization_id, database_id, view_id, token_hash, status,
+            expires_at, created_by, created_at, revoked_at
+       FROM database_form_links WHERE id = ?`,
+  )
+    .bind(linkId)
+    .first<FormLinkRecord>();
+  if (!link) return error('表单链接不存在', 404);
+  const authorization = await authorizeDatabase(env, link.database_id, actor.id, 'edit_content');
+  if (!authorization) return error('表单链接不存在或无权撤销', 404);
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE database_form_links SET status = 'revoked', revoked_at = ?
+      WHERE id = ? AND status = 'active'`,
+  )
+    .bind(now, linkId)
+    .run();
+  await databaseAudit(
+    env,
+    authorization.database,
+    actor.id,
+    'database.form_link.revoked',
+    'database_view',
+    link.view_id,
+    { formLinkId: linkId },
+  );
+  return json({ ok: true, revokedAt: now });
+}
+
+async function findPublicForm(env: Env, token: string): Promise<FormLinkRecord | null> {
+  if (!/^[A-Za-z0-9_-]{40,64}$/.test(token)) return null;
+  const tokenHash = await sha256Text(token);
+  return env.DB.prepare(
+    `SELECT f.id, f.organization_id, f.database_id, f.view_id, f.token_hash,
+            f.status, f.expires_at, f.created_by, f.created_at, f.revoked_at,
+            p.title AS database_title, p.id AS page_id, v.name AS view_name,
+            v.config_json AS view_config_json, d.is_locked,
+            d.created_by AS database_created_by, d.updated_by AS database_updated_by,
+            d.created_at AS database_created_at, d.updated_at AS database_updated_at
+       FROM database_form_links f
+       JOIN databases d ON d.id = f.database_id
+       JOIN pages p ON p.id = d.page_id AND p.deleted_at IS NULL
+       JOIN database_views v ON v.id = f.view_id AND v.database_id = f.database_id AND v.type = 'form'
+      WHERE f.token_hash = ? AND f.status = 'active'
+        AND (f.expires_at IS NULL OR f.expires_at > ?)`,
+  )
+    .bind(tokenHash, Date.now())
+    .first<FormLinkRecord>();
+}
+
+async function publicFormDefinition(
+  env: Env,
+  form: FormLinkRecord,
+): Promise<PublicDatabaseFormDefinition> {
+  const config = parsedObject(form.view_config_json ?? '{}');
+  const properties = (await databaseProperties(env, form.database_id)).map(propertySummary);
+  const visibleIds = Array.isArray(config.visiblePropertyIds)
+    ? new Set(config.visiblePropertyIds.filter((id): id is string => typeof id === 'string'))
+    : null;
+  const requiredIds = new Set(
+    Array.isArray(config.requiredPropertyIds)
+      ? config.requiredPropertyIds.filter((id): id is string => typeof id === 'string')
+      : [],
+  );
+  const order = Array.isArray(config.propertyOrder)
+    ? config.propertyOrder.filter((id): id is string => typeof id === 'string')
+    : [];
+  const orderIndex = new Map(order.map((id, index) => [id, index]));
+  const fields = properties
+    .filter(
+      (property) =>
+        PUBLIC_FORM_PROPERTY_TYPES.has(property.type) &&
+        (!visibleIds || property.type === 'title' || visibleIds.has(property.id)),
+    )
+    .sort(
+      (left, right) =>
+        (orderIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+          (orderIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER) || left.sortOrder - right.sortOrder,
+    )
+    .map((property) => ({
+      id: property.id,
+      name: property.name,
+      type: property.type,
+      config: property.config,
+      required: requiredIds.has(property.id),
+    }));
+  return {
+    id: form.id,
+    title:
+      typeof config.formTitle === 'string'
+        ? config.formTitle
+        : (form.view_name ?? form.database_title ?? 'Rdocs 表单'),
+    description: typeof config.formDescription === 'string' ? config.formDescription : '',
+    submitLabel: typeof config.submitLabel === 'string' ? config.submitLabel : '提交',
+    successMessage:
+      typeof config.successMessage === 'string' ? config.successMessage : '提交成功，感谢填写。',
+    fields,
+    expiresAt: form.expires_at === null ? null : Number(form.expires_at),
+  };
+}
+
+function publicFormValueMissing(value: unknown): boolean {
+  return (
+    value === undefined || value === null || value === '' || (Array.isArray(value) && !value.length)
+  );
+}
+
+export async function handlePublicDatabaseFormsApi(
+  request: Request,
+  env: Env,
+): Promise<Response | null> {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\/api\/public\/forms\/([^/]+)$/);
+  if (!match?.[1] || !['GET', 'POST'].includes(request.method)) return null;
+  const form = await findPublicForm(env, decodeURIComponent(match[1]));
+  if (!form) return error('表单不存在、已过期或已关闭', 404);
+  const definition = await publicFormDefinition(env, form);
+  if (request.method === 'GET') return json({ form: definition });
+  if (form.is_locked) return error('此表单当前已暂停收集', 409);
+  const recent = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM database_form_submissions
+      WHERE form_link_id = ? AND created_at >= ?`,
+  )
+    .bind(form.id, Date.now() - 60_000)
+    .first<{ count: number }>();
+  if (Number(recent?.count ?? 0) >= PUBLIC_FORM_RATE_LIMIT_PER_MINUTE) {
+    return error('提交过于频繁，请稍后再试', 429);
+  }
+  const input = await requestBody(request);
+  const submittedValues =
+    input?.values && typeof input.values === 'object' && !Array.isArray(input.values)
+      ? (input.values as Record<string, unknown>)
+      : null;
+  if (!submittedValues) return error('表单内容无效', 400);
+  const allowed = new Set(definition.fields.map((field) => field.id));
+  if (Object.keys(submittedValues).some((propertyId) => !allowed.has(propertyId))) {
+    return error('表单包含未公开的字段', 400);
+  }
+  for (const field of definition.fields) {
+    if (field.required && publicFormValueMissing(submittedValues[field.id])) {
+      return error(`“${field.name}”为必填项`, 400);
+    }
+  }
+  const database: DatabaseRecord = {
+    id: form.database_id,
+    organization_id: form.organization_id,
+    page_id: form.page_id ?? '',
+    title: form.database_title ?? '',
+    is_locked: Number(form.is_locked ?? 0),
+    created_by: form.database_created_by ?? PUBLIC_FORM_ACTOR_ID,
+    updated_by: form.database_updated_by ?? PUBLIC_FORM_ACTOR_ID,
+    created_at: Number(form.database_created_at ?? 0),
+    updated_at: Number(form.database_updated_at ?? 0),
+  };
+  const actor: AuthUserSummary = {
+    id: PUBLIC_FORM_ACTOR_ID,
+    email: 'forms@system.rdocs.invalid',
+    displayName: 'Rdocs Forms',
+    avatarUrl: null,
+  };
+  const created = await createRow(
+    new Request('https://rdocs.internal/api/public-form-submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ values: submittedValues }),
+    }),
+    env,
+    { database, role: 'editor' },
+    actor,
+  );
+  if (!created.ok) return created;
+  const payload = (await created.clone().json()) as { row?: DatabaseRowSummary };
+  if (!payload.row) return error('表单记录创建失败', 500);
+  await env.DB.prepare(
+    `INSERT INTO database_form_submissions(id, organization_id, form_link_id, row_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(crypto.randomUUID(), form.organization_id, form.id, payload.row.id, Date.now())
+    .run();
+  return json(
+    { ok: true, submissionId: payload.row.id, message: definition.successMessage },
+    { status: 201 },
+  );
+}
+
 export async function handleDatabasesApi(
   request: Request,
   env: Env,
   actor: AuthUserSummary,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+
+  const formLinkMatch = url.pathname.match(/^\/api\/database-form-links\/([^/]+)$/);
+  if (formLinkMatch?.[1] && request.method === 'DELETE') {
+    const linkId = decodeURIComponent(formLinkMatch[1]);
+    if (!isPageId(linkId)) return error('表单链接 ID 无效', 400);
+    return revokeDatabaseFormLink(env, linkId, actor);
+  }
+
+  const databaseFormsMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/forms$/);
+  if (databaseFormsMatch?.[1]) {
+    const databaseId = decodeURIComponent(databaseFormsMatch[1]);
+    if (!isPageId(databaseId)) return error('数据库 ID 无效', 400);
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+    if (!authorization) return error('数据库不存在或无权管理表单', 404);
+    if (request.method === 'GET') return listDatabaseFormLinks(env, authorization);
+    if (request.method === 'POST') {
+      return createDatabaseFormLink(request, env, authorization, actor);
+    }
+  }
 
   const organizationDatabasesMatch = url.pathname.match(
     /^\/api\/organizations\/([^/]+)\/databases$/,
@@ -1890,6 +2303,19 @@ export async function handleDatabasesApi(
     }
   }
 
+  const duplicateRowMatch = url.pathname.match(
+    /^\/api\/databases\/([^/]+)\/rows\/([^/]+)\/duplicate$/,
+  );
+  if (duplicateRowMatch?.[1] && duplicateRowMatch[2] && request.method === 'POST') {
+    const databaseId = decodeURIComponent(duplicateRowMatch[1]);
+    const rowId = decodeURIComponent(duplicateRowMatch[2]);
+    if (!isPageId(databaseId) || !isPageId(rowId)) return error('数据库或数据行 ID 无效', 400);
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+    return authorization
+      ? duplicateRow(env, authorization, rowId, actor)
+      : error('数据库不存在或无权编辑', 404);
+  }
+
   const rowsMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/rows$/);
   if (rowsMatch?.[1] && request.method === 'POST') {
     const databaseId = decodeURIComponent(rowsMatch[1]);
@@ -1905,9 +2331,15 @@ export async function handleDatabasesApi(
     const databaseId = decodeURIComponent(databaseMatch[1]);
     if (!isPageId(databaseId)) return error('数据库 ID 无效', 400);
     if (request.method === 'GET') {
-      const authorization = await authorizeDatabase(env, databaseId, actor.id, 'view');
+      const rowState = url.searchParams.get('archived') === 'true' ? 'archived' : 'active';
+      const authorization = await authorizeDatabase(
+        env,
+        databaseId,
+        actor.id,
+        rowState === 'archived' ? 'edit_content' : 'view',
+      );
       return authorization
-        ? json(await snapshot(env, authorization, actor.id))
+        ? json(await snapshot(env, authorization, actor.id, rowState))
         : error('数据库不存在或无权访问', 404);
     }
     if (request.method === 'PATCH') {
