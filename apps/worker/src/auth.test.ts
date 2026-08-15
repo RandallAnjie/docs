@@ -21,7 +21,7 @@ describe('passkey authentication configuration', () => {
     expect(authMode(env({ AUTH_MODE: 'typo' }))).toBe('passkey');
   });
 
-  it('accepts unsafe requests only from the configured RP origin', () => {
+  it('accepts unsafe requests only from the configured browser Origin', () => {
     expect(
       isTrustedMutationOrigin(
         new Request('https://docs.example.com/api/pages', {
@@ -36,6 +36,15 @@ describe('passkey authentication configuration', () => {
         new Request('https://preview.example.com/api/pages', {
           method: 'POST',
           headers: { origin: 'https://docs.example.com' },
+        }),
+        env(),
+      ),
+    ).toBe(true);
+    expect(
+      isTrustedMutationOrigin(
+        new Request('https://docs.example.com/api/pages', {
+          method: 'POST',
+          headers: { origin: 'https://preview.example.com' },
         }),
         env(),
       ),
@@ -110,6 +119,17 @@ describe('passkey authentication configuration', () => {
       {} as ExecutionContext,
     );
     expect(wrongOrigin?.status).toBe(403);
+
+    const forwardedUrl = await handleAuthApi(
+      new Request('https://worker.internal/api/auth/passkey/registration/options', {
+        method: 'POST',
+        headers: { origin: 'https://docs.example.com', 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+      env({ AUTH_MODE: 'phase0' }),
+      {} as ExecutionContext,
+    );
+    expect(forwardedUrl?.status).toBe(400);
   });
 
   it('reports enrollment separately from passkey login configuration', async () => {

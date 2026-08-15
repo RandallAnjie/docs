@@ -118,10 +118,7 @@ function passkeyConfiguration(env: Env): PasskeyConfiguration | null {
 }
 
 function isPasskeyMutationOrigin(request: Request, configuration: PasskeyConfiguration): boolean {
-  return (
-    request.headers.get('origin') === configuration.origin &&
-    new URL(request.url).origin === configuration.origin
-  );
+  return request.headers.get('origin') === configuration.origin;
 }
 
 function userFromSessionRow(row: SessionRow): AuthUserSummary {
@@ -313,11 +310,7 @@ export async function authenticateRequest(
 export function isTrustedMutationOrigin(request: Request, env: Env): boolean {
   if (authMode(env) === 'phase0') return true;
   const configuration = passkeyConfiguration(env);
-  return Boolean(
-    configuration &&
-    request.headers.get('origin') === configuration.origin &&
-    new URL(request.url).origin === configuration.origin,
-  );
+  return Boolean(configuration && request.headers.get('origin') === configuration.origin);
 }
 
 async function sessionResponse(
