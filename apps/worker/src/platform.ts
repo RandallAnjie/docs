@@ -1002,7 +1002,7 @@ async function handleSessionPlatformApi(
           input?.enabled === false ? 0 : 1,
           typeof input?.model === 'string' && input.model.trim()
             ? input.model.trim().slice(0, 80)
-            : 'grok-4.5',
+            : 'grok-4.6',
           input?.retention === '30d' || input?.retention === 'indefinite'
             ? input.retention
             : 'none',
@@ -1308,7 +1308,7 @@ async function loadAiSettings(env: Env, organizationId: string): Promise<AiSetti
   return {
     organizationId,
     enabled: row ? Boolean(row.enabled) : true,
-    model: row?.model ?? 'grok-4.5',
+    model: row?.model ?? 'grok-4.6',
     retention: row?.retention ?? 'none',
     configured: Boolean(aiApiKey(env)),
     updatedAt: Number(row?.updated_at ?? 0),
@@ -1393,7 +1393,7 @@ async function runPageAi(
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: settings.model || 'grok-4.5',
+        model: settings.model || 'grok-4.6',
         temperature: 0.3,
         messages: [
           { role: 'system', content: system },
