@@ -2787,6 +2787,7 @@ function PropertyDialog({
                 <option value="count_unique">唯一值计数</option>
                 <option value="percent_empty">空值百分比</option>
                 <option value="percent_not_empty">非空百分比</option>
+                <option value="percent_checked">已勾选百分比</option>
                 <option value="sum">求和</option>
                 <option value="average">平均值</option>
                 <option value="min">最小值</option>
