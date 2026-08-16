@@ -212,6 +212,17 @@ const FORM_PROPERTY_TYPES = new Set<DatabasePropertyType>([
   'phone',
 ]);
 
+function formatDateTime(value: JsonValue | undefined): string {
+  const timestamp =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value)
+        ? Number(value)
+        : NaN;
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  return new Date(timestamp).toLocaleString();
+}
+
 function valueText(value: JsonValue | undefined): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
@@ -304,22 +315,35 @@ function RelationCell({
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [target, setTarget] = useState<DatabaseSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const openPicker = async () => {
-    if (disabled || !targetDatabaseId) return;
-    setOpen(true);
-    if (target || loading) return;
+  useEffect(() => {
+    if (!targetDatabaseId) return;
+    let active = true;
     setLoading(true);
-    try {
-      setTarget(await getDatabase(targetDatabaseId));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法读取关系数据库');
-    } finally {
-      setLoading(false);
-    }
-  };
+    void getDatabase(targetDatabaseId)
+      .then((snapshot) => {
+        if (active) setTarget(snapshot);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : '无法读取关系数据库');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [targetDatabaseId]);
+  const titles = new Map(
+    (target?.rows ?? []).map((row) => [row.id, rowTitle(row, target?.properties ?? [])]),
+  );
+  const visibleRows = (target?.rows ?? []).filter((row) => {
+    const title = titles.get(row.id) ?? '';
+    return !query.trim() || title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+  });
   const toggle = async (rowId: string) => {
     const next = selected.includes(rowId)
       ? selected.filter((candidate) => candidate !== rowId)
@@ -333,8 +357,21 @@ function RelationCell({
   };
   return (
     <div className="database-relation-cell">
-      <button type="button" disabled={disabled} onClick={() => void openPicker()}>
-        {selected.length ? `${selected.length} 个关联页面` : '添加关联'}
+      <button
+        className="database-chip-row"
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(true)}
+      >
+        {selected.length ? (
+          selected.map((id) => (
+            <span key={id} className="database-page-chip">
+              {titles.get(id) || '未命名'}
+            </span>
+          ))
+        ) : (
+          <span className="database-chip-empty">关联页面</span>
+        )}
       </button>
       {open ? (
         <div className="database-relation-picker">
@@ -344,19 +381,25 @@ function RelationCell({
               ×
             </button>
           </header>
+          <input
+            className="database-picker-search"
+            value={query}
+            placeholder="搜索页面标题"
+            onChange={(event) => setQuery(event.target.value)}
+          />
           {loading ? <p>正在加载…</p> : null}
           {error ? <p className="dialog-error">{error}</p> : null}
-          {target?.rows.map((row) => (
+          {visibleRows.map((row) => (
             <label key={row.id}>
               <input
                 type="checkbox"
                 checked={selected.includes(row.id)}
                 onChange={() => void toggle(row.id)}
               />
-              <span>{rowTitle(row, target.properties)}</span>
+              <span className="database-page-chip">{titles.get(row.id)}</span>
             </label>
           ))}
-          {target && !target.rows.length ? <p>目标数据库还没有记录。</p> : null}
+          {target && !visibleRows.length ? <p>没有匹配的页面。</p> : null}
         </div>
       ) : null}
     </div>
@@ -376,26 +419,36 @@ function PersonCell({
 }) {
   const selected = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
-    : [];
+    : typeof value === 'string' && value
+      ? [value]
+      : [];
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [members, setMembers] = useState<OrganizationMemberSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const openPicker = async () => {
-    if (disabled) return;
-    setOpen(true);
-    if (members.length || loading) return;
+  useEffect(() => {
+    let active = true;
     setLoading(true);
-    try {
-      const result = await listOrganizationMembers(organizationId);
-      setMembers(result.members.filter((member) => member.status === 'active'));
-      setError(null);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法读取成员');
-    } finally {
-      setLoading(false);
-    }
-  };
+    void listOrganizationMembers(organizationId)
+      .then((result) => {
+        if (active) setMembers(result.members.filter((member) => member.status === 'active'));
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : '无法读取成员');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [organizationId]);
+  const names = new Map(members.map((member) => [member.userId, member.displayName]));
+  const visible = members.filter((member) => {
+    const haystack = `${member.displayName} ${member.email}`.toLocaleLowerCase();
+    return !query.trim() || haystack.includes(query.trim().toLocaleLowerCase());
+  });
   const toggle = async (userId: string) => {
     try {
       await onSave(
@@ -410,29 +463,50 @@ function PersonCell({
   };
   return (
     <div className="database-relation-cell">
-      <button type="button" disabled={disabled} onClick={() => void openPicker()}>
-        {selected.length ? `${selected.length} 位成员` : '选择成员'}
+      <button
+        className="database-chip-row"
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(true)}
+      >
+        {selected.length ? (
+          selected.map((id) => (
+            <span key={id} className="database-person-chip">
+              @{names.get(id) || '成员'}
+            </span>
+          ))
+        ) : (
+          <span className="database-chip-empty">@人员</span>
+        )}
       </button>
       {open ? (
         <div className="database-relation-picker">
           <header>
-            <strong>选择成员</strong>
+            <strong>选择人员</strong>
             <button type="button" onClick={() => setOpen(false)}>
               ×
             </button>
           </header>
+          <input
+            className="database-picker-search"
+            value={query}
+            placeholder="搜索姓名或邮箱"
+            onChange={(event) => setQuery(event.target.value)}
+          />
           {loading ? <p>正在加载…</p> : null}
           {error ? <p className="dialog-error">{error}</p> : null}
-          {members.map((member) => (
+          {visible.map((member) => (
             <label key={member.userId}>
               <input
                 type="checkbox"
                 checked={selected.includes(member.userId)}
                 onChange={() => void toggle(member.userId)}
               />
-              <span>{member.displayName}</span>
+              <span className="database-person-chip">@{member.displayName}</span>
+              <small>{member.email}</small>
             </label>
           ))}
+          {!visible.length ? <p>没有匹配的成员。</p> : null}
         </div>
       ) : null}
     </div>
@@ -453,29 +527,34 @@ function FileCell({
   const selected = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
-  const [open, setOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentSummary[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dragover, setDragover] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
-  const openPicker = async () => {
-    if (disabled) return;
-    setOpen(true);
-    if (attachments.length) return;
-    try {
-      setAttachments((await listAttachments(pageId)).attachments);
-      setError(null);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法读取文件');
-    }
-  };
-  const upload = async (file: File | undefined) => {
-    if (!file || busy) return;
+  useEffect(() => {
+    let active = true;
+    void listAttachments(pageId)
+      .then((result) => {
+        if (active) setAttachments(result.attachments);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [pageId]);
+  const names = new Map(attachments.map((attachment) => [attachment.id, attachment.originalName]));
+  const uploadFiles = async (files: File[]) => {
+    if (disabled || busy || !files.length) return;
     setBusy(true);
     try {
-      const { attachment } = await uploadAttachment(pageId, file);
-      setAttachments((current) => [attachment, ...current]);
-      await onSave([...selected, attachment.id]);
+      const next = [...selected];
+      for (const file of files) {
+        const { attachment } = await uploadAttachment(pageId, file);
+        setAttachments((current) => [attachment, ...current]);
+        if (!next.includes(attachment.id)) next.push(attachment.id);
+      }
+      await onSave(next);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法上传文件');
@@ -484,57 +563,65 @@ function FileCell({
       if (input.current) input.current.value = '';
     }
   };
-  const toggle = async (attachmentId: string) => {
+  const remove = async (attachmentId: string) => {
     try {
-      await onSave(
-        selected.includes(attachmentId)
-          ? selected.filter((candidate) => candidate !== attachmentId)
-          : [...selected, attachmentId],
-      );
+      await onSave(selected.filter((candidate) => candidate !== attachmentId));
       setError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法保存文件属性');
+      setError(reason instanceof Error ? reason.message : '无法移除文件');
     }
   };
   return (
-    <div className="database-relation-cell">
+    <div
+      className={`database-relation-cell database-file-drop ${dragover ? 'dragover' : ''}`}
+      onDragOver={(event) => {
+        event.preventDefault();
+        if (!disabled) setDragover(true);
+      }}
+      onDragLeave={() => setDragover(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragover(false);
+        void uploadFiles([...event.dataTransfer.files]);
+      }}
+    >
       <input
         ref={input}
         hidden
         type="file"
-        onChange={(event) => void upload(event.target.files?.[0])}
+        multiple
+        onChange={(event) => void uploadFiles([...(event.target.files ?? [])])}
       />
-      <button type="button" disabled={disabled} onClick={() => void openPicker()}>
-        {selected.length ? `${selected.length} 个文件` : '添加文件'}
+      <button
+        className="database-chip-row"
+        type="button"
+        disabled={disabled}
+        onClick={() => input.current?.click()}
+      >
+        {selected.length ? (
+          selected.map((id) => (
+            <span key={id} className="database-file-chip">
+              {names.get(id) || '文件'}
+              {!disabled ? (
+                <b
+                  role="button"
+                  aria-label="移除文件"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void remove(id);
+                  }}
+                >
+                  ×
+                </b>
+              ) : null}
+            </span>
+          ))
+        ) : (
+          <span className="database-chip-empty">{busy ? '上传中…' : '点击或拖入文件'}</span>
+        )}
       </button>
-      {open ? (
-        <div className="database-relation-picker database-file-picker">
-          <header>
-            <strong>文件与媒体</strong>
-            <button type="button" onClick={() => setOpen(false)}>
-              ×
-            </button>
-          </header>
-          {error ? <p className="dialog-error">{error}</p> : null}
-          <button
-            type="button"
-            className="database-upload-file"
-            onClick={() => input.current?.click()}
-          >
-            <Plus size={13} /> {busy ? '上传中…' : '上传文件'}
-          </button>
-          {attachments.map((attachment) => (
-            <label key={attachment.id}>
-              <input
-                type="checkbox"
-                checked={selected.includes(attachment.id)}
-                onChange={() => void toggle(attachment.id)}
-              />
-              <span>{attachment.originalName}</span>
-            </label>
-          ))}
-        </div>
-      ) : null}
+      {error ? <p className="dialog-error">{error}</p> : null}
     </div>
   );
 }
@@ -801,6 +888,24 @@ function DatabaseCell({
     );
   }
 
+  if (property.type === 'created_time' || property.type === 'last_edited_time') {
+    const text = formatDateTime(value);
+    return <span className={`database-computed-value ${text ? '' : 'empty'}`}>{text || '—'}</span>;
+  }
+  if (
+    (property.type === 'created_by' || property.type === 'last_edited_by') &&
+    organizationId &&
+    typeof value === 'string'
+  ) {
+    return (
+      <PersonCell
+        disabled
+        organizationId={organizationId}
+        onSave={async () => undefined}
+        value={[value]}
+      />
+    );
+  }
   if (!EDITABLE_PROPERTY_TYPES.has(property.type)) {
     const text = valueText(value);
     return <span className={`database-computed-value ${text ? '' : 'empty'}`}>{text || '—'}</span>;
@@ -871,6 +976,7 @@ function DatabaseCell({
   if (property.type === 'date') {
     const parsed = parseDateCell(value);
     const includeTime = property.config.includeTime === true || Boolean(parsed?.includeTime);
+    const includeRange = property.config.includeRange === true;
     return (
       <div className={`database-input-cell date-range ${saving ? 'saving' : ''}`}>
         <input
@@ -880,27 +986,29 @@ function DatabaseCell({
           onChange={(event) => {
             const next = fromDateParts(
               event.target.value,
-              parsed?.end ? datePart(parsed.end, includeTime) : '',
+              includeRange && parsed?.end ? datePart(parsed.end, includeTime) : '',
               includeTime,
             );
             void onSave(next);
           }}
-          aria-label={`${property.name}开始`}
+          aria-label={includeRange ? `${property.name}开始` : property.name}
         />
-        <input
-          type={includeTime ? 'datetime-local' : 'date'}
-          value={parsed?.end ? datePart(parsed.end, includeTime) : ''}
-          disabled={disabled}
-          onChange={(event) => {
-            const next = fromDateParts(
-              parsed ? datePart(parsed.start, includeTime) : draft,
-              event.target.value,
-              includeTime,
-            );
-            void onSave(next);
-          }}
-          aria-label={`${property.name}结束`}
-        />
+        {includeRange ? (
+          <input
+            type={includeTime ? 'datetime-local' : 'date'}
+            value={parsed?.end ? datePart(parsed.end, includeTime) : ''}
+            disabled={disabled}
+            onChange={(event) => {
+              const next = fromDateParts(
+                parsed ? datePart(parsed.start, includeTime) : draft,
+                event.target.value,
+                includeTime,
+              );
+              void onSave(next);
+            }}
+            aria-label={`${property.name}结束`}
+          />
+        ) : null}
         {rowPageId && actorId && reminderSourceId ? (
           <DatabaseDateReminder
             actorId={actorId}
@@ -3314,6 +3422,13 @@ function PropertyDialog({
     typeof property?.config.url === 'string' ? property.config.url : 'https://',
   );
   const [includeTime, setIncludeTime] = useState(property?.config.includeTime === true);
+  const [includeRange, setIncludeRange] = useState(property?.config.includeRange === true);
+  const [typeKind, setTypeKind] = useState(() => {
+    if (!property) return 'text';
+    if (property.type === 'date' && property.config.includeRange === true) return 'date_range';
+    if (property.type === 'date' && property.config.includeTime === true) return 'date_time';
+    return property.type;
+  });
   const [databases, setDatabases] = useState<DatabaseSnapshot['database'][]>([]);
   const [targetSnapshot, setTargetSnapshot] = useState<DatabaseSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -3377,7 +3492,10 @@ function PropertyDialog({
       config.targetPropertyId = targetPropertyId;
       config.calculation = calculation;
     }
-    if (type === 'date') config.includeTime = includeTime;
+    if (type === 'date') {
+      config.includeTime = includeTime;
+      config.includeRange = includeRange;
+    }
     if (type === 'unique_id') config.prefix = prefix;
     if (type === 'button') {
       config.label = buttonLabel.trim() || name;
@@ -3455,17 +3573,60 @@ function PropertyDialog({
         <label>
           类型
           <select
-            value={type}
+            value={typeKind}
             disabled={Boolean(property)}
-            onChange={(event) => setType(event.target.value as DatabasePropertyType)}
+            onChange={(event) => {
+              const next = event.target.value;
+              setTypeKind(next);
+              if (next === 'date_range') {
+                setType('date');
+                setIncludeRange(true);
+                setIncludeTime(false);
+              } else if (next === 'date_time') {
+                setType('date');
+                setIncludeRange(false);
+                setIncludeTime(true);
+              } else if (next === 'date') {
+                setType('date');
+                setIncludeRange(false);
+                setIncludeTime(false);
+              } else {
+                setType(next as DatabasePropertyType);
+              }
+            }}
           >
-            {Object.entries(PROPERTY_LABELS)
-              .filter(([propertyType]) => propertyType !== 'title')
-              .map(([propertyType, label]) => (
-                <option key={propertyType} value={propertyType}>
-                  {label}
-                </option>
-              ))}
+            <optgroup label="文本与数字">
+              <option value="text">文本</option>
+              <option value="number">数字</option>
+              <option value="select">单选</option>
+              <option value="status">状态</option>
+              <option value="multi_select">多选</option>
+              <option value="checkbox">复选框</option>
+            </optgroup>
+            <optgroup label="日期与时间">
+              <option value="date">日期</option>
+              <option value="date_range">日期区间</option>
+              <option value="date_time">日期时间</option>
+              <option value="created_time">创建时间</option>
+              <option value="last_edited_time">最后编辑时间</option>
+            </optgroup>
+            <optgroup label="人员">
+              <option value="person">人员</option>
+              <option value="created_by">创建者</option>
+              <option value="last_edited_by">最后编辑者</option>
+            </optgroup>
+            <optgroup label="其他">
+              <option value="url">网址</option>
+              <option value="email">邮箱</option>
+              <option value="phone">电话</option>
+              <option value="files">文件</option>
+              <option value="relation">关系</option>
+              <option value="rollup">汇总</option>
+              <option value="formula">公式</option>
+              <option value="button">按钮</option>
+              <option value="unique_id">唯一 ID</option>
+              <option value="place">地点</option>
+            </optgroup>
           </select>
         </label>
         {type === 'select' || type === 'status' || type === 'multi_select' ? (
@@ -3479,14 +3640,34 @@ function PropertyDialog({
           </label>
         ) : null}
         {type === 'date' ? (
-          <label className="database-dialog-checkbox">
-            <input
-              type="checkbox"
-              checked={includeTime}
-              onChange={(event) => setIncludeTime(event.target.checked)}
-            />
-            包含时间
-          </label>
+          <>
+            <label className="database-dialog-checkbox">
+              <input
+                type="checkbox"
+                checked={includeRange}
+                onChange={(event) => {
+                  setIncludeRange(event.target.checked);
+                  setTypeKind(
+                    event.target.checked ? 'date_range' : includeTime ? 'date_time' : 'date',
+                  );
+                }}
+              />
+              日期区间
+            </label>
+            <label className="database-dialog-checkbox">
+              <input
+                type="checkbox"
+                checked={includeTime}
+                onChange={(event) => {
+                  setIncludeTime(event.target.checked);
+                  setTypeKind(
+                    includeRange ? 'date_range' : event.target.checked ? 'date_time' : 'date',
+                  );
+                }}
+              />
+              包含具体时间
+            </label>
+          </>
         ) : null}
         {property && ['title', 'text'].includes(property.type) ? (
           <button
@@ -4491,6 +4672,29 @@ export function DatabaseCanvas({
     const next = await getDatabase(snapshot.database.id);
     setSnapshot(next);
   }, [snapshot.database.id]);
+
+  useEffect(() => {
+    setSnapshot(initialSnapshot);
+  }, [initialSnapshot]);
+
+  useEffect(() => {
+    const tick = () => {
+      if (
+        document.querySelector(
+          '.database-canvas input:focus, .database-canvas textarea:focus, .database-canvas select:focus',
+        )
+      ) {
+        return;
+      }
+      void refresh();
+    };
+    const timer = window.setInterval(tick, 8_000);
+    window.addEventListener('focus', tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', tick);
+    };
+  }, [refresh]);
 
   const filteredRows = useMemo(() => {
     const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {});
