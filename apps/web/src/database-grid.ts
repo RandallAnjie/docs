@@ -102,3 +102,17 @@ export function moveDatabaseGridCell(
     propertyId: properties[nextProperty]?.id ?? current.propertyId,
   };
 }
+
+export function moveDatabaseGridColumn(
+  properties: readonly Pick<DatabasePropertySummary, 'id'>[],
+  currentId: string,
+  key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End',
+): string {
+  if (!properties.length) return currentId;
+  const index = properties.findIndex((property) => property.id === currentId);
+  const current = index < 0 ? 0 : index;
+  if (key === 'Home') return properties[0]?.id ?? currentId;
+  if (key === 'End') return properties[properties.length - 1]?.id ?? currentId;
+  const next = key === 'ArrowLeft' ? current - 1 : current + 1;
+  return properties[Math.max(0, Math.min(properties.length - 1, next))]?.id ?? currentId;
+}

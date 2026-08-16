@@ -8041,10 +8041,327 @@ button.page-icon-display:hover {
   outline: none;
 }
 .database-table td.database-cell-selected {
-  box-shadow: inset 0 0 0 2px #2383e2;
+  box-shadow: inset 0 0 0 2px #3370ff;
+}
+.database-table-grid th.database-col-picked,
+.database-table-grid th.database-col-picked.database-col-title {
+  background: #d6e8ff;
+  color: #1456d9;
+}
+.database-table-grid td.database-col-picked,
+.database-table-grid td.database-col-picked.database-col-title,
+.database-table-grid .database-col-picked.database-col-check {
+  background: #eef5ff;
+}
+.database-table-grid tbody tr:hover td.database-col-picked,
+.database-table-grid tbody tr:hover .database-col-picked.database-col-title {
+  background: #dcebff;
+}
+.database-field-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+}
+.database-field-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.database-field-select span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-field-rename {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  margin: 0 4px;
+  border: 1px solid #3370ff;
+  border-radius: 4px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 13px;
+}
+.database-field-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+.database-field-menu {
+  display: grid;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #8a877f;
+  place-items: center;
+  cursor: pointer;
+}
+.database-field-menu:hover,
+.database-field-select:hover {
+  background: #eef0f4;
+}
+.database-field-menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 24;
+  display: grid;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgb(40 36 28 / 12%);
+}
+.database-table .database-field-menu-pop button,
+.database-field-menu-pop button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #37352f;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.database-field-menu-pop button:hover {
+  background: #f2f2f0;
+}
+.database-field-menu-pop button.danger {
+  color: #d44c47;
+}
+.database-field-menu-pop hr {
+  height: 1px;
+  margin: 4px 6px;
+  border: 0;
+  background: #efeeeb;
+}
+.database-field-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  border: 0;
+  background: rgb(20 20 20 / 18%);
+}
+.database-field-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 71;
+  display: flex;
+  flex-direction: column;
+  width: min(400px, 96vw);
+  margin: 0;
+  border: 0;
+  border-left: 1px solid #e4e2dc;
+  background: #fff;
+  box-shadow: -16px 0 40px rgb(20 20 20 / 12%);
+}
+.database-field-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px 10px;
+}
+.database-field-panel > header strong {
+  font-size: 16px;
+}
+.database-field-panel > header button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+}
+.database-field-panel-body {
+  display: grid;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 18px 20px;
+}
+.database-field-name,
+.database-field-type,
+.database-field-options,
+.database-field-description,
+.database-field-panel-body > label {
+  display: grid;
+  gap: 6px;
+}
+.database-field-name span,
+.database-field-type > span,
+.database-field-options > span,
+.database-field-description > span,
+.database-field-panel-body > label > span:first-child {
+  color: #8b8a85;
+  font-size: 12px;
+}
+.database-field-name input {
+  height: 36px;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+.database-field-description textarea {
+  min-height: 64px;
+  resize: vertical;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+.database-field-type-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  background: #fff;
+  color: #37352f;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.database-field-type-current.open,
+.database-field-type-current:hover {
+  border-color: #cfcbc3;
+  background: #f7f7f5;
+}
+.database-field-type-current svg:last-child {
+  margin-left: auto;
+  color: #8a877f;
+}
+.database-field-type-group {
+  display: grid;
+  gap: 6px;
+}
+.database-field-type-group > small {
+  color: #b0aea8;
+  font-size: 11px;
+}
+.database-field-type-group > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.database-field-type-group button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #eceae4;
+  border-radius: 8px;
+  background: #fff;
+  color: #37352f;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.database-field-type-group button:hover {
+  background: #f7f7f5;
+}
+.database-field-type-group button.active {
+  border-color: #3370ff;
+  background: #e8f3ff;
+  color: #1456d9;
+}
+.database-field-type-group button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.database-field-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+}
+.database-field-option-list .database-option-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.database-field-option-list .database-option-chip button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.database-field-option-list input {
+  min-width: 120px;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  font: inherit;
+  font-size: 13px;
+}
+.database-field-advanced {
+  border-top: 1px solid #efeeeb;
+  padding-top: 10px;
+}
+.database-field-advanced summary {
+  cursor: pointer;
+  color: #6f6d68;
+  font-size: 13px;
+}
+.database-field-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid #efeeeb;
+}
+.database-field-panel-footer .danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: #d44c47;
+  font: inherit;
+  cursor: pointer;
 }
 .database-cell-display {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
   width: 100%;
   min-height: 34px;
@@ -8054,9 +8371,34 @@ button.page-icon-display:hover {
   color: inherit;
   font: inherit;
   text-align: left;
+  cursor: cell;
+}
+.database-cell-display > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: cell;
+}
+.database-cell-display.is-title {
+  font-weight: 600;
+}
+.database-title-open-link {
+  display: none;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: #8a877f;
+}
+.database-table-grid td:hover > .database-cell-display .database-title-open-link {
+  display: inline-flex;
+}
+.database-title-open-link:hover {
+  background: #eef0f4;
+  color: #37352f;
 }
 .database-property-grants {
   display: grid;
@@ -8226,18 +8568,38 @@ button.page-icon-display:hover {
 .database-table th button:hover {
   background: #f5f5f3;
 }
-.database-table th button span {
+.database-table th > button span {
   font-size: 10px;
   border-radius: 3px;
   padding: 2px 4px;
   background: #f0efed;
 }
-.database-table th button svg {
+.database-table th > button svg {
   margin-left: auto;
   opacity: 0;
 }
-.database-table th button:hover svg {
+.database-table th > button:hover svg {
   opacity: 1;
+}
+.database-table .database-field-head button {
+  width: auto;
+  height: auto;
+  padding: 0;
+}
+.database-table .database-field-head button span {
+  font-size: inherit;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+.database-table .database-field-head button svg,
+.database-table .database-field-head button:hover svg {
+  margin-left: 0;
+  opacity: 1;
+}
+.database-table .database-field-menu {
+  width: 22px;
+  height: 22px;
 }
 .database-table-group-heading th {
   height: 38px;
