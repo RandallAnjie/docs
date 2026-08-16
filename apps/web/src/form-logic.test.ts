@@ -14,11 +14,11 @@ const field = (
 
 describe('form conditionals', () => {
   it('hides a field until the controlling answer matches', () => {
-    expect(formFieldVisible(field({ propertyId: 'kind', op: 'eq', value: '是' }), { kind: '否' })).toBe(
-      false,
-    );
-    expect(formFieldVisible(field({ propertyId: 'kind', op: 'eq', value: '是' }), { kind: '是' })).toBe(
-      true,
-    );
+    expect(
+      formFieldVisible(field({ propertyId: 'kind', op: 'eq', value: '是' }), { kind: '否' }),
+    ).toBe(false);
+    expect(
+      formFieldVisible(field({ propertyId: 'kind', op: 'eq', value: '是' }), { kind: '是' }),
+    ).toBe(true);
   });
 });
