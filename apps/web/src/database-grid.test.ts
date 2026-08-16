@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   databaseViewStorageKey,
   moveDatabaseGridCell,
+  moveDatabaseGridColumn,
   readStoredDatabaseViewId,
   shouldVirtualizeDatabaseRows,
   visibleRowWindow,
@@ -80,5 +81,13 @@ describe('database grid helpers', () => {
       rowId: 'r1',
       propertyId: 'p2',
     });
+  });
+
+  it('moves a selected column without entering a cell', () => {
+    expect(moveDatabaseGridColumn(properties, 'p2', 'ArrowLeft')).toBe('p1');
+    expect(moveDatabaseGridColumn(properties, 'p1', 'ArrowLeft')).toBe('p1');
+    expect(moveDatabaseGridColumn(properties, 'p1', 'ArrowRight')).toBe('p2');
+    expect(moveDatabaseGridColumn(properties, 'p1', 'End')).toBe('p2');
+    expect(moveDatabaseGridColumn(properties, 'p2', 'Home')).toBe('p1');
   });
 });

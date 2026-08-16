@@ -1,11 +1,17 @@
 import {
   Archive,
   Activity,
+  AlignLeft,
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   BarChart3,
   CalendarDays,
   Check,
+  CheckSquare,
   ChevronDown,
+  CircleDot,
+  Calculator,
   ChevronLeft,
   ChevronRight,
   Columns3,
@@ -13,18 +19,24 @@ import {
   Download,
   ExternalLink,
   Eye,
+  EyeOff,
   FileText,
   Filter,
+  Hash,
   GalleryHorizontal,
   KanbanSquare,
   LayoutDashboard,
   LayoutTemplate,
   Layers,
+  Link2,
   List,
+  Mail,
   ListPlus,
   Maximize2,
   Lock,
   MapPinned,
+  Paperclip,
+  Phone,
   Plus,
   Play,
   Rss,
@@ -34,6 +46,8 @@ import {
   Star,
   Table2,
   Trash2,
+  Type,
+  User,
   Zap,
 } from 'lucide-react';
 import {
@@ -127,6 +141,7 @@ import { formFieldVisible } from './form-logic';
 import { confirmDialog, showToast } from './dialogs';
 import {
   moveDatabaseGridCell,
+  moveDatabaseGridColumn,
   readStoredDatabaseViewId,
   shouldVirtualizeDatabaseRows,
   visibleRowWindow,
@@ -160,6 +175,42 @@ const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   unique_id: '唯一 ID',
   place: '地点',
 };
+
+const PROPERTY_TYPE_META: Record<
+  DatabasePropertyType,
+  { label: string; icon: (props: { size?: number }) => ReactNode; group: string }
+> = {
+  title: { label: '标题', icon: Type, group: '基础' },
+  text: { label: '文本', icon: AlignLeft, group: '基础' },
+  number: { label: '数字', icon: Hash, group: '基础' },
+  select: { label: '单选', icon: CircleDot, group: '基础' },
+  multi_select: { label: '多选', icon: Layers, group: '基础' },
+  status: { label: '状态', icon: Activity, group: '基础' },
+  date: { label: '日期', icon: CalendarDays, group: '基础' },
+  checkbox: { label: '复选框', icon: CheckSquare, group: '基础' },
+  person: { label: '人员', icon: User, group: '人员' },
+  files: { label: '附件', icon: Paperclip, group: '基础' },
+  url: { label: '超链接', icon: Link2, group: '进阶' },
+  email: { label: '邮箱', icon: Mail, group: '进阶' },
+  phone: { label: '电话', icon: Phone, group: '进阶' },
+  formula: { label: '公式', icon: Calculator, group: '进阶' },
+  relation: { label: '关联', icon: Link2, group: '进阶' },
+  rollup: { label: '查找引用', icon: Search, group: '进阶' },
+  created_time: { label: '创建时间', icon: CalendarDays, group: '系统' },
+  last_edited_time: { label: '最后编辑时间', icon: CalendarDays, group: '系统' },
+  created_by: { label: '创建人', icon: User, group: '系统' },
+  last_edited_by: { label: '最后编辑人', icon: User, group: '系统' },
+  button: { label: '按钮', icon: Zap, group: '进阶' },
+  unique_id: { label: '自动编号', icon: Hash, group: '系统' },
+  place: { label: '地点', icon: MapPinned, group: '进阶' },
+};
+
+const FIELD_TYPE_GROUPS = ['基础', '人员', '进阶', '系统'] as const;
+
+function propertyTypeIcon(type: DatabasePropertyType, size = 14) {
+  const Icon = PROPERTY_TYPE_META[type]?.icon ?? AlignLeft;
+  return <Icon size={size} />;
+}
 
 const VIEW_META: Record<
   DatabaseViewType,
@@ -851,12 +902,14 @@ function OptionChip({ name }: { name: string }) {
 }
 
 function OptionChipSelect({
+  autoFocus,
   disabled,
   emptyLabel,
   onChange,
   options,
   value,
 }: {
+  autoFocus?: boolean;
   disabled: boolean;
   emptyLabel: string;
   onChange: (value: string) => void;
@@ -872,6 +925,7 @@ function OptionChipSelect({
       )}
       <select
         aria-label="选择选项"
+        autoFocus={autoFocus}
         disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -944,6 +998,8 @@ function DatabaseCell({
   reminderSourceId,
   onOpenRecord,
   forceEdit,
+  autoFocus,
+  onExit,
 }: {
   property: DatabasePropertySummary;
   value: JsonValue | undefined;
@@ -957,6 +1013,8 @@ function DatabaseCell({
   reminderSourceId?: string;
   onOpenRecord?: () => void;
   forceEdit?: boolean;
+  autoFocus?: boolean;
+  onExit?: () => void;
 }) {
   const [draft, setDraft] = useState(() => toInputValue(property, value));
   const [saving, setSaving] = useState(false);
@@ -1055,6 +1113,7 @@ function DatabaseCell({
   if ((property.type === 'select' || property.type === 'status') && options.length) {
     return (
       <OptionChipSelect
+        autoFocus={autoFocus}
         disabled={disabled || saving}
         emptyLabel="—"
         onChange={(next) => {
@@ -1110,6 +1169,7 @@ function DatabaseCell({
         <input
           type={includeTime ? 'datetime-local' : 'date'}
           value={parsed ? datePart(parsed.start, includeTime) : draft}
+          autoFocus={autoFocus}
           disabled={disabled}
           onChange={(event) => {
             const next = fromDateParts(
@@ -1150,17 +1210,16 @@ function DatabaseCell({
       </div>
     );
   }
-  if (property.type === 'title' && onOpenRecord && !forceEdit) {
+  if (property.type === 'title' && !forceEdit) {
     return (
       <div className={`database-input-cell database-title-open ${saving ? 'saving' : ''}`}>
-        <button type="button" className="database-title-button" onClick={() => onOpenRecord()}>
-          {draft.trim() || '无标题'}
-        </button>
+        <span className="database-title-button">{draft.trim() || '无标题'}</span>
         {openPage ? (
           <a
             href={`/p/${encodeURIComponent(openPage)}`}
             aria-label="打开数据行页面"
             title="打开为页面"
+            onClick={(event) => event.stopPropagation()}
           >
             <ExternalLink size={13} />
           </a>
@@ -1174,15 +1233,28 @@ function DatabaseCell({
       <input
         type={inputType}
         value={draft}
+        autoFocus={autoFocus}
         disabled={disabled}
         inputMode={property.type === 'number' ? 'decimal' : undefined}
+        onFocus={(event) => {
+          if (autoFocus) event.currentTarget.select();
+        }}
         onChange={(event) => {
           const next = event.target.value;
           setDraft(next);
           window.clearTimeout(timer.current);
           timer.current = window.setTimeout(() => void flush(next), 550);
         }}
-        onBlur={() => void flush()}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          void flush();
+          onExit?.();
+        }}
+        onBlur={() => {
+          void flush();
+          onExit?.();
+        }}
         aria-label={property.name}
       />
     </div>
@@ -1199,6 +1271,195 @@ function EmptyDatabase({ onCreate, disabled }: { onCreate: () => void; disabled:
         <button type="button" onClick={onCreate}>
           <Plus size={15} /> 新建记录
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+function FieldTypePicker({
+  type,
+  typeKind,
+  locked,
+  defaultOpen,
+  onPick,
+}: {
+  type: DatabasePropertyType;
+  typeKind: string;
+  locked: boolean;
+  defaultOpen: boolean;
+  onPick: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const current = PROPERTY_TYPE_META[type];
+  const CurrentIcon = current?.icon ?? AlignLeft;
+  return (
+    <div className="database-field-type">
+      <span>字段类型</span>
+      <button
+        type="button"
+        className={`database-field-type-current ${open ? 'open' : ''}`}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <CurrentIcon size={16} />
+        {current?.label ?? PROPERTY_LABELS[type]}
+        <ChevronDown size={14} />
+      </button>
+      {open
+        ? FIELD_TYPE_GROUPS.map((group) => {
+            const items = (
+              Object.entries(PROPERTY_TYPE_META) as Array<
+                [DatabasePropertyType, (typeof PROPERTY_TYPE_META)[DatabasePropertyType]]
+              >
+            ).filter(([key, meta]) => meta.group === group && key !== 'title');
+            if (!items.length) return null;
+            return (
+              <div key={group} className="database-field-type-group">
+                <small>{group}</small>
+                <div>
+                  {items.map(([key, meta]) => {
+                    const Icon = meta.icon;
+                    const active = typeKind === key || type === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={active ? 'active' : undefined}
+                        disabled={locked && !active}
+                        title={locked && !active ? '已有字段暂不支持更改类型' : undefined}
+                        onClick={() => {
+                          if (locked) {
+                            setOpen(false);
+                            return;
+                          }
+                          onPick(key);
+                          setOpen(false);
+                        }}
+                      >
+                        <Icon size={15} />
+                        {meta.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })
+        : null}
+    </div>
+  );
+}
+
+function TableFieldHeader({
+  property,
+  selected,
+  canEdit,
+  renaming,
+  menuOpen,
+  onSelect,
+  onStartRename,
+  onCommitRename,
+  onCancelRename,
+  onToggleMenu,
+  onConfigure,
+  onSort,
+  onHide,
+  onDelete,
+}: {
+  property: DatabasePropertySummary;
+  selected: boolean;
+  canEdit: boolean;
+  renaming: boolean;
+  menuOpen: boolean;
+  onSelect: () => void;
+  onStartRename: () => void;
+  onCommitRename: (name: string) => void;
+  onCancelRename: () => void;
+  onToggleMenu: () => void;
+  onConfigure: () => void;
+  onSort: (direction: 'ascending' | 'descending') => void;
+  onHide: () => void;
+  onDelete: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (renaming) inputRef.current?.select();
+  }, [renaming]);
+  return (
+    <div className={`database-field-head ${selected ? 'selected' : ''}`}>
+      {renaming ? (
+        <input
+          ref={inputRef}
+          className="database-field-rename"
+          defaultValue={property.name}
+          maxLength={100}
+          aria-label={`重命名${property.name}`}
+          onClick={(event) => event.stopPropagation()}
+          onBlur={(event) => onCommitRename(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              onCommitRename(event.currentTarget.value);
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              onCancelRename();
+            }
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          className="database-field-select"
+          title="单击选中整列，双击重命名"
+          onClick={onSelect}
+          onDoubleClick={() => {
+            if (canEdit) onStartRename();
+          }}
+        >
+          {propertyTypeIcon(property.type, 13)}
+          <span>{property.name}</span>
+        </button>
+      )}
+      {canEdit ? (
+        <div className="database-field-menu-wrap">
+          <button
+            type="button"
+            className="database-field-menu"
+            aria-label={`${property.name}字段菜单`}
+            aria-expanded={menuOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleMenu();
+            }}
+          >
+            <ChevronDown size={13} />
+          </button>
+          {menuOpen ? (
+            <div className="database-field-menu-pop" role="menu">
+              <button type="button" role="menuitem" onClick={() => onSort('ascending')}>
+                <ArrowUp size={14} /> 升序
+              </button>
+              <button type="button" role="menuitem" onClick={() => onSort('descending')}>
+                <ArrowDown size={14} /> 降序
+              </button>
+              <hr />
+              <button type="button" role="menuitem" onClick={onConfigure}>
+                <Settings2 size={14} /> 字段配置
+              </button>
+              {property.type !== 'title' ? (
+                <button type="button" role="menuitem" onClick={onHide}>
+                  <EyeOff size={14} /> 隐藏字段
+                </button>
+              ) : null}
+              {property.type !== 'title' ? (
+                <button type="button" role="menuitem" className="danger" onClick={onDelete}>
+                  <Trash2 size={14} /> 删除字段
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -1223,6 +1484,8 @@ function TableDatabaseView({
   onToggleAllRows,
   onExpandRow,
   onAddProperty,
+  renameProperty,
+  deleteProperty,
 }: DatabaseViewProps & { openProperty: (property: DatabasePropertySummary) => void }) {
   const groupPropertyId =
     typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : null;
@@ -1256,7 +1519,10 @@ function TableDatabaseView({
   };
   const wrap = useRef<HTMLDivElement>(null);
   const [focus, setFocus] = useState<{ rowId: string; propertyId: string } | null>(null);
+  const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [fieldMenuId, setFieldMenuId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(480);
   const flatRows = grouped ? groups.flatMap((group) => group.rows) : rows;
@@ -1273,22 +1539,97 @@ function TableDatabaseView({
   const windowed = visibleRowWindow(flatRows.length, scrollTop, viewportHeight);
   const visibleRows = virtualize ? flatRows.slice(windowed.start, windowed.end) : flatRows;
   const renderGroups = grouped ? groups : [{ key: 'all', label: '', rows: visibleRows }];
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (wrap.current?.contains(target)) return;
+      if (
+        target instanceof Element &&
+        target.closest('.database-field-panel, .database-field-backdrop')
+      ) {
+        return;
+      }
+      setSelectedColumnId(null);
+      setFocus(null);
+      setEditing(false);
+      setFieldMenuId(null);
+      setRenamingId(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, []);
+  const selectColumn = (propertyId: string) => {
+    setSelectedColumnId(propertyId);
+    setFocus(null);
+    setEditing(false);
+    setFieldMenuId(null);
+    setRenamingId(null);
+  };
+  const hideProperty = (property: DatabasePropertySummary) => {
+    if (property.type === 'title') return;
+    const current = Array.isArray(view.config.visiblePropertyIds)
+      ? view.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string')
+      : properties.map((item) => item.id);
+    void updateViewConfig({
+      ...view.config,
+      visiblePropertyIds: current.filter((id) => id !== property.id),
+    });
+    setFieldMenuId(null);
+  };
+  const sortByProperty = (
+    property: DatabasePropertySummary,
+    direction: 'ascending' | 'descending',
+  ) => {
+    void updateViewConfig({
+      ...view.config,
+      sorts: [{ propertyId: property.id, direction }],
+    });
+    setFieldMenuId(null);
+  };
   const onGridKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!focus || editing) {
+    if (renamingId) return;
+    if (editing) {
       if (event.key === 'Escape') setEditing(false);
       return;
     }
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      const row = flatRows.find((item) => item.id === focus.rowId);
-      const property = properties.find((item) => item.id === focus.propertyId);
-      if (property?.type === 'title' && row) onExpandRow?.(row);
-      else setEditing(true);
+    if (!focus && selectedColumnId) {
+      if (event.key === 'Escape') {
+        setSelectedColumnId(null);
+        setFieldMenuId(null);
+        return;
+      }
+      if (event.key === 'F2' && canEdit) {
+        event.preventDefault();
+        setRenamingId(selectedColumnId);
+        setFieldMenuId(null);
+        return;
+      }
+      if (
+        event.key === 'ArrowLeft' ||
+        event.key === 'ArrowRight' ||
+        event.key === 'Home' ||
+        event.key === 'End'
+      ) {
+        event.preventDefault();
+        setSelectedColumnId(moveDatabaseGridColumn(properties, selectedColumnId, event.key));
+        return;
+      }
+      if ((event.key === 'ArrowDown' || event.key === 'Enter') && flatRows[0]) {
+        event.preventDefault();
+        setFocus({ rowId: flatRows[0].id, propertyId: selectedColumnId });
+        setEditing(event.key === 'Enter');
+      }
       return;
     }
-    if (event.key === 'F2') {
+    if (!focus) return;
+    if (event.key === 'Enter' || event.key === 'F2') {
       event.preventDefault();
       setEditing(true);
+      return;
+    }
+    if (event.key === 'Escape') {
+      setFocus(null);
       return;
     }
     if (
@@ -1301,7 +1642,9 @@ function TableDatabaseView({
       event.key === 'End'
     ) {
       event.preventDefault();
-      setFocus(moveDatabaseGridCell(flatRows, properties, focus, event.key, event.shiftKey));
+      const next = moveDatabaseGridCell(flatRows, properties, focus, event.key, event.shiftKey);
+      setFocus(next);
+      setSelectedColumnId(next.propertyId);
     }
   };
   return (
@@ -1335,14 +1678,44 @@ function TableDatabaseView({
               return (
                 <th
                   key={property.id}
-                  className={property.type === 'title' ? 'database-col-title' : undefined}
+                  className={`${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}`}
                   style={{ width }}
                 >
-                  <button type="button" onClick={() => openProperty(property)}>
-                    <span>{PROPERTY_LABELS[property.type]}</span>
-                    {property.name}
-                    <ChevronDown size={12} />
-                  </button>
+                  <TableFieldHeader
+                    property={property}
+                    selected={selectedColumnId === property.id}
+                    canEdit={canEdit}
+                    renaming={renamingId === property.id}
+                    menuOpen={fieldMenuId === property.id}
+                    onSelect={() => selectColumn(property.id)}
+                    onStartRename={() => {
+                      setRenamingId(property.id);
+                      setSelectedColumnId(property.id);
+                      setFieldMenuId(null);
+                      setFocus(null);
+                      setEditing(false);
+                    }}
+                    onCommitRename={(name) => {
+                      const next = name.trim();
+                      setRenamingId(null);
+                      if (next && next !== property.name) void renameProperty?.(property, next);
+                    }}
+                    onCancelRename={() => setRenamingId(null)}
+                    onToggleMenu={() => {
+                      setSelectedColumnId(property.id);
+                      setFieldMenuId((current) => (current === property.id ? null : property.id));
+                    }}
+                    onConfigure={() => {
+                      setFieldMenuId(null);
+                      openProperty(property);
+                    }}
+                    onSort={(direction) => sortByProperty(property, direction)}
+                    onHide={() => hideProperty(property)}
+                    onDelete={() => {
+                      setFieldMenuId(null);
+                      void deleteProperty?.(property);
+                    }}
+                  />
                   <i
                     className="database-col-resize"
                     role="separator"
@@ -1436,26 +1809,33 @@ function TableDatabaseView({
                     {properties.map((property) => {
                       const selectedCell =
                         focus?.rowId === row.id && focus.propertyId === property.id;
+                      const columnPicked = selectedColumnId === property.id;
                       const live =
                         property.type === 'checkbox' ||
                         property.type === 'button' ||
                         (selectedCell && editing);
-                      const editTitle = property.type === 'title' && selectedCell && editing;
                       return (
                         <td
                           key={property.id}
-                          className={`${property.type === 'title' ? 'database-col-title' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
+                          className={`${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
                           onClick={() => {
                             setFocus({ rowId: row.id, propertyId: property.id });
-                            if (property.type !== 'title') setEditing(false);
+                            setSelectedColumnId(property.id);
+                            setEditing(false);
                           }}
                           onDoubleClick={() => {
                             setFocus({ rowId: row.id, propertyId: property.id });
-                            if (property.type === 'title') onExpandRow?.(row);
-                            else setEditing(true);
+                            setSelectedColumnId(property.id);
+                            if (
+                              canEdit &&
+                              property.type !== 'checkbox' &&
+                              property.type !== 'button'
+                            ) {
+                              setEditing(true);
+                            }
                           }}
                         >
-                          {live || (property.type === 'title' && !editTitle) ? (
+                          {live ? (
                             <DatabaseCell
                               property={property}
                               value={row.values[property.id]}
@@ -1465,16 +1845,31 @@ function TableDatabaseView({
                               rowPageId={row.pageId}
                               onSave={(value) => saveCell(row, property, value)}
                               onButton={() => executeButton(row, property)}
-                              onOpenRecord={
-                                property.type === 'title' ? () => onExpandRow?.(row) : undefined
-                              }
-                              forceEdit={editTitle}
+                              forceEdit={property.type === 'title'}
+                              autoFocus={selectedCell && editing}
+                              onExit={() => setEditing(false)}
                               actorId={actorId}
                               reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
                             />
                           ) : (
-                            <span className="database-cell-display">
-                              {valueText(row.values[property.id]) || ' '}
+                            <span
+                              className={`database-cell-display ${property.type === 'title' ? 'is-title' : ''}`}
+                            >
+                              <span>
+                                {valueText(row.values[property.id]) ||
+                                  (property.type === 'title' ? '无标题' : ' ')}
+                              </span>
+                              {property.type === 'title' && row.pageId ? (
+                                <a
+                                  className="database-title-open-link"
+                                  href={`/p/${encodeURIComponent(row.pageId)}`}
+                                  aria-label={`打开${rowTitle(row, properties)}`}
+                                  title="打开为页面"
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <ExternalLink size={13} />
+                                </a>
+                              ) : null}
                             </span>
                           )}
                         </td>
@@ -1602,6 +1997,8 @@ interface DatabaseViewProps {
   onToggleAllRows?: () => void;
   onExpandRow?: (row: DatabaseRowSummary) => void;
   onAddProperty?: () => void;
+  renameProperty?: (property: DatabasePropertySummary, name: string) => Promise<void>;
+  deleteProperty?: (property: DatabasePropertySummary) => Promise<void>;
 }
 
 function DatabaseViewBar({
@@ -3816,6 +4213,10 @@ function PropertyDialog({
   );
   const [includeTime, setIncludeTime] = useState(property?.config.includeTime === true);
   const [includeRange, setIncludeRange] = useState(property?.config.includeRange === true);
+  const [description, setDescription] = useState(
+    typeof property?.config.description === 'string' ? property.config.description : '',
+  );
+  const [optionDraft, setOptionDraft] = useState('');
   const [typeKind, setTypeKind] = useState(() => {
     if (!property) return 'text';
     if (property.type === 'date' && property.config.includeRange === true) return 'date_range';
@@ -3862,6 +4263,13 @@ function PropertyDialog({
       active = false;
     };
   }, [relationProperties, relationPropertyId, targetDatabaseId, type]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy) return;
@@ -3889,6 +4297,8 @@ function PropertyDialog({
       config.includeTime = includeTime;
       config.includeRange = includeRange;
     }
+    if (description.trim()) config.description = description.trim();
+    else delete config.description;
     if (type === 'unique_id') config.prefix = prefix;
     if (type === 'button') {
       config.label = buttonLabel.trim() || name;
@@ -3950,373 +4360,411 @@ function PropertyDialog({
       setBusy(false);
     }
   };
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <form className="rdocs-dialog database-dialog" onSubmit={(event) => void submit(event)}>
-        <h2>{property ? '编辑属性' : '新建属性'}</h2>
-        <label>
-          名称
-          <input
-            value={name}
-            maxLength={100}
-            onChange={(event) => setName(event.target.value)}
-            autoFocus
-          />
-        </label>
-        <label>
-          类型
-          <select
-            value={typeKind}
-            disabled={Boolean(property)}
-            onChange={(event) => {
-              const next = event.target.value;
-              setTypeKind(next);
-              if (next === 'date_range') {
-                setType('date');
-                setIncludeRange(true);
-                setIncludeTime(false);
-              } else if (next === 'date_time') {
-                setType('date');
-                setIncludeRange(false);
-                setIncludeTime(true);
-              } else if (next === 'date') {
-                setType('date');
-                setIncludeRange(false);
-                setIncludeTime(false);
-              } else {
-                setType(next as DatabasePropertyType);
-              }
-            }}
-          >
-            <optgroup label="文本与数字">
-              <option value="text">文本</option>
-              <option value="number">数字</option>
-              <option value="select">单选</option>
-              <option value="status">状态</option>
-              <option value="multi_select">多选</option>
-              <option value="checkbox">复选框</option>
-            </optgroup>
-            <optgroup label="日期与时间">
-              <option value="date">日期</option>
-              <option value="date_range">日期区间</option>
-              <option value="date_time">日期时间</option>
-              <option value="created_time">创建时间</option>
-              <option value="last_edited_time">最后编辑时间</option>
-            </optgroup>
-            <optgroup label="人员">
-              <option value="person">人员</option>
-              <option value="created_by">创建者</option>
-              <option value="last_edited_by">最后编辑者</option>
-            </optgroup>
-            <optgroup label="其他">
-              <option value="url">网址</option>
-              <option value="email">邮箱</option>
-              <option value="phone">电话</option>
-              <option value="files">文件</option>
-              <option value="relation">关系</option>
-              <option value="rollup">汇总</option>
-              <option value="formula">公式</option>
-              <option value="button">按钮</option>
-              <option value="unique_id">唯一 ID</option>
-              <option value="place">地点</option>
-            </optgroup>
-          </select>
-        </label>
-        {type === 'select' || type === 'status' || type === 'multi_select' ? (
-          <label>
-            选项（逗号分隔）
-            <input
-              value={options}
-              onChange={(event) => setOptions(event.target.value)}
-              placeholder="未开始, 进行中, 已完成"
-            />
-          </label>
-        ) : null}
-        {type === 'date' ? (
-          <>
-            <label className="database-dialog-checkbox">
-              <input
-                type="checkbox"
-                checked={includeRange}
-                onChange={(event) => {
-                  setIncludeRange(event.target.checked);
-                  setTypeKind(
-                    event.target.checked ? 'date_range' : includeTime ? 'date_time' : 'date',
-                  );
-                }}
-              />
-              日期区间
-            </label>
-            <label className="database-dialog-checkbox">
-              <input
-                type="checkbox"
-                checked={includeTime}
-                onChange={(event) => {
-                  setIncludeTime(event.target.checked);
-                  setTypeKind(
-                    includeRange ? 'date_range' : event.target.checked ? 'date_time' : 'date',
-                  );
-                }}
-              />
-              包含具体时间
-            </label>
-          </>
-        ) : null}
-        {property && ['title', 'text'].includes(property.type) ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              void autofillDatabaseProperty(databaseId, { propertyId: property.id })
-                .then((result) => {
-                  showToast(`已自动填写 ${result.updated} 行`, 'success');
-                  return onChanged();
-                })
-                .catch((reason: unknown) =>
-                  setError(reason instanceof Error ? reason.message : '无法自动填写'),
-                );
-            }}
-          >
-            用 AI 填写此列
+  const applyTypeKind = (next: string) => {
+    setTypeKind(next);
+    if (next === 'date_range') {
+      setType('date');
+      setIncludeRange(true);
+      setIncludeTime(false);
+    } else if (next === 'date_time') {
+      setType('date');
+      setIncludeRange(false);
+      setIncludeTime(true);
+    } else if (next === 'date') {
+      setType('date');
+      setIncludeRange(false);
+      setIncludeTime(false);
+    } else {
+      setType(next as DatabasePropertyType);
+    }
+  };
+  const optionItems = options
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return createPortal(
+    <>
+      <button
+        className="database-field-backdrop"
+        type="button"
+        aria-label="关闭字段设置"
+        onClick={onClose}
+      />
+      <form
+        className="database-field-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label={property ? '字段配置' : '新增字段'}
+        onSubmit={(event) => void submit(event)}
+      >
+        <header>
+          <strong>{property ? '字段配置' : '新增字段'}</strong>
+          <button type="button" onClick={onClose} aria-label="关闭">
+            ×
           </button>
-        ) : null}
-        {type === 'formula' ? (
-          <label>
-            公式
-            <textarea
-              value={expression}
-              onChange={(event) => setExpression(event.target.value)}
-              placeholder={'if(prop("完成"), "✓", "")'}
-            />
-          </label>
-        ) : null}
-        {type === 'relation' ? (
-          <>
-            <label>
-              目标数据库
-              <select
-                value={targetDatabaseId}
-                disabled={Boolean(property)}
-                onChange={(event) => setTargetDatabaseId(event.target.value)}
-              >
-                <option value="">选择数据库</option>
-                {databases.map((database) => (
-                  <option key={database.id} value={database.id}>
-                    {database.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {property ? (
-              typeof property.config.syncedPropertyId === 'string' ? (
-                <p className="database-dialog-hint">此关系会自动同步到目标数据库。</p>
-              ) : (
-                <p className="database-dialog-hint">这是单向关系；如需双向关系，请新建属性。</p>
-              )
-            ) : (
-              <>
-                <label className="database-dialog-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={twoWayRelation}
-                    onChange={(event) => setTwoWayRelation(event.target.checked)}
-                  />
-                  在目标数据库中显示反向关系
-                </label>
-                {twoWayRelation ? (
-                  <label>
-                    反向属性名称
-                    <input
-                      value={reciprocalName}
-                      maxLength={100}
-                      onChange={(event) => setReciprocalName(event.target.value)}
-                    />
-                  </label>
-                ) : null}
-              </>
-            )}
-          </>
-        ) : null}
-        {type === 'rollup' ? (
-          <>
-            <label>
-              关系属性
-              <select
-                value={relationPropertyId}
-                onChange={(event) => setRelationPropertyId(event.target.value)}
-              >
-                <option value="">选择关系</option>
-                {relationProperties.map((relation) => (
-                  <option key={relation.id} value={relation.id}>
-                    {relation.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              目标属性
-              <select
-                value={targetPropertyId}
-                onChange={(event) => setTargetPropertyId(event.target.value)}
-              >
-                <option value="">选择属性</option>
-                {targetSnapshot?.properties.map((targetProperty) => (
-                  <option key={targetProperty.id} value={targetProperty.id}>
-                    {targetProperty.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              计算方式
-              <select value={calculation} onChange={(event) => setCalculation(event.target.value)}>
-                <option value="show_original">显示原值</option>
-                <option value="show_unique">显示唯一值</option>
-                <option value="count_all">全部计数</option>
-                <option value="count_values">非空计数</option>
-                <option value="count_unique">唯一值计数</option>
-                <option value="percent_empty">空值百分比</option>
-                <option value="percent_not_empty">非空百分比</option>
-                <option value="percent_checked">已勾选百分比</option>
-                <option value="sum">求和</option>
-                <option value="average">平均值</option>
-                <option value="min">最小值</option>
-                <option value="max">最大值</option>
-                <option value="earliest_date">最早日期</option>
-                <option value="latest_date">最晚日期</option>
-              </select>
-            </label>
-          </>
-        ) : null}
-        {type === 'unique_id' ? (
-          <label>
-            ID 前缀
+        </header>
+        <div className="database-field-panel-body">
+          <label className="database-field-name">
+            <span>字段名称</span>
             <input
-              value={prefix}
-              onChange={(event) => setPrefix(event.target.value)}
-              placeholder="TASK-"
+              value={name}
+              maxLength={100}
+              onChange={(event) => setName(event.target.value)}
+              autoFocus
+              placeholder="未命名"
             />
           </label>
-        ) : null}
-        {type === 'button' ? (
-          <>
+          <FieldTypePicker
+            type={type}
+            typeKind={typeKind}
+            locked={Boolean(property)}
+            defaultOpen={!property}
+            onPick={applyTypeKind}
+          />
+          <label className="database-field-description">
+            <span>字段描述</span>
+            <textarea
+              value={description}
+              rows={2}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="说明这个字段的用途"
+            />
+          </label>
+          {type === 'select' || type === 'status' || type === 'multi_select' ? (
+            <div className="database-field-options">
+              <span>选项</span>
+              <div className="database-field-option-list">
+                {optionItems.map((item) => {
+                  const swatch = optionSwatch(item);
+                  return (
+                    <span
+                      key={item}
+                      className="database-option-chip"
+                      style={{ background: swatch.background, color: swatch.color }}
+                    >
+                      {item}
+                      <button
+                        type="button"
+                        aria-label={`删除${item}`}
+                        onClick={() =>
+                          setOptions(
+                            optionItems.filter((candidate) => candidate !== item).join(', '),
+                          )
+                        }
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+                <input
+                  value={optionDraft}
+                  placeholder="添加选项后回车"
+                  onChange={(event) => setOptionDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return;
+                    event.preventDefault();
+                    const next = optionDraft.trim();
+                    if (!next || optionItems.includes(next)) return;
+                    setOptions([...optionItems, next].join(', '));
+                    setOptionDraft('');
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
+          {type === 'date' ? (
+            <>
+              <label className="database-dialog-checkbox">
+                <input
+                  type="checkbox"
+                  checked={includeRange}
+                  onChange={(event) => {
+                    setIncludeRange(event.target.checked);
+                    setTypeKind(
+                      event.target.checked ? 'date_range' : includeTime ? 'date_time' : 'date',
+                    );
+                  }}
+                />
+                日期区间
+              </label>
+              <label className="database-dialog-checkbox">
+                <input
+                  type="checkbox"
+                  checked={includeTime}
+                  onChange={(event) => {
+                    setIncludeTime(event.target.checked);
+                    setTypeKind(
+                      includeRange ? 'date_range' : event.target.checked ? 'date_time' : 'date',
+                    );
+                  }}
+                />
+                包含具体时间
+              </label>
+            </>
+          ) : null}
+          {property && ['title', 'text'].includes(property.type) ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                void autofillDatabaseProperty(databaseId, { propertyId: property.id })
+                  .then((result) => {
+                    showToast(`已自动填写 ${result.updated} 行`, 'success');
+                    return onChanged();
+                  })
+                  .catch((reason: unknown) =>
+                    setError(reason instanceof Error ? reason.message : '无法自动填写'),
+                  );
+              }}
+            >
+              用 AI 填写此列
+            </button>
+          ) : null}
+          {type === 'formula' ? (
             <label>
-              按钮文字
-              <input
-                value={buttonLabel}
-                maxLength={100}
-                onChange={(event) => setButtonLabel(event.target.value)}
+              公式
+              <textarea
+                value={expression}
+                onChange={(event) => setExpression(event.target.value)}
+                placeholder={'if(prop("完成"), "✓", "")'}
               />
             </label>
-            <label>
-              执行动作
-              <select
-                value={buttonAction}
-                onChange={(event) => setButtonAction(event.target.value)}
-              >
-                <option value="set_property">设置属性</option>
-                <option value="toggle_checkbox">切换复选框</option>
-                <option value="set_date_now">设置为当前时间</option>
-                <option value="increment_number">增加数字</option>
-                <option value="duplicate_row">复制记录</option>
-                <option value="archive_row">归档记录</option>
-                <option value="open_url">打开链接</option>
-              </select>
-            </label>
-            {['set_property', 'toggle_checkbox', 'set_date_now', 'increment_number'].includes(
-              buttonAction,
-            ) ? (
+          ) : null}
+          {type === 'relation' ? (
+            <>
+              <label>
+                目标数据库
+                <select
+                  value={targetDatabaseId}
+                  disabled={Boolean(property)}
+                  onChange={(event) => setTargetDatabaseId(event.target.value)}
+                >
+                  <option value="">选择数据库</option>
+                  {databases.map((database) => (
+                    <option key={database.id} value={database.id}>
+                      {database.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {property ? (
+                typeof property.config.syncedPropertyId === 'string' ? (
+                  <p className="database-dialog-hint">此关系会自动同步到目标数据库。</p>
+                ) : (
+                  <p className="database-dialog-hint">这是单向关系；如需双向关系，请新建属性。</p>
+                )
+              ) : (
+                <>
+                  <label className="database-dialog-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={twoWayRelation}
+                      onChange={(event) => setTwoWayRelation(event.target.checked)}
+                    />
+                    在目标数据库中显示反向关系
+                  </label>
+                  {twoWayRelation ? (
+                    <label>
+                      反向属性名称
+                      <input
+                        value={reciprocalName}
+                        maxLength={100}
+                        onChange={(event) => setReciprocalName(event.target.value)}
+                      />
+                    </label>
+                  ) : null}
+                </>
+              )}
+            </>
+          ) : null}
+          {type === 'rollup' ? (
+            <>
+              <label>
+                关系属性
+                <select
+                  value={relationPropertyId}
+                  onChange={(event) => setRelationPropertyId(event.target.value)}
+                >
+                  <option value="">选择关系</option>
+                  {relationProperties.map((relation) => (
+                    <option key={relation.id} value={relation.id}>
+                      {relation.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label>
                 目标属性
                 <select
-                  value={buttonTargetPropertyId}
-                  onChange={(event) => setButtonTargetPropertyId(event.target.value)}
+                  value={targetPropertyId}
+                  onChange={(event) => setTargetPropertyId(event.target.value)}
                 >
-                  <option value="">请选择</option>
-                  {properties
-                    .filter((candidate) => {
-                      if (buttonAction === 'toggle_checkbox') return candidate.type === 'checkbox';
-                      if (buttonAction === 'set_date_now') return candidate.type === 'date';
-                      if (buttonAction === 'increment_number') return candidate.type === 'number';
-                      return [
-                        'title',
-                        'text',
-                        'number',
-                        'select',
-                        'status',
-                        'multi_select',
-                        'date',
-                        'checkbox',
-                        'url',
-                        'email',
-                        'phone',
-                      ].includes(candidate.type);
-                    })
-                    .map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>
-                        {candidate.name}
-                      </option>
-                    ))}
+                  <option value="">选择属性</option>
+                  {targetSnapshot?.properties.map((targetProperty) => (
+                    <option key={targetProperty.id} value={targetProperty.id}>
+                      {targetProperty.name}
+                    </option>
+                  ))}
                 </select>
               </label>
-            ) : null}
-            {buttonAction === 'set_property' ? (
               <label>
-                设置为
+                计算方式
+                <select
+                  value={calculation}
+                  onChange={(event) => setCalculation(event.target.value)}
+                >
+                  <option value="show_original">显示原值</option>
+                  <option value="show_unique">显示唯一值</option>
+                  <option value="count_all">全部计数</option>
+                  <option value="count_values">非空计数</option>
+                  <option value="count_unique">唯一值计数</option>
+                  <option value="percent_empty">空值百分比</option>
+                  <option value="percent_not_empty">非空百分比</option>
+                  <option value="percent_checked">已勾选百分比</option>
+                  <option value="sum">求和</option>
+                  <option value="average">平均值</option>
+                  <option value="min">最小值</option>
+                  <option value="max">最大值</option>
+                  <option value="earliest_date">最早日期</option>
+                  <option value="latest_date">最晚日期</option>
+                </select>
+              </label>
+            </>
+          ) : null}
+          {type === 'unique_id' ? (
+            <label>
+              ID 前缀
+              <input
+                value={prefix}
+                onChange={(event) => setPrefix(event.target.value)}
+                placeholder="TASK-"
+              />
+            </label>
+          ) : null}
+          {type === 'button' ? (
+            <>
+              <label>
+                按钮文字
                 <input
-                  value={buttonValue}
-                  onChange={(event) => setButtonValue(event.target.value)}
-                  placeholder="多选值使用逗号分隔"
+                  value={buttonLabel}
+                  maxLength={100}
+                  onChange={(event) => setButtonLabel(event.target.value)}
                 />
               </label>
-            ) : null}
-            {buttonAction === 'increment_number' ? (
               <label>
-                增加数值
-                <input
-                  type="number"
-                  value={buttonIncrement}
-                  onChange={(event) => setButtonIncrement(event.target.value)}
-                />
+                执行动作
+                <select
+                  value={buttonAction}
+                  onChange={(event) => setButtonAction(event.target.value)}
+                >
+                  <option value="set_property">设置属性</option>
+                  <option value="toggle_checkbox">切换复选框</option>
+                  <option value="set_date_now">设置为当前时间</option>
+                  <option value="increment_number">增加数字</option>
+                  <option value="duplicate_row">复制记录</option>
+                  <option value="archive_row">归档记录</option>
+                  <option value="open_url">打开链接</option>
+                </select>
               </label>
-            ) : null}
-            {buttonAction === 'open_url' ? (
-              <label>
-                链接
-                <input
-                  type="url"
-                  value={buttonUrl}
-                  onChange={(event) => setButtonUrl(event.target.value)}
-                  placeholder="https://example.com"
-                />
-              </label>
-            ) : null}
-          </>
-        ) : null}
-        {error ? <p className="dialog-error">{error}</p> : null}
-        {property ? (
-          <PropertyGrantsPanel
-            databaseId={databaseId}
-            organizationId={organizationId}
-            propertyId={property.id}
-          />
-        ) : null}
-        <div className="dialog-actions database-dialog-actions">
+              {['set_property', 'toggle_checkbox', 'set_date_now', 'increment_number'].includes(
+                buttonAction,
+              ) ? (
+                <label>
+                  目标属性
+                  <select
+                    value={buttonTargetPropertyId}
+                    onChange={(event) => setButtonTargetPropertyId(event.target.value)}
+                  >
+                    <option value="">请选择</option>
+                    {properties
+                      .filter((candidate) => {
+                        if (buttonAction === 'toggle_checkbox')
+                          return candidate.type === 'checkbox';
+                        if (buttonAction === 'set_date_now') return candidate.type === 'date';
+                        if (buttonAction === 'increment_number') return candidate.type === 'number';
+                        return [
+                          'title',
+                          'text',
+                          'number',
+                          'select',
+                          'status',
+                          'multi_select',
+                          'date',
+                          'checkbox',
+                          'url',
+                          'email',
+                          'phone',
+                        ].includes(candidate.type);
+                      })
+                      .map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ) : null}
+              {buttonAction === 'set_property' ? (
+                <label>
+                  设置为
+                  <input
+                    value={buttonValue}
+                    onChange={(event) => setButtonValue(event.target.value)}
+                    placeholder="多选值使用逗号分隔"
+                  />
+                </label>
+              ) : null}
+              {buttonAction === 'increment_number' ? (
+                <label>
+                  增加数值
+                  <input
+                    type="number"
+                    value={buttonIncrement}
+                    onChange={(event) => setButtonIncrement(event.target.value)}
+                  />
+                </label>
+              ) : null}
+              {buttonAction === 'open_url' ? (
+                <label>
+                  链接
+                  <input
+                    type="url"
+                    value={buttonUrl}
+                    onChange={(event) => setButtonUrl(event.target.value)}
+                    placeholder="https://example.com"
+                  />
+                </label>
+              ) : null}
+            </>
+          ) : null}
+          {error ? <p className="dialog-error">{error}</p> : null}
+          {property ? (
+            <details className="database-field-advanced">
+              <summary>高级设置</summary>
+              <PropertyGrantsPanel
+                databaseId={databaseId}
+                organizationId={organizationId}
+                propertyId={property.id}
+              />
+            </details>
+          ) : null}
+        </div>
+        <footer className="database-field-panel-footer">
           {property && property.type !== 'title' ? (
             <button className="danger" type="button" disabled={busy} onClick={() => void remove()}>
-              <Trash2 size={14} /> 删除
+              <Trash2 size={14} /> 删除字段
             </button>
-          ) : null}
-          <span />
-          <button type="button" onClick={onClose} disabled={busy}>
-            取消
-          </button>
+          ) : (
+            <span />
+          )}
           <button className="primary-button" type="submit" disabled={busy}>
-            {busy ? '保存中…' : '保存'}
+            {busy ? '保存中…' : '确定'}
           </button>
-        </div>
+        </footer>
       </form>
-    </div>
+    </>,
+    document.body,
   );
 }
 
@@ -5429,6 +5877,36 @@ export function DatabaseCanvas({
     },
     onExpandRow: (row) => setExpandedRowId(row.id),
     onAddProperty: editable ? () => setPropertyDialog('new') : undefined,
+    renameProperty: editable
+      ? async (property, name) => {
+          try {
+            await updateDatabaseProperty(snapshot.database.id, property.id, { name });
+            await refresh();
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : '无法重命名字段');
+          }
+        }
+      : undefined,
+    deleteProperty: editable
+      ? async (property) => {
+          if (property.type === 'title') return;
+          if (
+            !(await confirmDialog({
+              title: '删除字段',
+              message: `删除字段“${property.name}”及其数据？`,
+              confirmLabel: '删除字段',
+              danger: true,
+            }))
+          )
+            return;
+          try {
+            await deleteDatabaseProperty(snapshot.database.id, property.id);
+            await refresh();
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : '无法删除字段');
+          }
+        }
+      : undefined,
   };
 
   const selectedRows = snapshot.rows.filter((row) => selectedRowIds.has(row.id));
