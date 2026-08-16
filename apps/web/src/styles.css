@@ -5140,6 +5140,38 @@ button.page-icon-display:hover {
   user-select: none;
   white-space: nowrap;
 }
+.document-switch-hold {
+  position: relative;
+}
+.document-switch-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgb(255 255 255 / 72%);
+  color: #8a867e;
+  font-size: 13px;
+  pointer-events: none;
+}
+.document-switch-hold {
+  position: relative;
+}
+.document-switch-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgb(255 255 255 / 72%);
+  color: #8a867e;
+  font-size: 13px;
+  pointer-events: none;
+}
 .editor-loading {
   margin-top: 45px;
   display: flex;
@@ -7705,16 +7737,25 @@ button.page-icon-display:hover {
   font: inherit;
   cursor: pointer;
 }
+.database-record-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 48;
+  background: rgb(25 22 18 / 28%);
+}
 .database-record-drawer {
-  position: sticky;
+  position: fixed;
+  top: 0;
+  right: 0;
   bottom: 0;
-  z-index: 20;
-  margin-top: 10px;
-  border: 1px solid #e4e2dc;
-  border-radius: 10px 10px 0 0;
+  z-index: 49;
+  width: min(420px, 92vw);
+  margin: 0;
+  border: 0;
+  border-left: 1px solid #e4e2dc;
+  border-radius: 0;
   background: #fffcf7;
-  box-shadow: 0 -8px 24px rgb(40 36 28 / 8%);
-  max-height: min(62vh, 560px);
+  box-shadow: -12px 0 32px rgb(40 36 28 / 14%);
   overflow: auto;
 }
 .database-record-drawer header {
@@ -7748,11 +7789,13 @@ button.page-icon-display:hover {
   gap: 12px;
   padding: 12px;
 }
-.database-record-drawer > div > label {
+.database-record-drawer > div > label,
+.database-record-field {
   display: grid;
   gap: 5px;
 }
-.database-record-drawer > div > label > span {
+.database-record-drawer > div > label > span,
+.database-record-field > span {
   color: #8a877f;
   font-size: 11px;
 }
@@ -8009,7 +8052,53 @@ button.page-icon-display:hover {
 
 .database-table-wrap {
   width: 100%;
-  overflow-x: auto;
+  max-height: min(70vh, 760px);
+  overflow: auto;
+  outline: none;
+}
+.database-table td.database-cell-selected {
+  box-shadow: inset 0 0 0 2px #2383e2;
+}
+.database-cell-display {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: cell;
+}
+.database-property-grants {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #efeeeb;
+}
+.database-property-grants strong {
+  font-size: 12px;
+}
+.database-property-grants ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.database-property-grants li,
+.database-property-grants form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px auto;
+  gap: 6px;
+  align-items: center;
+}
+.database-property-grants small {
+  color: #8a877f;
+  font-size: 11px;
 }
 .database-table {
   width: 100%;

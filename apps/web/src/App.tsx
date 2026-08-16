@@ -86,6 +86,8 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  lazy,
+  Suspense,
   useRef,
   useState,
   type CSSProperties,
@@ -97,7 +99,6 @@ import {
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
-import 'katex/dist/katex.min.css';
 import './sites.css';
 
 import type {
@@ -173,7 +174,9 @@ import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
 import { blockAnchorFromHash, blockAnchorUrl, encodeRelativePosition } from './block-anchor';
 import { CommentsPanel } from './CommentsPanel';
-import { DatabaseCanvas } from './DatabaseCanvas';
+const DatabaseCanvas = lazy(() =>
+  import('./DatabaseCanvas').then((module) => ({ default: module.DatabaseCanvas })),
+);
 import type { LocalIdentity } from './identity';
 import { DiscoveryDialog, type DiscoveryTab } from './DiscoveryDialog';
 import { EditorBlockHandle } from './EditorBlockHandle';
@@ -2080,7 +2083,11 @@ function DocumentWorkspace({
   const [title, setTitle] = useState(page.title);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [offlineReady, setOfflineReady] = useState(false);
-  const [collab, setCollab] = useState<{ ydoc: Y.Doc; provider: WebsocketProvider } | null>(null);
+  const [collab, setCollab] = useState<{
+    ydoc: Y.Doc;
+    provider: WebsocketProvider;
+    pageId: string;
+  } | null>(null);
   const [collaborators, setCollaborators] = useState<ActiveCollaborator[]>([
     { id: identity.id, name: identity.name, color: identity.color },
   ]);
@@ -2445,7 +2452,7 @@ function DocumentWorkspace({
     });
     httpTransportRef.current = httpTransport;
     void httpTransport.start();
-    setCollab({ ydoc, provider });
+    setCollab({ ydoc, provider, pageId: page.id });
 
     return () => {
       disposed = true;
@@ -2526,7 +2533,6 @@ function DocumentWorkspace({
     let cancelled = false;
     const generation = ++pageSwitchGeneration.current;
     setPageSwitching(true);
-    setCollab(null);
     setConnection('connecting');
     setTreeError(null);
     setPageActionError(null);
@@ -3332,18 +3338,22 @@ function DocumentWorkspace({
               />
             ) : null}
             {database && (!isSwitching || database.database.pageId === requestedPageId) ? (
-              <DatabaseCanvas
-                key={database.database.id}
-                initialSnapshot={database}
-                canEdit={canEditStructure && !page.isLocked}
-                actorId={identity.id}
-              />
-            ) : isSwitching ? (
-              <div className="editor-loading" aria-live="polite">
-                <div className="loading-mark" />
-                <span>正在打开页面…</span>
-              </div>
-            ) : collab ? (
+              <Suspense
+                fallback={
+                  <div className="editor-loading" aria-live="polite">
+                    <div className="loading-mark" />
+                    <span>正在打开数据库…</span>
+                  </div>
+                }
+              >
+                <DatabaseCanvas
+                  key={database.database.id}
+                  initialSnapshot={database}
+                  canEdit={canEditStructure && !page.isLocked}
+                  actorId={identity.id}
+                />
+              </Suspense>
+            ) : collab && collab.pageId === page.id ? (
               <CollaborativeEditor
                 key={page.id}
                 collab={collab}
@@ -3360,6 +3370,33 @@ function DocumentWorkspace({
                 publicShareToken={publicShareToken}
                 publicSiteSlug={publicSite?.slug}
               />
+            ) : collab ? (
+              <div className="document-switch-hold" aria-busy="true">
+                <div className="document-switch-veil" aria-live="polite">
+                  <div className="loading-mark" />
+                  <span>正在打开页面…</span>
+                </div>
+                <CollaborativeEditor
+                  key={collab.pageId}
+                  collab={collab}
+                  identity={identity}
+                  onSelectionQuote={() => undefined}
+                  editable={false}
+                  onReady={() => undefined}
+                  onUploadFiles={async () => undefined}
+                  onCreateSyncedBlock={async () => ''}
+                  organizationId={page.organizationId}
+                  breadcrumbItems={breadcrumbItems}
+                  pageId={collab.pageId}
+                  publicShareToken={publicShareToken}
+                  publicSiteSlug={publicSite?.slug}
+                />
+              </div>
+            ) : isSwitching ? (
+              <div className="editor-loading" aria-live="polite">
+                <div className="loading-mark" />
+                <span>正在打开页面…</span>
+              </div>
             ) : (
               <div className="editor-loading">
                 <div className="loading-mark" />
@@ -3746,6 +3783,9 @@ function CollaborativeEditor({
   publicSiteSlug?: string;
 }) {
   const editorInstance = useRef<Editor | null>(null);
+  useEffect(() => {
+    void import('katex/dist/katex.min.css');
+  }, []);
   const breadcrumbItemsRef = useRef(breadcrumbItems);
   breadcrumbItemsRef.current = breadcrumbItems;
   const uploadFilesRef = useRef(onUploadFiles);

@@ -44,6 +44,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -86,8 +87,11 @@ import {
   listAttachments,
   listDatabaseAutomations,
   listDatabaseFormLinks,
+  listDatabasePropertyGrants,
+  listGroups,
   listOrganizationDatabases,
   listOrganizationMembers,
+  putDatabasePropertyGrant,
   updateDatabase,
   updateDatabaseAutomation,
   updateDatabaseProperty,
@@ -121,6 +125,13 @@ import { autofillDatabaseProperty } from './api';
 import { datePart, fromDateParts, parseDateCell } from './date-value';
 import { formFieldVisible } from './form-logic';
 import { confirmDialog, showToast } from './dialogs';
+import {
+  moveDatabaseGridCell,
+  readStoredDatabaseViewId,
+  shouldVirtualizeDatabaseRows,
+  visibleRowWindow,
+  writeStoredDatabaseViewId,
+} from './database-grid';
 import { cachedRequest } from './request-cache';
 import { startVisibleInterval } from './visible-poll';
 
@@ -1241,8 +1252,64 @@ function TableDatabaseView({
       propertyWidths: { ...propertyWidths, [propertyId]: Math.min(480, Math.max(96, width)) },
     });
   };
+  const wrap = useRef<HTMLDivElement>(null);
+  const [focus, setFocus] = useState<{ rowId: string; propertyId: string } | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(480);
+  const flatRows = grouped ? groups.flatMap((group) => group.rows) : rows;
+  const virtualize = shouldVirtualizeDatabaseRows(flatRows.length, grouped);
+  useEffect(() => {
+    const node = wrap.current;
+    if (!node) return;
+    const update = () => setViewportHeight(node.clientHeight || 480);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const windowed = visibleRowWindow(flatRows.length, scrollTop, viewportHeight);
+  const visibleRows = virtualize ? flatRows.slice(windowed.start, windowed.end) : flatRows;
+  const renderGroups = grouped ? groups : [{ key: 'all', label: '', rows: visibleRows }];
+  const onGridKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!focus || editing) {
+      if (event.key === 'Escape') setEditing(false);
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const row = flatRows.find((item) => item.id === focus.rowId);
+      const property = properties.find((item) => item.id === focus.propertyId);
+      if (property?.type === 'title' && row) onExpandRow?.(row);
+      else setEditing(true);
+      return;
+    }
+    if (event.key === 'F2') {
+      event.preventDefault();
+      setEditing(true);
+      return;
+    }
+    if (
+      event.key === 'ArrowUp' ||
+      event.key === 'ArrowDown' ||
+      event.key === 'ArrowLeft' ||
+      event.key === 'ArrowRight' ||
+      event.key === 'Tab' ||
+      event.key === 'Home' ||
+      event.key === 'End'
+    ) {
+      event.preventDefault();
+      setFocus(moveDatabaseGridCell(flatRows, properties, focus, event.key, event.shiftKey));
+    }
+  };
   return (
-    <div className="database-table-wrap">
+    <div
+      className="database-table-wrap"
+      ref={wrap}
+      tabIndex={0}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      onKeyDown={onGridKeyDown}
+    >
       <table className="database-table database-table-grid">
         <thead>
           <tr>
@@ -1314,7 +1381,17 @@ function TableDatabaseView({
             {canEdit ? <th className="database-row-actions-heading" /> : null}
           </tr>
         </thead>
-        {groups.map((group) => (
+        {virtualize ? (
+          <tbody>
+            <tr aria-hidden="true">
+              <td
+                colSpan={properties.length + extraColumns}
+                style={{ height: windowed.padTop, padding: 0, border: 0 }}
+              />
+            </tr>
+          </tbody>
+        ) : null}
+        {renderGroups.map((group) => (
           <Fragment key={group.key}>
             {grouped ? (
               <tbody className="database-table-group-heading">
@@ -1351,29 +1428,54 @@ function TableDatabaseView({
                         onChange={() => onToggleRow?.(row.id)}
                       />
                     </td>
-                    <td className="database-col-index">{rowIndex + 1}</td>
-                    {properties.map((property) => (
-                      <td
-                        key={property.id}
-                        className={property.type === 'title' ? 'database-col-title' : undefined}
-                      >
-                        <DatabaseCell
-                          property={property}
-                          value={row.values[property.id]}
-                          disabled={!canEdit}
-                          openPage={property.type === 'title' ? row.pageId : undefined}
-                          organizationId={organizationId}
-                          rowPageId={row.pageId}
-                          onSave={(value) => saveCell(row, property, value)}
-                          onButton={() => executeButton(row, property)}
-                          onOpenRecord={
-                            property.type === 'title' ? () => onExpandRow?.(row) : undefined
-                          }
-                          actorId={actorId}
-                          reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
-                        />
-                      </td>
-                    ))}
+                    <td className="database-col-index">
+                      {(virtualize ? windowed.start : 0) + rowIndex + 1}
+                    </td>
+                    {properties.map((property) => {
+                      const selectedCell =
+                        focus?.rowId === row.id && focus.propertyId === property.id;
+                      const live =
+                        property.type === 'checkbox' ||
+                        property.type === 'button' ||
+                        (selectedCell && editing);
+                      return (
+                        <td
+                          key={property.id}
+                          className={`${property.type === 'title' ? 'database-col-title' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
+                          onClick={() => {
+                            setFocus({ rowId: row.id, propertyId: property.id });
+                            if (property.type !== 'title') setEditing(false);
+                          }}
+                          onDoubleClick={() => {
+                            setFocus({ rowId: row.id, propertyId: property.id });
+                            if (property.type === 'title') onExpandRow?.(row);
+                            else setEditing(true);
+                          }}
+                        >
+                          {live || property.type === 'title' ? (
+                            <DatabaseCell
+                              property={property}
+                              value={row.values[property.id]}
+                              disabled={!canEdit}
+                              openPage={property.type === 'title' ? row.pageId : undefined}
+                              organizationId={organizationId}
+                              rowPageId={row.pageId}
+                              onSave={(value) => saveCell(row, property, value)}
+                              onButton={() => executeButton(row, property)}
+                              onOpenRecord={
+                                property.type === 'title' ? () => onExpandRow?.(row) : undefined
+                              }
+                              actorId={actorId}
+                              reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
+                            />
+                          ) : (
+                            <span className="database-cell-display">
+                              {valueText(row.values[property.id]) || ' '}
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
                     {onAddProperty && canEdit ? <td className="database-col-add" /> : null}
                     {canEdit ? (
                       <td className="database-row-actions">
@@ -1450,6 +1552,16 @@ function TableDatabaseView({
             ) : null}
           </Fragment>
         ))}
+        {virtualize ? (
+          <tbody>
+            <tr aria-hidden="true">
+              <td
+                colSpan={properties.length + extraColumns}
+                style={{ height: windowed.padBottom, padding: 0, border: 0 }}
+              />
+            </tr>
+          </tbody>
+        ) : null}
       </table>
       {canEdit ? (
         <button className="database-new-row" type="button" onClick={addRow}>
@@ -1728,36 +1840,52 @@ function RecordDrawer({
   properties: DatabasePropertySummary[];
   row: DatabaseRowSummary;
 }) {
-  return (
-    <div className="database-record-drawer" role="dialog" aria-label="记录详情">
-      <header>
-        <strong>{rowTitle(row, properties)}</strong>
-        <a href={`/p/${encodeURIComponent(row.pageId)}`}>打开页面</a>
-        <button type="button" onClick={onClose} aria-label="关闭记录">
-          ×
-        </button>
-      </header>
-      <div>
-        {properties.map((property) => (
-          <label key={property.id}>
-            <span>
-              {PROPERTY_LABELS[property.type]} · {property.name}
-            </span>
-            <DatabaseCell
-              actorId={actorId}
-              disabled={!canEdit}
-              onSave={(value) => onSave(row, property, value)}
-              openPage={property.type === 'title' ? row.pageId : undefined}
-              organizationId={organizationId}
-              property={property}
-              reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
-              rowPageId={row.pageId}
-              value={row.values[property.id]}
-            />
-          </label>
-        ))}
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return createPortal(
+    <>
+      <button
+        className="database-record-backdrop"
+        type="button"
+        aria-label="关闭记录"
+        onClick={onClose}
+      />
+      <div className="database-record-drawer" role="dialog" aria-modal="true" aria-label="记录详情">
+        <header>
+          <strong>{rowTitle(row, properties)}</strong>
+          <a href={`/p/${encodeURIComponent(row.pageId)}`}>打开页面</a>
+          <button type="button" onClick={onClose} aria-label="关闭记录">
+            ×
+          </button>
+        </header>
+        <div>
+          {properties.map((property) => (
+            <div key={property.id} className="database-record-field">
+              <span>
+                {PROPERTY_LABELS[property.type]} · {property.name}
+              </span>
+              <DatabaseCell
+                actorId={actorId}
+                disabled={!canEdit}
+                onSave={(value) => onSave(row, property, value)}
+                openPage={property.type === 'title' ? row.pageId : undefined}
+                organizationId={organizationId}
+                property={property}
+                reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
+                rowPageId={row.pageId}
+                value={row.values[property.id]}
+              />
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </>,
+    document.body,
   );
 }
 
@@ -3486,6 +3614,127 @@ function ViewOptionsPanel({
   );
 }
 
+function PropertyGrantsPanel({
+  databaseId,
+  organizationId,
+  propertyId,
+}: {
+  databaseId: string;
+  organizationId: string;
+  propertyId: string;
+}) {
+  const [grants, setGrants] = useState<
+    Awaited<ReturnType<typeof listDatabasePropertyGrants>>['grants']
+  >([]);
+  const [members, setMembers] = useState<OrganizationMemberSummary[]>([]);
+  const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
+  const [principal, setPrincipal] = useState(`organization:${organizationId}`);
+  const [role, setRole] = useState<'none' | 'viewer' | 'editor'>('viewer');
+  const [error, setError] = useState<string | null>(null);
+  const reload = useCallback(() => {
+    void listDatabasePropertyGrants(databaseId, propertyId)
+      .then((result) => setGrants(result.grants))
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : '无法读取列权限'),
+      );
+  }, [databaseId, propertyId]);
+  useEffect(() => {
+    reload();
+    void listOrganizationMembers(organizationId)
+      .then((result) => setMembers(result.members.filter((member) => member.status === 'active')))
+      .catch(() => undefined);
+    void listGroups(organizationId)
+      .then((result) =>
+        setGroups(result.groups.map((group) => ({ id: group.id, name: group.name }))),
+      )
+      .catch(() => undefined);
+  }, [organizationId, reload]);
+  const labelFor = (grant: (typeof grants)[number]) => {
+    if (grant.principalType === 'organization') return '整个组织';
+    if (grant.principalType === 'group')
+      return groups.find((group) => group.id === grant.principalId)?.name ?? '用户组';
+    return members.find((member) => member.userId === grant.principalId)?.displayName ?? '成员';
+  };
+  return (
+    <div className="database-property-grants">
+      <strong>列权限</strong>
+      <p>没有授权的人看不到这一列。成员规则优先于用户组和整个组织。</p>
+      {error ? <p className="dialog-error">{error}</p> : null}
+      <ul>
+        {grants.map((grant) => (
+          <li key={grant.id}>
+            <span>
+              {labelFor(grant)}
+              <small>
+                {' '}
+                · {grant.role === 'none' ? '隐藏' : grant.role === 'viewer' ? '只读' : '可编辑'}
+              </small>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void putDatabasePropertyGrant(databaseId, propertyId, {
+                  principalType: grant.principalType,
+                  principalId: grant.principalId,
+                  role: 'none',
+                })
+                  .then(reload)
+                  .catch((reason: unknown) =>
+                    setError(reason instanceof Error ? reason.message : '无法更新列权限'),
+                  );
+              }}
+            >
+              隐藏
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          const separator = principal.indexOf(':');
+          const principalType = principal.slice(0, separator) as 'user' | 'group' | 'organization';
+          const principalId = principal.slice(separator + 1);
+          void putDatabasePropertyGrant(databaseId, propertyId, {
+            principalType,
+            principalId,
+            role,
+          })
+            .then(reload)
+            .catch((reason: unknown) =>
+              setError(reason instanceof Error ? reason.message : '无法更新列权限'),
+            );
+        }}
+      >
+        <select value={principal} onChange={(event) => setPrincipal(event.target.value)}>
+          <option value={`organization:${organizationId}`}>整个组织</option>
+          {groups.map((group) => (
+            <option key={group.id} value={`group:${group.id}`}>
+              组 · {group.name}
+            </option>
+          ))}
+          {members.map((member) => (
+            <option key={member.userId} value={`user:${member.userId}`}>
+              {member.displayName}
+            </option>
+          ))}
+        </select>
+        <select
+          value={role}
+          onChange={(event) => setRole(event.target.value as 'none' | 'viewer' | 'editor')}
+        >
+          <option value="editor">可编辑</option>
+          <option value="viewer">只读</option>
+          <option value="none">隐藏</option>
+        </select>
+        <button className="primary-button" type="submit">
+          保存规则
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function PropertyDialog({
   databaseId,
   organizationId,
@@ -4028,6 +4277,13 @@ function PropertyDialog({
           </>
         ) : null}
         {error ? <p className="dialog-error">{error}</p> : null}
+        {property ? (
+          <PropertyGrantsPanel
+            databaseId={databaseId}
+            organizationId={organizationId}
+            propertyId={property.id}
+          />
+        ) : null}
         <div className="dialog-actions database-dialog-actions">
           {property && property.type !== 'title' ? (
             <button className="danger" type="button" disabled={busy} onClick={() => void remove()}>
@@ -4768,7 +5024,13 @@ export function DatabaseCanvas({
   actorId: string;
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
-  const [activeViewId, setActiveViewId] = useState(initialSnapshot.views[0]?.id ?? '');
+  const [activeViewId, setActiveViewId] = useState(() =>
+    readStoredDatabaseViewId(
+      initialSnapshot.database.id,
+      initialSnapshot.views.map((view) => view.id),
+      typeof window === 'undefined' ? null : window.localStorage,
+    ),
+  );
   const [query, setQuery] = useState('');
   const [propertyDialog, setPropertyDialog] = useState<DatabasePropertySummary | 'new' | null>(
     null,
@@ -4789,6 +5051,14 @@ export function DatabaseCanvas({
   const viewSaveQueue = useRef(new Map<string, Promise<void>>());
   const viewSaveVersion = useRef(new Map<string, number>());
   const activeView = snapshot.views.find((view) => view.id === activeViewId) ?? snapshot.views[0];
+  useEffect(() => {
+    if (!activeViewId) return;
+    writeStoredDatabaseViewId(
+      snapshot.database.id,
+      activeViewId,
+      typeof window === 'undefined' ? null : window.localStorage,
+    );
+  }, [activeViewId, snapshot.database.id]);
   const editable = canEdit && !snapshot.database.isLocked;
   const viewProperties = useMemo(
     () => orderedVisibleDatabaseProperties(snapshot.properties, activeView?.config ?? {}),
