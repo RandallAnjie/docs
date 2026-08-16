@@ -8273,6 +8273,111 @@ button.page-icon-display:hover {
   font: inherit;
   font-size: 12px;
 }
+.database-pick-dialog {
+  width: min(480px, 100%);
+  max-height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 18px 14px;
+}
+.database-pick-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.database-pick-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+.database-pick-dialog header > button {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #787774;
+  cursor: pointer;
+}
+.database-pick-dialog header p {
+  margin: 0;
+  color: #9b9994;
+  font-size: 12px;
+}
+.database-pick-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.database-pick-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  background: #faf9f6;
+  padding: 0 10px;
+  color: #8a877f;
+}
+.database-pick-search input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+}
+.database-pick-list {
+  min-height: 180px;
+  max-height: 42vh;
+  overflow: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+.database-pick-list > button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 8px 8px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.database-pick-list > button:hover,
+.database-pick-list > button.selected {
+  background: #f3f2ee;
+}
+.database-pick-list > button span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.database-pick-list > button small {
+  color: #9b9994;
+  font-size: 11px;
+}
+.database-pick-empty,
+.database-pick-list > p {
+  margin: 16px 8px;
+  color: #9b9994;
+  font-size: 13px;
+}
+.database-pick-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
 .database-relation-picker {
   position: absolute;
   z-index: 30;
