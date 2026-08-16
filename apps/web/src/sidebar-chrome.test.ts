@@ -7,6 +7,7 @@ import {
   appShellClassName,
   isSidebarToggleKey,
   readSidebarCollapsed,
+  searchShortcutLabel,
   shouldIgnoreSidebarShortcut,
   SIDEBAR_COLLAPSED_KEY,
   writeSidebarCollapsed,
@@ -79,6 +80,11 @@ describe('sidebar chrome helpers', () => {
     expect(shouldIgnoreSidebarShortcut(field as unknown as EventTarget)).toBe(true);
     expect(shouldIgnoreSidebarShortcut(button as unknown as EventTarget)).toBe(false);
     expect(shouldIgnoreSidebarShortcut(null)).toBe(false);
+  });
+
+  it('labels the search shortcut for the current platform', () => {
+    expect(searchShortcutLabel('Mozilla/5.0 (Macintosh)')).toBe('⌘ K');
+    expect(searchShortcutLabel('Mozilla/5.0 (X11; Linux x86_64)')).toBe('Ctrl K');
   });
 
   it('keeps peek as an overlay class on the collapsed shell', () => {

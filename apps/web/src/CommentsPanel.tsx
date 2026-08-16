@@ -129,12 +129,18 @@ export function CommentsPanel({
           <textarea
             value={body}
             onChange={(event) => setBody(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
             placeholder={selection ? '评论选中内容…' : '发起页面评论…'}
             maxLength={5000}
             rows={3}
           />
           <div>
-            <small>用 @邮箱 提及组织成员</small>
+            <small>⌘/Ctrl + Enter 发表 · 用 @邮箱 提及</small>
             <button type="submit" disabled={busy || !body.trim()}>
               <Send size={13} /> 发表
             </button>

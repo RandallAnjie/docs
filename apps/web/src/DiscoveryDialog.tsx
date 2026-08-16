@@ -41,6 +41,7 @@ import {
 } from './api';
 import { confirmDialog, emojiDialog } from './dialogs';
 import { navigateHome } from './navigation';
+import { searchShortcutLabel } from './sidebar-chrome';
 import {
   canManagePageStructure,
   selectedPageRootIds,
@@ -100,6 +101,7 @@ export function DiscoveryDialog({
   const [createdBy, setCreatedBy] = useState('');
   const [datePreset, setDatePreset] = useState<DatePreset>('all');
   const [commandIndex, setCommandIndex] = useState(0);
+  const [resultIndex, setResultIndex] = useState(0);
   const [selectedPageIds, setSelectedPageIds] = useState<ReadonlySet<string>>(new Set());
   const [batchParentId, setBatchParentId] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
@@ -438,18 +440,35 @@ export function DiscoveryDialog({
               <input
                 autoFocus
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setResultIndex(0);
+                }}
                 onKeyDown={(event) => {
-                  if (query.trim() || !commands.length) return;
                   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                     event.preventDefault();
                     const delta = event.key === 'ArrowDown' ? 1 : -1;
-                    setCommandIndex(
-                      (current) => (current + delta + commands.length) % commands.length,
-                    );
+                    if (query.trim() && searchResults.length) {
+                      setResultIndex(
+                        (current) =>
+                          (current + delta + searchResults.length) % searchResults.length,
+                      );
+                      return;
+                    }
+                    if (!query.trim() && commands.length) {
+                      setCommandIndex(
+                        (current) => (current + delta + commands.length) % commands.length,
+                      );
+                    }
                   }
                   if (event.key === 'Enter') {
                     event.preventDefault();
+                    if (query.trim() && searchResults.length) {
+                      const picked = searchResults[resultIndex % searchResults.length];
+                      if (picked)
+                        window.location.assign(`/p/${encodeURIComponent(picked.page.id)}`);
+                      return;
+                    }
                     commands[commandIndex % commands.length]?.run();
                   }
                 }}
@@ -465,7 +484,7 @@ export function DiscoveryDialog({
               >
                 <SlidersHorizontal size={15} />
               </button>
-              <kbd>⌘ K</kbd>
+              <kbd>{searchShortcutLabel()}</kbd>
             </div>
             {filtersOpen ? (
               <div className="discovery-filters">
@@ -665,8 +684,11 @@ export function DiscoveryDialog({
           ) : tab === 'search' ? (
             query.trim() ? (
               searchResults.length ? (
-                searchResults.map((result) => (
-                  <div className="discovery-result" key={result.page.id}>
+                searchResults.map((result, index) => (
+                  <div
+                    className={`discovery-result ${index === resultIndex ? 'active' : ''}`}
+                    key={result.page.id}
+                  >
                     <a href={`/p/${encodeURIComponent(result.page.id)}`}>
                       <span>{result.page.icon || <FileText size={15} />}</span>
                       <div>

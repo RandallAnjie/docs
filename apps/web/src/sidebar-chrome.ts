@@ -50,6 +50,12 @@ export function isSidebarToggleKey(
   return event.key === '\\' && (event.metaKey || event.ctrlKey);
 }
 
+export function searchShortcutLabel(
+  userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent,
+): string {
+  return /Mac|iPhone|iPad/.test(userAgent) ? '⌘ K' : 'Ctrl K';
+}
+
 export function appShellClassName(input: {
   publicShare?: boolean;
   publicSiteTheme?: string | null;

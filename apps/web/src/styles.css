@@ -2992,7 +2992,8 @@ button {
   align-items: center;
   border-radius: 9px;
 }
-.discovery-result:hover {
+.discovery-result:hover,
+.discovery-result.active {
   background: #f5f3ef;
 }
 .discovery-result > a {
@@ -5154,23 +5155,6 @@ button.page-icon-display:hover {
   background: rgb(255 255 255 / 72%);
   color: #8a867e;
   font-size: 13px;
-  pointer-events: none;
-}
-.document-switch-hold {
-  position: relative;
-}
-.document-switch-veil {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  background: rgb(255 255 255 / 72%);
-  color: #8a867e;
-  font-size: 13px;
-  pointer-events: none;
 }
 .editor-loading {
   margin-top: 45px;
@@ -5721,7 +5705,7 @@ button.page-icon-display:hover {
 }
 .comment-compose small {
   color: #9a958c;
-  font-size: 7px;
+  font-size: 12px;
 }
 .comment-compose button,
 .comment-reply button {
@@ -5733,8 +5717,8 @@ button.page-icon-display:hover {
   background: #4a4741;
   padding: 6px 9px;
   color: #fff;
-  font-size: 9px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
 }
 .comment-quote {
@@ -5835,12 +5819,12 @@ button.page-icon-display:hover {
 }
 .comment-item time {
   color: #aaa59c;
-  font-size: 7px;
+  font-size: 12px;
 }
 .comment-item p {
   margin: 4px 0 0;
   color: #5f5b54;
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.6;
   white-space: pre-wrap;
 }
@@ -6768,7 +6752,7 @@ button.page-icon-display:hover {
 }
 .notion-space-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 22px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   gap: 4px;
   align-items: center;
   min-height: 30px;
@@ -8954,17 +8938,29 @@ button.page-icon-display:hover {
   color: #787671;
 }
 .database-calendar-list a,
+.database-calendar-list button,
 .database-list-view a,
+.database-list-view button,
 .database-gallery-view a,
+.database-gallery-view button,
 .database-timeline-view a,
 .database-feed-view a,
 .database-map-view a {
   color: #37352f;
   text-decoration: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 .database-calendar-list a:hover,
+.database-calendar-list button:hover,
 .database-list-view a:hover strong,
+.database-list-view button:hover strong,
 .database-gallery-view a:hover,
+.database-gallery-view button:hover,
 .database-timeline-view a:hover,
 .database-feed-view a:hover {
   text-decoration: underline;
@@ -9105,7 +9101,8 @@ button.page-icon-display:hover {
 .database-list-view {
   padding: 6px 0;
 }
-.database-list-view > a {
+.database-list-view > a,
+.database-list-view > button {
   display: grid;
   grid-template-columns: 20px minmax(180px, 1fr) repeat(3, minmax(80px, 0.7fr)) 20px;
   align-items: center;
@@ -9113,8 +9110,10 @@ button.page-icon-display:hover {
   min-height: 38px;
   border-bottom: 1px solid #efefed;
   font-size: 13px;
+  width: 100%;
 }
-.database-list-view > a > span {
+.database-list-view > a > span,
+.database-list-view > button > span {
   color: #787671;
   white-space: nowrap;
   overflow: hidden;
@@ -9141,7 +9140,8 @@ button.page-icon-display:hover {
   font-size: 34px;
   font-weight: 650;
 }
-.database-gallery-view article > a {
+.database-gallery-view article > a,
+.database-gallery-view article > button {
   display: block;
   padding: 10px 11px 5px;
   font-size: 14px;
@@ -10161,10 +10161,12 @@ button.page-icon-display:hover {
     margin-inline: -18px;
     width: calc(100% + 36px);
   }
-  .database-list-view > a {
+  .database-list-view > a,
+  .database-list-view > button {
     grid-template-columns: 20px 1fr 20px;
   }
-  .database-list-view > a > span {
+  .database-list-view > a > span,
+  .database-list-view > button > span {
     display: none;
   }
   .database-calendar-list article {
