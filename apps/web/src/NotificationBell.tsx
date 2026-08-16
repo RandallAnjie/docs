@@ -44,6 +44,7 @@ import {
   type NotificationView,
 } from './api';
 import { navigateToPage } from './navigation';
+import { startVisibleInterval } from './visible-poll';
 
 const PAGE_NOTIFICATION_OPTIONS: ReadonlyArray<{
   mode: PageNotificationMode;
@@ -109,8 +110,7 @@ export function NotificationBell({ organizationId }: { organizationId: string })
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    return () => window.clearInterval(timer);
+    return startVisibleInterval(() => void load(), 45_000);
   }, [load]);
 
   const openNotification = async (notification: NotificationSummary) => {

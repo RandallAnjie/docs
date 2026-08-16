@@ -47,7 +47,7 @@ export class HttpCollaborationTransport {
     this.ticket = options.ticket;
     this.renewTicket = options.renewTicket;
     this.onState = options.onState;
-    this.pollIntervalMs = options.pollIntervalMs ?? 350;
+    this.pollIntervalMs = options.pollIntervalMs ?? 2_500;
     this.syncUrl =
       options.syncUrl ?? `/api/pages/${encodeURIComponent(options.pageId)}/collaboration-sync`;
   }
@@ -57,6 +57,9 @@ export class HttpCollaborationTransport {
     this.stopped = false;
     this.document.on('update', this.handleDocumentUpdate);
     this.awareness.on('update', this.handleAwarenessUpdate);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.handleVisibility);
+    }
     return this.syncNow();
   }
 
@@ -65,6 +68,9 @@ export class HttpCollaborationTransport {
     this.stopped = true;
     this.document.off('update', this.handleDocumentUpdate);
     this.awareness.off('update', this.handleAwarenessUpdate);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.handleVisibility);
+    }
     globalThis.clearTimeout(this.timer);
     this.timer = undefined;
     this.timerDeadline = Number.POSITIVE_INFINITY;
@@ -126,7 +132,7 @@ export class HttpCollaborationTransport {
       this.renewedAfterAuthorizationFailure = false;
       this.onState('synced');
       const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-      this.schedule(hidden ? 1_500 : this.pollIntervalMs);
+      this.schedule(hidden ? Math.max(8_000, this.pollIntervalMs) : this.pollIntervalMs);
     } catch (reason) {
       if (this.stopped || (reason instanceof DOMException && reason.name === 'AbortError')) return;
       this.failures += 1;
@@ -142,6 +148,15 @@ export class HttpCollaborationTransport {
     }
   }
 
+  private readonly handleVisibility = (): void => {
+    if (typeof document === 'undefined' || this.stopped) return;
+    if (document.visibilityState === 'hidden') {
+      this.schedule(Math.max(8_000, this.pollIntervalMs));
+      return;
+    }
+    this.schedule(0);
+  };
+
   private readonly handleDocumentUpdate = (_update: Uint8Array, origin: unknown): void => {
     if (origin !== this) this.schedule(25);
   };
@@ -150,7 +165,7 @@ export class HttpCollaborationTransport {
     _changes: { added: number[]; updated: number[]; removed: number[] },
     origin: unknown,
   ): void => {
-    if (origin !== this) this.schedule(25);
+    if (origin !== this) this.schedule(400);
   };
 
   private schedule(delayMs: number): void {

@@ -1,6 +1,7 @@
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCaret from '@tiptap/extension-collaboration-caret';
 import { Details, DetailsContent, DetailsSummary } from '@tiptap/extension-details';
+import { Placeholder } from '@tiptap/extensions';
 import Image from '@tiptap/extension-image';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
 import { Mathematics } from '@tiptap/extension-mathematics';
@@ -69,6 +70,7 @@ import {
   Search,
   Settings,
   Share2,
+  Smile,
   Sparkles,
   SquareChevronDown,
   Star,
@@ -88,6 +90,7 @@ import {
   useState,
   type CSSProperties,
   type FormEvent,
+  Fragment,
   type ReactNode,
 } from 'react';
 
@@ -127,6 +130,7 @@ import {
   exportPageHtml,
   exportPagePdf,
   exportPageZip,
+  listFavoritePages,
   listOrganizationMembers,
   searchPages,
   getAuthSession,
@@ -150,6 +154,7 @@ import {
   movePage,
   recordPublicSiteEvent,
   setOfflinePin,
+  setPageFavorite,
   updateSpace,
   updatePageAppearance,
   updatePageTitle,
@@ -476,14 +481,64 @@ function slashContext(editor: Editor): SlashContext | null {
     ' ',
     ' ',
   );
-  const match = beforeCursor.match(/^\/([^/]*)$/);
-  if (!match || (match[1]?.length ?? 0) > 40) return null;
+  const match = beforeCursor.match(/(^|[\s\u3000])(\/[^/]*)$/);
+  const token = match?.[2];
+  if (!token || token.length > 41) return null;
   return {
-    from: selection.from - match[0].length,
-    query: match[1] ?? '',
+    from: selection.from - token.length,
+    query: token.slice(1),
     to: selection.from,
   };
 }
+
+const SLASH_GROUPS: { label: string; ids: SlashCommandId[] }[] = [
+  {
+    label: '基础',
+    ids: [
+      'paragraph',
+      'heading-1',
+      'heading-2',
+      'heading-3',
+      'bullet-list',
+      'numbered-list',
+      'task-list',
+      'quote',
+      'divider',
+    ],
+  },
+  {
+    label: '媒体与布局',
+    ids: [
+      'image',
+      'file',
+      'audio',
+      'video',
+      'table',
+      'columns-2',
+      'columns-3',
+      'bookmark',
+      'embed',
+    ],
+  },
+  {
+    label: '高级',
+    ids: [
+      'ai',
+      'details',
+      'callout',
+      'code',
+      'table-of-contents',
+      'breadcrumb',
+      'page-link',
+      'page-button',
+      'inline-reminder',
+      'synced-block',
+      'html-sandbox',
+      'inline-math',
+      'block-math',
+    ],
+  },
+];
 
 function slashCommandIcon(id: SlashCommandId): ReactNode {
   switch (id) {
@@ -2045,6 +2100,7 @@ function DocumentWorkspace({
   const [moveParentId, setMoveParentId] = useState(page.parentId ?? '');
   const [pageActionBusy, setPageActionBusy] = useState(false);
   const [pageActionError, setPageActionError] = useState<string | null>(null);
+  const [favorited, setFavorited] = useState(false);
   const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     readSidebarCollapsed(window.localStorage),
@@ -2144,6 +2200,22 @@ function DocumentWorkspace({
   useEffect(() => {
     writeSidebarCollapsed(sidebarCollapsed, window.localStorage);
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!onLogout || renewTicket) {
+      setFavorited(false);
+      return;
+    }
+    let active = true;
+    listFavoritePages(page.organizationId)
+      .then((result) => {
+        if (active) setFavorited(result.pages.some((item) => item.page.id === page.id));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [onLogout, page.id, page.organizationId, renewTicket]);
 
   useEffect(() => {
     const media = window.matchMedia(DESKTOP_SIDEBAR_QUERY);
@@ -2356,7 +2428,7 @@ function DocumentWorkspace({
         if (disposed) return;
         if (state === 'synced') {
           httpSynced = true;
-          setConnection('synced');
+          setConnection((current) => (current === 'synced' ? current : 'synced'));
         } else if (state === 'rebased') {
           terminalError = true;
           setConnection('connecting');
@@ -2815,6 +2887,40 @@ function DocumentWorkspace({
             onToggle={togglePage}
             onCreateChild={(parentId) => void createAndOpenPage(parentId)}
             canCreate={canEditStructure}
+            favoritedPageIds={favorited ? new Set([page.id]) : undefined}
+            onFavorite={(pageId, next) => {
+              if (pageId === page.id) setFavorited(next);
+              void setPageFavorite(pageId, next).catch(() => {
+                if (pageId === page.id) setFavorited(!next);
+              });
+            }}
+            onDelete={(pageId) => {
+              if (pageId === page.id) {
+                void removeCurrentPage();
+                return;
+              }
+              void confirmDialog({
+                title: '移入回收站',
+                message: '确定将这个页面及其子页面移入回收站吗？',
+                confirmLabel: '移入回收站',
+                danger: true,
+              }).then((confirmed) => {
+                if (!confirmed) return;
+                void deletePage(pageId)
+                  .then(() => {
+                    setPages((current) =>
+                      current.filter(
+                        (candidate) =>
+                          candidate.id !== pageId &&
+                          !descendantPageIds(pageId, current).has(candidate.id),
+                      ),
+                    );
+                  })
+                  .catch((reason: unknown) =>
+                    setTreeError(reason instanceof Error ? reason.message : '无法删除页面'),
+                  );
+              });
+            }}
           />
           {pageTree.length === 0 && <div className="page-tree-empty">还没有页面</div>}
           {treeError && <div className="page-tree-error">{treeError}</div>}
@@ -2868,15 +2974,17 @@ function DocumentWorkspace({
               </button>
             ) : null}
             <div className="breadcrumbs">
-              <span>{activeOrganization?.name ?? 'Rdocs'}</span>
-              <span>/</span>
-              {activeSpace ? (
-                <>
-                  <span>{activeSpace.name}</span>
+              <a href="/">{activeOrganization?.name ?? 'Rdocs'}</a>
+              {breadcrumbItems.map((item, index) => (
+                <Fragment key={item.id}>
                   <span>/</span>
-                </>
-              ) : null}
-              <span>{headerPage.title}</span>
+                  {index === breadcrumbItems.length - 1 ? (
+                    <span>{item.title || '无标题'}</span>
+                  ) : (
+                    <a href={`/p/${encodeURIComponent(item.id)}`}>{item.title || '无标题'}</a>
+                  )}
+                </Fragment>
+              ))}
               {headerPage.isLocked ? <LockKeyhole size={13} aria-label="页面已锁定" /> : null}
             </div>
           </div>
@@ -2886,26 +2994,18 @@ function DocumentWorkspace({
             <CollaboratorStack collaborators={collaborators} />
             {onLogout && !renewTicket ? (
               <button
-                className={`header-button ${aiRequest ? 'active' : ''}`}
+                className={`icon-button subtle ${favorited ? 'active' : ''}`}
                 type="button"
-                aria-pressed={Boolean(aiRequest)}
-                onClick={() =>
-                  aiRequest
-                    ? setAiRequest(null)
-                    : openAi({ from: null, to: null, selectionText: '' })
-                }
+                aria-pressed={favorited}
+                aria-label={favorited ? '取消收藏' : '收藏页面'}
+                title={favorited ? '取消收藏' : '收藏'}
+                onClick={() => {
+                  const next = !favorited;
+                  setFavorited(next);
+                  void setPageFavorite(page.id, next).catch(() => setFavorited(!next));
+                }}
               >
-                <Sparkles size={16} /> AI
-              </button>
-            ) : null}
-            {onLogout && !renewTicket ? (
-              <button
-                className="icon-button subtle"
-                type="button"
-                aria-label="离线保存此页"
-                onClick={() => void setOfflinePin(page.id, true)}
-              >
-                <Download size={16} />
+                <Star size={16} fill={favorited ? 'currentColor' : 'none'} />
               </button>
             ) : null}
             {onLogout && !renewTicket ? (
@@ -2930,31 +3030,23 @@ function DocumentWorkspace({
                 <MessageSquare size={17} />
               </button>
             ) : null}
-            {page.role === 'space_admin' && !renewTicket ? (
-              <button
-                className="header-button"
-                type="button"
-                onClick={() => setAccessDialogOpen(true)}
-              >
-                <LockKeyhole size={16} /> 权限
-              </button>
-            ) : null}
-            <button className="header-button" onClick={share}>
+            <button
+              className="header-button"
+              type="button"
+              onClick={() => {
+                if (page.role === 'space_admin' && !renewTicket) {
+                  setAccessDialogOpen(true);
+                  return;
+                }
+                void share();
+              }}
+            >
               {copied ? <Check size={16} /> : <Share2 size={16} />}
               {copied ? '已复制' : '分享'}
             </button>
-            {!renewTicket ? (
-              <button
-                className="header-button"
-                onClick={() => void exportCurrentPage()}
-                disabled={pageActionBusy}
-              >
-                <Download size={16} /> 导出
-              </button>
-            ) : null}
             {canEditStructure ? (
               <button
-                className="icon-button"
+                className="icon-button subtle"
                 aria-label="更多"
                 aria-expanded={pageMenuOpen}
                 onClick={() => setPageMenuOpen((open) => !open)}
@@ -2967,11 +3059,31 @@ function DocumentWorkspace({
                 <button
                   type="button"
                   onClick={() => {
+                    setPageMenuOpen(false);
+                    aiRequest
+                      ? setAiRequest(null)
+                      : openAi({ from: null, to: null, selectionText: '' });
+                  }}
+                >
+                  <Sparkles size={15} /> {aiRequest ? '关闭 AI' : '询问 AI'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
                     setAppearanceDialogOpen(true);
                     setPageMenuOpen(false);
                   }}
                 >
                   <Sparkles size={15} /> 自定义页面
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageMenuOpen(false);
+                    void setOfflinePin(page.id, true);
+                  }}
+                >
+                  <Download size={15} /> 离线保存此页
                 </button>
                 {page.role === 'space_admin' ? (
                   <button
@@ -3165,35 +3277,46 @@ function DocumentWorkspace({
             ) : null}
             {publicSite ? (
               <PublicSiteBreadcrumbs site={publicSite} currentPageId={headerPage.id} />
-            ) : (
-              <div className="document-kicker">团队知识 / 协作原型</div>
-            )}
-            {!renewTicket && !isSwitching ? <PageBacklinks pageId={page.id} /> : null}
-            <input
-              className="title-input"
-              value={isSwitching ? headerPage.title : title}
-              readOnly={!canEdit || isSwitching}
-              onChange={(event) => {
-                const nextTitle = event.target.value;
-                setTitle(nextTitle);
-                queueTitleSave(nextTitle);
-              }}
-              onBlur={() => void flushTitle()}
-              aria-label="页面标题"
-            />
+            ) : null}
+            <div className="page-hero">
+              {canEditStructure && !renewTicket && !isSwitching ? (
+                <div className="page-appearance-actions">
+                  {!headerPage.icon ? (
+                    <button type="button" onClick={() => setAppearanceDialogOpen(true)}>
+                      <Smile size={14} /> 添加图标
+                    </button>
+                  ) : null}
+                  {!headerPage.coverAttachmentId ? (
+                    <button type="button" onClick={() => setAppearanceDialogOpen(true)}>
+                      <ImagePlus size={14} /> 添加封面
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              {!renewTicket && !isSwitching ? <PageBacklinks pageId={page.id} /> : null}
+              <input
+                className="title-input"
+                value={isSwitching ? headerPage.title : title}
+                readOnly={!canEdit || isSwitching}
+                placeholder="无标题"
+                onChange={(event) => {
+                  const nextTitle = event.target.value;
+                  setTitle(nextTitle);
+                  queueTitleSave(nextTitle);
+                }}
+                onBlur={() => void flushTitle()}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== 'ArrowDown') return;
+                  event.preventDefault();
+                  editorRef.current?.chain().focus('start').run();
+                }}
+                aria-label="页面标题"
+              />
+            </div>
             {page.isLocked && !isSwitching ? (
               <div className="page-lock-notice">
                 <LockKeyhole size={15} /> 页面已锁定，当前为只读模式
               </div>
-            ) : null}
-            {onLogout && !renewTicket && !isSwitching && !aiRequest && !database ? (
-              <button
-                className="ai-idle-hint"
-                type="button"
-                onClick={() => openAi({ from: null, to: null, selectionText: '' })}
-              >
-                <Sparkles size={14} /> 询问 AI，或输入 / 插入内容块
-              </button>
             ) : null}
             {onLogout && !renewTicket && aiRequest && !isSwitching ? (
               <PageAiComposer
@@ -3404,6 +3527,9 @@ function PageTree({
   onToggle,
   onCreateChild,
   canCreate,
+  favoritedPageIds,
+  onFavorite,
+  onDelete,
   depth = 0,
 }: {
   nodes: PageTreeNode[];
@@ -3413,77 +3539,180 @@ function PageTree({
   onToggle: (pageId: string) => void;
   onCreateChild: (parentId: string) => void;
   canCreate: boolean;
+  favoritedPageIds?: ReadonlySet<string>;
+  onFavorite?: (pageId: string, next: boolean) => void;
+  onDelete?: (pageId: string) => void;
   depth?: number;
 }) {
   return (
     <ul className={depth === 0 ? 'page-tree' : 'page-tree-children'}>
-      {nodes.map((node) => {
-        const hasChildren = node.children.length > 0;
-        const collapsed = collapsedPageIds.has(node.id);
-        const active = node.id === activePageId;
-        return (
-          <li className="page-tree-node" key={node.id}>
-            <div
-              className={`page-tree-row ${active ? 'active' : ''}`}
-              style={{ '--tree-depth': depth } as CSSProperties}
+      {nodes.map((node) => (
+        <PageTreeItem
+          key={node.id}
+          node={node}
+          activePageId={activePageId}
+          collapsedPageIds={collapsedPageIds}
+          creatingUnder={creatingUnder}
+          onToggle={onToggle}
+          onCreateChild={onCreateChild}
+          canCreate={canCreate}
+          favoritedPageIds={favoritedPageIds}
+          onFavorite={onFavorite}
+          onDelete={onDelete}
+          depth={depth}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function PageTreeItem({
+  node,
+  activePageId,
+  collapsedPageIds,
+  creatingUnder,
+  onToggle,
+  onCreateChild,
+  canCreate,
+  favoritedPageIds,
+  onFavorite,
+  onDelete,
+  depth,
+}: {
+  node: PageTreeNode;
+  activePageId: string;
+  collapsedPageIds: ReadonlySet<string>;
+  creatingUnder: string | null | undefined;
+  onToggle: (pageId: string) => void;
+  onCreateChild: (parentId: string) => void;
+  canCreate: boolean;
+  favoritedPageIds?: ReadonlySet<string>;
+  onFavorite?: (pageId: string, next: boolean) => void;
+  onDelete?: (pageId: string) => void;
+  depth: number;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+  const hasChildren = node.children.length > 0;
+  const collapsed = collapsedPageIds.has(node.id);
+  const active = node.id === activePageId;
+  const favorited = favoritedPageIds?.has(node.id) ?? false;
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!menu.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [menuOpen]);
+
+  return (
+    <li className="page-tree-node">
+      <div
+        className={`page-tree-row ${active ? 'active' : ''}`}
+        style={{ '--tree-depth': depth } as CSSProperties}
+      >
+        <button
+          className={`page-tree-toggle ${hasChildren ? '' : 'placeholder'}`}
+          type="button"
+          aria-label={
+            hasChildren ? (collapsed ? `展开${node.title}` : `收起${node.title}`) : undefined
+          }
+          aria-expanded={hasChildren ? !collapsed : undefined}
+          disabled={!hasChildren}
+          onClick={() => onToggle(node.id)}
+        >
+          {hasChildren && (collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />)}
+        </button>
+        <a href={`/p/${encodeURIComponent(node.id)}`} aria-current={active ? 'page' : undefined}>
+          {node.icon ? <span className="page-tree-icon">{node.icon}</span> : <FileText size={14} />}
+          <span>{node.title || '无标题'}</span>
+        </a>
+        <span className="page-tree-row-actions" ref={menu}>
+          {canCreate ? (
+            <button
+              className="page-tree-add"
+              type="button"
+              title={`在“${node.title || '无标题'}”下新建子页面`}
+              aria-label={`在“${node.title || '无标题'}”下新建子页面`}
+              disabled={creatingUnder !== undefined}
+              onClick={() => onCreateChild(node.id)}
             >
+              {creatingUnder === node.id ? <span className="mini-spinner" /> : <Plus size={13} />}
+            </button>
+          ) : null}
+          <button
+            className="page-tree-more"
+            type="button"
+            aria-label={`更多：${node.title || '无标题'}`}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <MoreHorizontal size={13} />
+          </button>
+          {menuOpen ? (
+            <div className="page-tree-menu" role="menu">
               <button
-                className={`page-tree-toggle ${hasChildren ? '' : 'placeholder'}`}
                 type="button"
-                aria-label={
-                  hasChildren ? (collapsed ? `展开${node.title}` : `收起${node.title}`) : undefined
-                }
-                aria-expanded={hasChildren ? !collapsed : undefined}
-                disabled={!hasChildren}
-                onClick={() => onToggle(node.id)}
+                role="menuitem"
+                onClick={() => {
+                  void navigator.clipboard.writeText(
+                    `${window.location.origin}/p/${encodeURIComponent(node.id)}`,
+                  );
+                  setMenuOpen(false);
+                }}
               >
-                {hasChildren &&
-                  (collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />)}
+                <Link2 size={14} />
+                复制链接
               </button>
-              <a
-                href={`/p/${encodeURIComponent(node.id)}`}
-                aria-current={active ? 'page' : undefined}
-              >
-                {node.icon ? (
-                  <span className="page-tree-icon">{node.icon}</span>
-                ) : (
-                  <FileText size={14} />
-                )}
-                <span>{node.title}</span>
-              </a>
-              {canCreate ? (
+              {onFavorite ? (
                 <button
-                  className="page-tree-add"
                   type="button"
-                  title={`在“${node.title}”下新建子页面`}
-                  aria-label={`在“${node.title}”下新建子页面`}
-                  disabled={creatingUnder !== undefined}
-                  onClick={() => onCreateChild(node.id)}
+                  role="menuitem"
+                  onClick={() => {
+                    onFavorite(node.id, !favorited);
+                    setMenuOpen(false);
+                  }}
                 >
-                  {creatingUnder === node.id ? (
-                    <span className="mini-spinner" />
-                  ) : (
-                    <Plus size={13} />
-                  )}
+                  <Star size={14} fill={favorited ? 'currentColor' : 'none'} />
+                  {favorited ? '取消收藏' : '收藏'}
+                </button>
+              ) : null}
+              {onDelete ? (
+                <button
+                  className="danger"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDelete(node.id);
+                  }}
+                >
+                  <Trash2 size={14} />
+                  移入回收站
                 </button>
               ) : null}
             </div>
-            {hasChildren && !collapsed && (
-              <PageTree
-                nodes={node.children}
-                activePageId={activePageId}
-                collapsedPageIds={collapsedPageIds}
-                creatingUnder={creatingUnder}
-                onToggle={onToggle}
-                onCreateChild={onCreateChild}
-                canCreate={canCreate}
-                depth={depth + 1}
-              />
-            )}
-          </li>
-        );
-      })}
-    </ul>
+          ) : null}
+        </span>
+      </div>
+      {hasChildren && !collapsed ? (
+        <PageTree
+          nodes={node.children}
+          activePageId={activePageId}
+          collapsedPageIds={collapsedPageIds}
+          creatingUnder={creatingUnder}
+          onToggle={onToggle}
+          onCreateChild={onCreateChild}
+          canCreate={canCreate}
+          favoritedPageIds={favoritedPageIds}
+          onFavorite={onFavorite}
+          onDelete={onDelete}
+          depth={depth + 1}
+        />
+      ) : null}
+    </li>
   );
 }
 
@@ -3516,7 +3745,6 @@ function CollaborativeEditor({
   publicShareToken?: string;
   publicSiteSlug?: string;
 }) {
-  const [, rerender] = useState(0);
   const editorInstance = useRef<Editor | null>(null);
   const breadcrumbItemsRef = useRef(breadcrumbItems);
   breadcrumbItemsRef.current = breadcrumbItems;
@@ -3664,11 +3892,7 @@ function CollaborativeEditor({
                 setMentionMenu(null);
                 return true;
               }
-              const slash = slashKeyRef.current;
-              if (!slash.isOpen) return false;
-              const current = editorInstance.current;
-              const context = current ? slashContext(current) : null;
-              if (current && context) current.chain().focus().deleteRange(context).run();
+              if (!slashKeyRef.current.isOpen) return false;
               setSlashMenu(null);
               return true;
             },
@@ -3682,6 +3906,13 @@ function CollaborativeEditor({
     editable,
     extensions: [
       slashMenuKeys,
+      Placeholder.configure({
+        placeholder: '输入 / 打开命令，或随便写点什么',
+        emptyEditorClass: 'is-editor-empty',
+        emptyNodeClass: 'is-empty',
+        showOnlyWhenEditable: true,
+        showOnlyCurrent: true,
+      }),
       StarterKit.configure({
         undoRedo: false,
         link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
@@ -3760,9 +3991,6 @@ function CollaborativeEditor({
         if (!slash.isOpen) return false;
         if (event.key === 'Escape') {
           event.preventDefault();
-          const current = editorInstance.current;
-          const context = current ? slashContext(current) : null;
-          if (current && context) current.chain().focus().deleteRange(context).run();
           setSlashMenu(null);
           return true;
         }
@@ -3808,7 +4036,6 @@ function CollaborativeEditor({
       },
     },
     onSelectionUpdate: ({ editor: currentEditor }) => {
-      rerender((value) => value + 1);
       const { from, to } = currentEditor.state.selection;
       if (from === to) {
         onSelectionQuote(null);
@@ -3855,7 +4082,6 @@ function CollaborativeEditor({
       onSelectionQuote({ quotedText, anchorStart, anchorEnd });
     },
     onTransaction: ({ editor: currentEditor }) => {
-      rerender((value) => value + 1);
       updateSlashMenu(currentEditor);
       const mention = mentionContext(currentEditor);
       if (!mention) {
@@ -4616,28 +4842,42 @@ function CollaborativeEditor({
           onMouseDown={(event) => event.preventDefault()}
         >
           <header>
-            <strong>基础内容块</strong>
-            <span>输入关键词筛选 · ↑↓ 选择 · Enter 插入</span>
+            <strong>插入</strong>
+            <span>输入筛选 · ↑↓ 选择 · Esc 关闭</span>
           </header>
           <div>
             {filteredSlashCommands.length ? (
-              filteredSlashCommands.map((command, index) => (
-                <button
-                  key={command.id}
-                  type="button"
-                  role="option"
-                  aria-selected={index === slashIndex}
-                  className={index === slashIndex ? 'active' : ''}
-                  onMouseEnter={() => setSlashIndex(index)}
-                  onClick={() => runSlashCommand(command.id)}
-                >
-                  <span className="slash-command-icon">{slashCommandIcon(command.id)}</span>
-                  <span>
-                    <strong>{command.label}</strong>
-                    <small>{command.description}</small>
-                  </span>
-                </button>
-              ))
+              SLASH_GROUPS.map((group) => {
+                const items = filteredSlashCommands.filter((command) =>
+                  group.ids.includes(command.id),
+                );
+                if (!items.length) return null;
+                return (
+                  <Fragment key={group.label}>
+                    <p className="slash-group-label">{group.label}</p>
+                    {items.map((command) => {
+                      const index = filteredSlashCommands.indexOf(command);
+                      return (
+                        <button
+                          key={command.id}
+                          type="button"
+                          role="option"
+                          aria-selected={index === slashIndex}
+                          className={index === slashIndex ? 'active' : ''}
+                          onMouseEnter={() => setSlashIndex(index)}
+                          onClick={() => runSlashCommand(command.id)}
+                        >
+                          <span className="slash-command-icon">{slashCommandIcon(command.id)}</span>
+                          <span>
+                            <strong>{command.label}</strong>
+                            <small>{command.description}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </Fragment>
+                );
+              })
             ) : (
               <p>没有匹配的内容块</p>
             )}

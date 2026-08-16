@@ -121,6 +121,8 @@ import { autofillDatabaseProperty } from './api';
 import { datePart, fromDateParts, parseDateCell } from './date-value';
 import { formFieldVisible } from './form-logic';
 import { confirmDialog, showToast } from './dialogs';
+import { cachedRequest } from './request-cache';
+import { startVisibleInterval } from './visible-poll';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   title: '标题',
@@ -402,7 +404,7 @@ function RelationCell({
     if (!targetDatabaseId) return;
     let active = true;
     setLoading(true);
-    void getDatabase(targetDatabaseId)
+    void cachedRequest(`database:${targetDatabaseId}`, () => getDatabase(targetDatabaseId))
       .then((snapshot) => {
         if (active) setTarget(snapshot);
       })
@@ -524,7 +526,7 @@ function PersonCell({
   useEffect(() => {
     let active = true;
     setLoading(true);
-    void listOrganizationMembers(organizationId)
+    void cachedRequest(`members:${organizationId}`, () => listOrganizationMembers(organizationId))
       .then((result) => {
         if (active) setMembers(result.members.filter((member) => member.status === 'active'));
       })
@@ -929,6 +931,7 @@ function DatabaseCell({
   onButton,
   actorId,
   reminderSourceId,
+  onOpenRecord,
 }: {
   property: DatabasePropertySummary;
   value: JsonValue | undefined;
@@ -940,6 +943,7 @@ function DatabaseCell({
   onButton?: () => Promise<void>;
   actorId?: string;
   reminderSourceId?: string;
+  onOpenRecord?: () => void;
 }) {
   const [draft, setDraft] = useState(() => toInputValue(property, value));
   const [saving, setSaving] = useState(false);
@@ -1133,6 +1137,24 @@ function DatabaseCell({
       </div>
     );
   }
+  if (property.type === 'title' && onOpenRecord) {
+    return (
+      <div className={`database-input-cell database-title-open ${saving ? 'saving' : ''}`}>
+        <button type="button" className="database-title-button" onClick={() => onOpenRecord()}>
+          {draft.trim() || '无标题'}
+        </button>
+        {openPage ? (
+          <a
+            href={`/p/${encodeURIComponent(openPage)}`}
+            aria-label="打开数据行页面"
+            title="打开为页面"
+          >
+            <ExternalLink size={13} />
+          </a>
+        ) : null}
+      </div>
+    );
+  }
   const inputType = property.type === 'number' ? 'number' : 'text';
   return (
     <div className={`database-input-cell ${saving ? 'saving' : ''}`}>
@@ -1150,15 +1172,6 @@ function DatabaseCell({
         onBlur={() => void flush()}
         aria-label={property.name}
       />
-      {property.type === 'title' && openPage ? (
-        <a
-          href={`/p/${encodeURIComponent(openPage)}`}
-          aria-label="打开数据行页面"
-          title="打开为页面"
-        >
-          <ExternalLink size={13} />
-        </a>
-      ) : null}
     </div>
   );
 }
@@ -1353,6 +1366,9 @@ function TableDatabaseView({
                           rowPageId={row.pageId}
                           onSave={(value) => saveCell(row, property, value)}
                           onButton={() => executeButton(row, property)}
+                          onOpenRecord={
+                            property.type === 'title' ? () => onExpandRow?.(row) : undefined
+                          }
                           actorId={actorId}
                           reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
                         />
@@ -4791,6 +4807,7 @@ export function DatabaseCanvas({
   useEffect(() => {
     const tick = () => {
       if (
+        document.visibilityState === 'hidden' ||
         document.querySelector(
           '.database-canvas input:focus, .database-canvas textarea:focus, .database-canvas select:focus',
         )
@@ -4799,10 +4816,10 @@ export function DatabaseCanvas({
       }
       void refresh();
     };
-    const timer = window.setInterval(tick, 8_000);
+    const stop = startVisibleInterval(tick, 15_000);
     window.addEventListener('focus', tick);
     return () => {
-      window.clearInterval(timer);
+      stop();
       window.removeEventListener('focus', tick);
     };
   }, [refresh]);
