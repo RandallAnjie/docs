@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
+    "build": "node scripts/embed-web-assets.mjs && node build.mjs",
     "dev": "npm run build && node /develop/bigrandall.io/rrangler/bin/rrangler.mjs dev --port 8787",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node scripts/embed-web-assets.mjs && tsc --noEmit"
   },
   "dependencies": {
     "@rdocs/shared": "*",

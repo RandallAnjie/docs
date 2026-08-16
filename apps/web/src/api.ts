@@ -7,6 +7,7 @@ import type {
   CommentThreadSummary,
   CreatePageResponse,
   CreateRevisionResponse,
+  DatabasePropertyGrantSummary,
   DatabasePropertySummary,
   DatabaseFormLinkSummary,
   DatabaseAutomationAction,
@@ -499,6 +500,30 @@ export function updateDatabaseProperty(
   return request(
     `/api/databases/${encodeURIComponent(databaseId)}/properties/${encodeURIComponent(propertyId)}`,
     { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+export function listDatabasePropertyGrants(
+  databaseId: string,
+  propertyId: string,
+): Promise<{ grants: DatabasePropertyGrantSummary[] }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/properties/${encodeURIComponent(propertyId)}/grants`,
+  );
+}
+
+export function putDatabasePropertyGrant(
+  databaseId: string,
+  propertyId: string,
+  input: {
+    principalType: 'user' | 'group' | 'organization';
+    principalId: string;
+    role: 'none' | 'viewer' | 'editor';
+  },
+): Promise<{ ok: true }> {
+  return request(
+    `/api/databases/${encodeURIComponent(databaseId)}/properties/${encodeURIComponent(propertyId)}/grants`,
+    { method: 'PUT', body: JSON.stringify(input) },
   );
 }
 

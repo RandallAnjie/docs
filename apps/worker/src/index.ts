@@ -1,5 +1,5 @@
-import appHtml from '../../web/dist/index.html';
 import * as Y from 'yjs';
+import { webAssets, webHtml } from './generated-web-assets';
 
 import {
   ATTACHMENT_PART_BYTES,
@@ -4647,8 +4647,27 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   return error('API 路径不存在', 404);
 }
 
+function decodeWebAsset(body: string, encoding: 'utf8' | 'base64'): string | Uint8Array {
+  if (encoding === 'utf8') return body;
+  const binary = atob(body);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function webAssetResponse(pathname: string): Response | null {
+  const asset = webAssets[pathname];
+  if (!asset) return null;
+  return new Response(decodeWebAsset(asset.body, asset.encoding) as unknown as BodyInit, {
+    headers: {
+      'content-type': asset.type,
+      'cache-control': 'public, max-age=31536000, immutable',
+    },
+  });
+}
+
 function htmlResponse(
-  html = appHtml,
+  html = webHtml,
   options: { embeddable?: boolean; analytics?: boolean } = {},
 ): Response {
   const scriptSources = ["'self'", "'unsafe-inline'"];
@@ -4744,7 +4763,7 @@ async function publicSiteHtmlResponse(request: Request, env: Env): Promise<Respo
   const prerender = excerpt
     ? `<noscript><article><h1>${escapedHtml(page.page.title)}</h1><p>${escapedHtml(excerpt)}</p></article></noscript>`
     : '';
-  const html = appHtml
+  const html = webHtml
     .replace(/<title>[^<]*<\/title>/, `<title>${escapedHtml(title)}</title>`)
     .replace('</head>', `${meta}</head>`)
     .replace('<div id="root"></div>', `<div id="root"></div>${prerender}`);
@@ -4785,7 +4804,10 @@ export default {
             ? await openCollaborationSocket(request, env, pageId)
             : error('页面 ID 无效', 400);
         } else if (request.method === 'GET' || request.method === 'HEAD') {
-          if (url.pathname === '/manifest.webmanifest') {
+          const asset = webAssetResponse(url.pathname);
+          if (asset) {
+            response = asset;
+          } else if (url.pathname === '/manifest.webmanifest') {
             response = webManifest();
           } else if (url.pathname === '/sw.js') {
             response = serviceWorkerScript();

@@ -1847,17 +1847,33 @@ export function webManifest(): Response {
 }
 
 export function serviceWorkerScript(): Response {
-  const script = `const CACHE='rdocs-shell-v1';
+  const script = `const CACHE='rdocs-shell-v3';
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(['/'])));
   self.skipWaiting();
 });
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())
+  );
 });
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/collab/')) return;
+  if (url.pathname.startsWith('/assets/')) {
+    event.respondWith(
+      caches.open(CACHE).then((cache) =>
+        cache.match(event.request).then((cached) => {
+          if (cached) return cached;
+          return fetch(event.request).then((response) => {
+            if (response.ok) void cache.put(event.request, response.clone());
+            return response;
+          });
+        }),
+      ),
+    );
+    return;
+  }
   event.respondWith(
     fetch(event.request).then((response) => {
       const copy = response.clone();

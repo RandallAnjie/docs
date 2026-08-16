@@ -1,0 +1,3 @@
+apps/worker/src/generated-web-assets.ts
+apps/web/dist
+dist
