@@ -2130,6 +2130,24 @@ function DocumentWorkspace({
     };
   }, [page.organizationId, renewTicket]);
 
+  useEffect(() => {
+    if (isSwitching || (database && database.database.pageId === page.id)) return;
+    let active = true;
+    void getPageDatabase(page.id)
+      .then(async (owned) => {
+        if (owned) return owned;
+        const linked = await getLinkedDatabase(page.id).catch(() => ({ databaseId: null }));
+        return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
+      })
+      .then((snapshot) => {
+        if (active && snapshot) setDatabase(snapshot);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [database, isSwitching, page.id]);
+
   useLayoutEffect(() => {
     const navigation = sidebarNavigation.current;
     const activeLink = navigation?.querySelector<HTMLElement>('a[aria-current="page"]');
@@ -3027,7 +3045,7 @@ function DocumentWorkspace({
 
         <div className="document-scroll">
           <article
-            className={`document-sheet font-${headerPage.fontStyle} ${headerPage.isFullWidth ? 'page-full-width' : ''} ${headerPage.isSmallText ? 'page-small-text' : ''} ${headerPage.coverAttachmentId ? 'has-cover' : ''}`}
+            className={`document-sheet font-${headerPage.fontStyle} ${headerPage.isFullWidth || database ? 'page-full-width' : ''} ${database ? 'has-database' : ''} ${headerPage.isSmallText ? 'page-small-text' : ''} ${headerPage.coverAttachmentId ? 'has-cover' : ''}`}
           >
             {headerPage.coverAttachmentId ? (
               <div className="page-cover">
@@ -3097,18 +3115,18 @@ function DocumentWorkspace({
                 onReplace={(text) => insertAiText(text, true)}
               />
             ) : null}
-            {isSwitching ? (
+            {database && (!isSwitching || database.database.pageId === requestedPageId) ? (
+              <DatabaseCanvas
+                key={database.database.id}
+                initialSnapshot={database}
+                canEdit={canEditStructure && !page.isLocked}
+                actorId={identity.id}
+              />
+            ) : isSwitching ? (
               <div className="editor-loading" aria-live="polite">
                 <div className="loading-mark" />
                 <span>正在打开页面…</span>
               </div>
-            ) : database ? (
-              <DatabaseCanvas
-                key={page.id}
-                initialSnapshot={database}
-                canEdit={canEdit}
-                actorId={identity.id}
-              />
             ) : collab ? (
               <CollaborativeEditor
                 key={page.id}

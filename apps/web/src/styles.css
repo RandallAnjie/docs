@@ -1382,14 +1382,19 @@ button {
 .app-shell.public-share.sidebar-collapsed {
   grid-template-columns: 58px minmax(540px, 1fr);
 }
+.app-shell.sidebar-collapsed .sidebar {
+  overflow: hidden;
+}
 .sidebar-collapsed .sidebar-top .brand,
 .sidebar-collapsed .workspace-switcher > span:not(.workspace-avatar),
 .sidebar-collapsed .workspace-switcher > svg,
 .sidebar-collapsed .sidebar-nav,
 .sidebar-collapsed .sidebar-actions button kbd,
+.sidebar-collapsed .sidebar-footer > span,
 .sidebar-collapsed .sidebar-footer > div,
-.sidebar-collapsed .sidebar-footer > svg {
-  display: none;
+.sidebar-collapsed .sidebar-footer > svg,
+.sidebar-collapsed .sidebar-footer .sidebar-logout {
+  display: none !important;
 }
 .sidebar-collapsed .sidebar-top {
   justify-content: center;
@@ -1401,16 +1406,32 @@ button {
 .sidebar-collapsed .workspace-switcher-root {
   flex: 0 0 auto;
 }
-.sidebar-collapsed .sidebar-actions button {
+.app-shell.sidebar-collapsed .sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0 8px;
+}
+.app-shell.sidebar-collapsed .sidebar-actions button,
+.app-shell.sidebar-collapsed .sidebar-actions a {
   justify-content: center;
-  width: 38px;
+  width: 36px !important;
+  min-width: 36px;
   overflow: hidden;
   color: transparent;
   font-size: 0;
+  padding: 0;
 }
-.sidebar-collapsed .sidebar-actions button svg {
+.app-shell.sidebar-collapsed .sidebar-actions button svg,
+.app-shell.sidebar-collapsed .sidebar-actions a svg {
   flex: none;
   color: #6f6b63;
+}
+.sidebar-collapsed .sidebar-footer {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
 }
 .header-actions {
   position: relative;
@@ -3146,11 +3167,14 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
   padding: 0 10px 0 14px;
   border-bottom: 0;
   background: rgb(255 255 255 / 92%);
   backdrop-filter: blur(10px);
   z-index: 2;
+  overflow: hidden;
 }
 .breadcrumbs {
   display: flex;
@@ -3170,6 +3194,8 @@ button {
   display: flex;
   align-items: center;
   gap: 3px;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 .header-button {
   display: flex;
@@ -3250,6 +3276,11 @@ button {
 .document-sheet.page-full-width {
   width: calc(100% - 96px);
   max-width: 1440px;
+}
+.document-sheet.has-database {
+  width: calc(100% - 28px);
+  max-width: none;
+  padding: 28px 0 72px;
 }
 .document-sheet.font-serif,
 .document-sheet.font-serif .title-input,
@@ -7076,8 +7107,9 @@ button.page-icon-display:hover {
     width: calc(100% - 36px);
     padding-top: 40px;
   }
-  .document-sheet.page-full-width {
-    width: calc(100% - 24px);
+  .document-sheet.page-full-width,
+  .document-sheet.has-database {
+    width: calc(100% - 16px);
   }
   .document-sheet.has-cover {
     padding-top: 0;
@@ -8176,13 +8208,78 @@ button.page-icon-display:hover {
 .database-relation-cell > button:hover {
   background: #f4f7f9;
 }
+.database-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 33px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 3px 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.database-chip-row:disabled {
+  cursor: default;
+}
+.database-page-chip,
+.database-person-chip,
+.database-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.database-page-chip {
+  background: #eef2f6;
+  color: #3d5270;
+}
+.database-person-chip {
+  background: #f3ead8;
+  color: #6a4b1f;
+}
+.database-file-chip {
+  background: #eeebe4;
+  color: #5c5850;
+}
+.database-file-chip b {
+  font-weight: 500;
+  cursor: pointer;
+}
+.database-file-drop {
+  min-height: 33px;
+}
+.database-file-drop.dragover {
+  box-shadow: inset 0 0 0 2px #2383e2;
+  background: #f3f8fd;
+}
+.database-picker-search {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #e4e2dc;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  font: inherit;
+  font-size: 12px;
+}
 .database-relation-picker {
   position: absolute;
   z-index: 30;
   top: calc(100% + 3px);
   left: 0;
-  width: 280px;
-  max-height: 300px;
+  width: min(320px, 72vw);
+  max-height: 320px;
   overflow: auto;
   padding: 6px;
   background: #fff;
