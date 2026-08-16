@@ -46,6 +46,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import type {
   AttachmentSummary,
@@ -298,6 +299,84 @@ function fromInputValue(property: DatabasePropertySummary, value: string): JsonV
   return value;
 }
 
+function DatabasePickModal({
+  children,
+  empty,
+  error,
+  hasItems,
+  loading,
+  onClose,
+  onQuery,
+  query,
+  searchPlaceholder,
+  selected,
+  title,
+}: {
+  children: ReactNode;
+  empty: string;
+  error: string | null;
+  hasItems: boolean;
+  loading: boolean;
+  onClose: () => void;
+  onQuery: (value: string) => void;
+  query: string;
+  searchPlaceholder: string;
+  selected: ReactNode;
+  title: string;
+}) {
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    searchRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return createPortal(
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <section
+        className="rdocs-dialog database-pick-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <h2>{title}</h2>
+            {selected}
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </header>
+        <label className="database-pick-search">
+          <Search size={15} />
+          <input
+            ref={searchRef}
+            value={query}
+            placeholder={searchPlaceholder}
+            onChange={(event) => onQuery(event.target.value)}
+          />
+        </label>
+        <div className="database-pick-list">
+          {loading ? <p>正在加载…</p> : null}
+          {error ? <p className="dialog-error">{error}</p> : null}
+          {children}
+          {!loading && !error && !hasItems ? <p className="database-pick-empty">{empty}</p> : null}
+        </div>
+        <footer>
+          <button className="primary-button" type="button" onClick={onClose}>
+            完成
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function RelationCell({
   property,
   value,
@@ -374,33 +453,48 @@ function RelationCell({
         )}
       </button>
       {open ? (
-        <div className="database-relation-picker">
-          <header>
-            <strong>{target?.database.title ?? '选择关联页面'}</strong>
-            <button type="button" onClick={() => setOpen(false)}>
-              ×
-            </button>
-          </header>
-          <input
-            className="database-picker-search"
-            value={query}
-            placeholder="搜索页面标题"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {loading ? <p>正在加载…</p> : null}
-          {error ? <p className="dialog-error">{error}</p> : null}
-          {visibleRows.map((row) => (
-            <label key={row.id}>
-              <input
-                type="checkbox"
-                checked={selected.includes(row.id)}
-                onChange={() => void toggle(row.id)}
-              />
-              <span className="database-page-chip">{titles.get(row.id)}</span>
-            </label>
-          ))}
-          {target && !visibleRows.length ? <p>没有匹配的页面。</p> : null}
-        </div>
+        <DatabasePickModal
+          empty={query.trim() ? '没有匹配的页面' : '目标数据库还没有记录'}
+          error={error}
+          hasItems={visibleRows.length > 0}
+          loading={loading}
+          query={query}
+          searchPlaceholder="搜索页面标题"
+          title={target?.database.title ?? '选择关联页面'}
+          selected={
+            selected.length ? (
+              <div className="database-pick-selected">
+                {selected.map((id) => (
+                  <span key={id} className="database-page-chip">
+                    {titles.get(id) || '未命名'}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p>还没有选择页面</p>
+            )
+          }
+          onClose={() => {
+            setOpen(false);
+            setQuery('');
+          }}
+          onQuery={setQuery}
+        >
+          {visibleRows.map((row) => {
+            const checked = selected.includes(row.id);
+            return (
+              <button
+                key={row.id}
+                className={checked ? 'selected' : undefined}
+                type="button"
+                onClick={() => void toggle(row.id)}
+              >
+                <span className="database-page-chip">{titles.get(row.id)}</span>
+                {checked ? <Check size={15} /> : null}
+              </button>
+            );
+          })}
+        </DatabasePickModal>
       ) : null}
     </div>
   );
@@ -480,34 +574,51 @@ function PersonCell({
         )}
       </button>
       {open ? (
-        <div className="database-relation-picker">
-          <header>
-            <strong>选择人员</strong>
-            <button type="button" onClick={() => setOpen(false)}>
-              ×
-            </button>
-          </header>
-          <input
-            className="database-picker-search"
-            value={query}
-            placeholder="搜索姓名或邮箱"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {loading ? <p>正在加载…</p> : null}
-          {error ? <p className="dialog-error">{error}</p> : null}
-          {visible.map((member) => (
-            <label key={member.userId}>
-              <input
-                type="checkbox"
-                checked={selected.includes(member.userId)}
-                onChange={() => void toggle(member.userId)}
-              />
-              <span className="database-person-chip">@{member.displayName}</span>
-              <small>{member.email}</small>
-            </label>
-          ))}
-          {!visible.length ? <p>没有匹配的成员。</p> : null}
-        </div>
+        <DatabasePickModal
+          empty={query.trim() ? '没有匹配的成员' : '组织里还没有成员'}
+          error={error}
+          hasItems={visible.length > 0}
+          loading={loading}
+          query={query}
+          searchPlaceholder="搜索姓名或邮箱"
+          title="选择人员"
+          selected={
+            selected.length ? (
+              <div className="database-pick-selected">
+                {selected.map((id) => (
+                  <span key={id} className="database-person-chip">
+                    @{names.get(id) || '成员'}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p>还没有选择人员</p>
+            )
+          }
+          onClose={() => {
+            setOpen(false);
+            setQuery('');
+          }}
+          onQuery={setQuery}
+        >
+          {visible.map((member) => {
+            const checked = selected.includes(member.userId);
+            return (
+              <button
+                key={member.userId}
+                className={checked ? 'selected' : undefined}
+                type="button"
+                onClick={() => void toggle(member.userId)}
+              >
+                <span>
+                  <b className="database-person-chip">@{member.displayName}</b>
+                  <small>{member.email}</small>
+                </span>
+                {checked ? <Check size={15} /> : null}
+              </button>
+            );
+          })}
+        </DatabasePickModal>
       ) : null}
     </div>
   );
