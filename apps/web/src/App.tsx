@@ -67,6 +67,7 @@ import {
   Quote,
   RefreshCw,
   Search,
+  Settings,
   Share2,
   Sparkles,
   SquareChevronDown,
@@ -212,6 +213,17 @@ import {
 } from './navigation';
 import { LandingPage } from './LandingPage';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
+import {
+  appShellClassName,
+  DESKTOP_SIDEBAR_QUERY,
+  HOVER_PEEK_QUERY,
+  isSidebarToggleKey,
+  matchesMediaQuery,
+  readSidebarCollapsed,
+  shouldIgnoreSidebarShortcut,
+  SIDEBAR_UNPEEK_DELAY_MS,
+  writeSidebarCollapsed,
+} from './sidebar-chrome';
 import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
 import { PageAiComposer, type EditorAiRequest } from './EditorAi';
 import { markdownToEditorContent } from './ai-markdown';
@@ -1436,7 +1448,12 @@ function TenantHome({
             {selectedOrganization ? (
               <NotificationBell organizationId={selectedOrganization.id} />
             ) : null}
-            <IdentityBubble identity={identity} compact />
+            <HeaderAccount
+              identity={identity}
+              organizationName={selectedOrganization?.name}
+              onOpenSettings={selectedOrganization ? () => setSettingsOpen(true) : undefined}
+              onLogout={onLogout}
+            />
           </div>
         </header>
         <div className="notion-home-content">
@@ -2029,7 +2046,14 @@ function DocumentWorkspace({
   const [pageActionBusy, setPageActionBusy] = useState(false);
   const [pageActionError, setPageActionError] = useState<string | null>(null);
   const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    readSidebarCollapsed(window.localStorage),
+  );
+  const [sidebarPeek, setSidebarPeek] = useState(false);
+  const [desktopSidebar, setDesktopSidebar] = useState(() =>
+    matchesMediaQuery(DESKTOP_SIDEBAR_QUERY),
+  );
+  const peekCloseTimer = useRef(0);
   const [contextPanelOpen, setContextPanelOpen] = useState(() =>
     Boolean(commentThreadIdFromHash(locationHash)),
   );
@@ -2114,6 +2138,57 @@ function DocumentWorkspace({
     (organization) => organization.id === page.organizationId,
   );
   const activeSpace = organizationSpaces.find((space) => space.id === page.spaceId);
+  const sidebarHidden = desktopSidebar && sidebarCollapsed;
+  const sidebarPeeking = sidebarHidden && sidebarPeek;
+
+  useEffect(() => {
+    writeSidebarCollapsed(sidebarCollapsed, window.localStorage);
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    const media = window.matchMedia(DESKTOP_SIDEBAR_QUERY);
+    const sync = () => {
+      const desktop = media.matches;
+      setDesktopSidebar(desktop);
+      if (!desktop) setSidebarPeek(false);
+    };
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  const peekSidebar = useCallback(() => {
+    window.clearTimeout(peekCloseTimer.current);
+    if (matchesMediaQuery(HOVER_PEEK_QUERY) && sidebarCollapsed) setSidebarPeek(true);
+  }, [sidebarCollapsed]);
+
+  const unpeekSidebar = useCallback(() => {
+    window.clearTimeout(peekCloseTimer.current);
+    peekCloseTimer.current = window.setTimeout(
+      () => setSidebarPeek(false),
+      SIDEBAR_UNPEEK_DELAY_MS,
+    );
+  }, []);
+
+  const toggleSidebarPinned = useCallback(() => {
+    window.clearTimeout(peekCloseTimer.current);
+    setSidebarPeek(false);
+    setSidebarCollapsed((current) => !current);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!matchesMediaQuery(DESKTOP_SIDEBAR_QUERY)) return;
+      if (!isSidebarToggleKey(event) || shouldIgnoreSidebarShortcut(event.target)) return;
+      event.preventDefault();
+      toggleSidebarPinned();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.clearTimeout(peekCloseTimer.current);
+    };
+  }, [toggleSidebarPinned]);
 
   useEffect(() => {
     if (renewTicket) return;
@@ -2649,26 +2724,42 @@ function DocumentWorkspace({
 
   return (
     <div
-      className={`app-shell ${renewTicket ? 'public-share' : ''} ${publicSite ? `public-site theme-${publicSite.theme}` : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${contextPanelOpen ? 'context-panel-open' : ''}`}
+      className={appShellClassName({
+        publicShare: Boolean(renewTicket),
+        publicSiteTheme: publicSite?.theme,
+        sidebarCollapsed: sidebarHidden,
+        sidebarPeek: sidebarPeeking,
+        contextPanelOpen,
+      })}
     >
-      <aside className="sidebar">
+      {sidebarHidden ? (
+        <div
+          className="sidebar-edge-hotspot"
+          onMouseEnter={peekSidebar}
+          onMouseLeave={unpeekSidebar}
+          aria-hidden="true"
+        />
+      ) : null}
+      <aside
+        className="sidebar"
+        inert={sidebarHidden && !sidebarPeeking ? true : undefined}
+        onMouseEnter={peekSidebar}
+        onMouseLeave={unpeekSidebar}
+      >
         <div className="sidebar-top">
           {renewTicket ? (
             <a className="workspace-switcher public-workspace-switcher" href="/">
               <span className="workspace-avatar">R</span>
-              {!sidebarCollapsed ? (
-                <span className="workspace-switcher-copy">
-                  <strong>Rdocs</strong>
-                  <small>只读分享</small>
-                </span>
-              ) : null}
+              <span className="workspace-switcher-copy">
+                <strong>Rdocs</strong>
+                <small>只读分享</small>
+              </span>
             </a>
           ) : (
             <WorkspaceSwitcher
               organizations={organizations}
               activeOrganizationId={page.organizationId}
               identity={identity}
-              collapsed={sidebarCollapsed}
               onSelect={(organizationId) => {
                 if (organizationId !== page.organizationId) navigateHome();
               }}
@@ -2679,12 +2770,13 @@ function DocumentWorkspace({
             />
           )}
           <button
-            className="icon-button subtle"
+            className="icon-button subtle sidebar-toggle"
             type="button"
-            aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-            onClick={() => setSidebarCollapsed((current) => !current)}
+            aria-label={sidebarHidden ? '固定侧栏' : '收起侧栏'}
+            title={sidebarHidden ? '固定侧栏' : '收起侧栏 ['}
+            onClick={toggleSidebarPinned}
           >
-            {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            {sidebarHidden ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
         </div>
         <div className="sidebar-actions">
@@ -2745,26 +2837,6 @@ function DocumentWorkspace({
             </button>
           </div>
         </nav>
-        <div className="sidebar-footer">
-          <IdentityBubble identity={identity} compact />
-          <span>
-            <strong>{identity.name}</strong>
-            <small>{activeOrganization?.name ?? (onLogout ? '设备密钥会话' : '只读分享')}</small>
-          </span>
-          {onLogout ? (
-            <button
-              type="button"
-              className="sidebar-logout"
-              onClick={() => void onLogout()}
-              aria-label="退出登录"
-              title="退出登录"
-            >
-              <LogOut size={16} />
-            </button>
-          ) : (
-            <MoreHorizontal size={17} />
-          )}
-        </div>
       </aside>
 
       <main className="document-area" aria-busy={isSwitching}>
@@ -2783,17 +2855,30 @@ function DocumentWorkspace({
           />
         ) : null}
         <header className="document-header">
-          <div className="breadcrumbs">
-            <span>{activeOrganization?.name ?? 'Rdocs'}</span>
-            <span>/</span>
-            {activeSpace ? (
-              <>
-                <span>{activeSpace.name}</span>
-                <span>/</span>
-              </>
+          <div className="header-leading">
+            {sidebarHidden ? (
+              <button
+                className="icon-button subtle sidebar-toggle"
+                type="button"
+                aria-label="展开侧栏"
+                title="展开侧栏 ["
+                onClick={toggleSidebarPinned}
+              >
+                <PanelLeftOpen size={16} />
+              </button>
             ) : null}
-            <span>{headerPage.title}</span>
-            {headerPage.isLocked ? <LockKeyhole size={13} aria-label="页面已锁定" /> : null}
+            <div className="breadcrumbs">
+              <span>{activeOrganization?.name ?? 'Rdocs'}</span>
+              <span>/</span>
+              {activeSpace ? (
+                <>
+                  <span>{activeSpace.name}</span>
+                  <span>/</span>
+                </>
+              ) : null}
+              <span>{headerPage.title}</span>
+              {headerPage.isLocked ? <LockKeyhole size={13} aria-label="页面已锁定" /> : null}
+            </div>
           </div>
           <div className="header-actions">
             {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
@@ -3040,6 +3125,14 @@ function DocumentWorkspace({
                 </button>
               </div>
             ) : null}
+            <HeaderAccount
+              identity={identity}
+              organizationName={activeOrganization?.name ?? (renewTicket ? '只读分享' : undefined)}
+              onOpenSettings={
+                onLogout && !renewTicket ? () => window.location.assign('/?settings=1') : undefined
+              }
+              onLogout={onLogout}
+            />
           </div>
         </header>
 
@@ -4668,6 +4761,81 @@ function IdentityBubble({
     >
       {identityMonogram(identity)}
     </span>
+  );
+}
+
+function HeaderAccount({
+  identity,
+  organizationName,
+  onOpenSettings,
+  onLogout,
+}: {
+  identity: LocalIdentity;
+  organizationName?: string;
+  onOpenSettings?: () => void;
+  onLogout?: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeMenu = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeMenu);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div className="header-account" ref={root}>
+      <button
+        className="header-account-button"
+        type="button"
+        aria-label={`账户：${identity.name}`}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <IdentityBubble identity={identity} compact />
+      </button>
+      {open ? (
+        <div className="header-account-menu" role="menu">
+          <div className="workspace-account">
+            <span style={{ background: identity.color }}>{firstCharacter(identity.name)}</span>
+            <div>
+              <strong>{identity.name}</strong>
+              <small>{organizationName ?? 'Rdocs'}</small>
+            </div>
+          </div>
+          {onOpenSettings ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onOpenSettings();
+              }}
+            >
+              <Settings size={16} />
+              设置与成员
+            </button>
+          ) : null}
+          {onLogout ? (
+            <button type="button" role="menuitem" onClick={() => void onLogout()}>
+              <LogOut size={16} />
+              退出登录
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
