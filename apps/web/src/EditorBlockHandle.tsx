@@ -271,7 +271,7 @@ export function EditorBlockHandle({
       editor={editor}
       className="rdocs-drag-handle-portal"
       computePositionConfig={DRAG_POSITION}
-      nested={false}
+      nested
       onNodeChange={handleNodeChange}
       onElementDragStart={() => setMenuOpen(false)}
     >

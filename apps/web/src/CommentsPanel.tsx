@@ -9,6 +9,7 @@ import {
   replyToCommentThread,
   setCommentThreadResolved,
 } from './api';
+import { startVisibleInterval } from './visible-poll';
 
 export function CommentsPanel({
   pageId,
@@ -48,8 +49,7 @@ export function CommentsPanel({
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 5_000);
-    return () => window.clearInterval(timer);
+    return startVisibleInterval(() => void load(true), 12_000);
   }, [load]);
 
   useEffect(() => {

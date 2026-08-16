@@ -1,7 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
 
 :root {
-  font-family: 'DM Sans', 'Noto Sans SC', system-ui, sans-serif;
+  font-family:
+    'DM Sans', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', system-ui,
+    sans-serif;
   color: #292824;
   background: #f4f2ed;
   font-synthesis: none;
@@ -1361,7 +1363,7 @@ button {
 
 .app-shell {
   position: relative;
-  height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: 244px minmax(520px, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -1417,10 +1419,12 @@ button {
 }
 .page-action-menu {
   position: absolute;
-  z-index: 20;
+  z-index: 80;
   top: calc(100% + 8px);
   right: 0;
-  width: 178px;
+  width: 220px;
+  max-height: min(70vh, 480px);
+  overflow: auto;
   padding: 6px;
   border: 1px solid #d9d5cd;
   border-radius: 10px;
@@ -2423,9 +2427,13 @@ button {
   color: #77736b;
 }
 .icon-button.subtle:hover,
-.sidebar-toggle:hover {
+.sidebar-toggle:hover,
+.icon-button.subtle.active {
   background: #ebebea;
   color: #37352f;
+}
+.icon-button.subtle.active {
+  color: #c8a227;
 }
 .icon-button.subtle:focus-visible,
 .header-account-button:focus-visible,
@@ -2596,7 +2604,7 @@ button {
 .page-tree-row {
   --tree-depth: 0;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 25px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   min-height: 32px;
   padding-left: calc(var(--tree-depth) * 13px);
@@ -2629,7 +2637,8 @@ button {
   opacity: 0.75;
 }
 .page-tree-toggle,
-.page-tree-add {
+.page-tree-add,
+.page-tree-more {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2643,20 +2652,64 @@ button {
   cursor: pointer;
 }
 .page-tree-toggle:hover,
-.page-tree-add:hover {
+.page-tree-add:hover,
+.page-tree-more:hover {
   background: #d8d4cc;
   color: #3e3b35;
 }
 .page-tree-toggle.placeholder {
   visibility: hidden;
 }
-.page-tree-add {
+.page-tree-add,
+.page-tree-more {
   opacity: 0;
 }
+.page-tree-row-actions {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+}
 .page-tree-row:hover .page-tree-add,
+.page-tree-row:hover .page-tree-more,
 .page-tree-row:focus-within .page-tree-add,
-.page-tree-add:disabled {
+.page-tree-row:focus-within .page-tree-more,
+.page-tree-add:disabled,
+.page-tree-more[aria-expanded='true'] {
   opacity: 1;
+}
+.page-tree-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 168px;
+  padding: 4px;
+  border: 1px solid rgb(55 53 47 / 12%);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgb(15 15 15 / 14%);
+}
+.page-tree-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #37352f;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.page-tree-menu button:hover {
+  background: #f1f1ef;
+}
+.page-tree-menu button.danger {
+  color: #aa452d;
 }
 .page-tree-add:disabled {
   cursor: default;
@@ -3194,6 +3247,20 @@ button {
   font-size: 13px;
   color: #9b9a97;
 }
+.breadcrumbs a {
+  color: #9b9a97;
+  text-decoration: none;
+  border-radius: 4px;
+  padding: 2px 4px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.breadcrumbs a:hover {
+  background: #f1f1ef;
+  color: #37352f;
+}
 .breadcrumbs span:last-child {
   color: #605d56;
   text-overflow: ellipsis;
@@ -3296,10 +3363,10 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
+  padding: 5px 6px;
   border-radius: 999px;
-  font-size: 9px;
-  color: #79756d;
+  font-size: 0;
+  color: transparent;
 }
 .connection-pill i {
   width: 6px;
@@ -3352,7 +3419,7 @@ button {
   background: #fff;
 }
 .document-sheet {
-  width: min(720px, calc(100% - 80px));
+  width: min(720px, calc(100% - 132px));
   margin: 0 auto;
   padding: 62px 0 120px;
 }
@@ -3515,27 +3582,49 @@ button.page-icon-display:hover {
   outline: 0;
   background: transparent;
   color: #272621;
-  font-family: 'DM Sans', 'Noto Sans SC', system-ui, sans-serif;
-  font-size: clamp(36px, 4vw, 42px);
+  font-family: 'DM Sans', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', sans-serif;
+  font-size: clamp(36px, 4vw, 40px);
   font-weight: 700;
-  letter-spacing: -1.2px;
-  line-height: 1.1;
+  letter-spacing: -0.5px;
+  line-height: 1.2;
   padding: 0;
 }
-.ai-idle-hint {
+.title-input::placeholder {
+  color: #c4c0b8;
+}
+.page-appearance-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin: 8px 0 4px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.page-hero:hover .page-appearance-actions,
+.page-appearance-actions:focus-within {
+  opacity: 1;
+}
+.page-appearance-actions button {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin: 10px 0 0;
-  padding: 0;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
   border: 0;
+  border-radius: 4px;
   background: transparent;
-  color: #9a9690;
-  font-size: 14px;
+  color: #9b9790;
+  font: inherit;
+  font-size: 13px;
   cursor: pointer;
 }
-.ai-idle-hint:hover {
-  color: #c85436;
+.page-appearance-actions button:hover {
+  background: #f1f1ef;
+  color: #37352f;
+}
+.ai-idle-hint {
+  display: none;
 }
 .page-ai-composer {
   margin: 18px 0 8px;
@@ -3815,6 +3904,12 @@ button.page-icon-display:hover {
     0 2px 8px #24211c14;
   color: #37352f;
 }
+.slash-menu .slash-group-label {
+  margin: 6px 8px 2px;
+  color: #9b9a97;
+  font-size: 10px;
+  font-weight: 600;
+}
 .slash-menu header {
   display: flex;
   flex-direction: column;
@@ -4025,9 +4120,9 @@ button.page-icon-display:hover {
   min-height: 55vh;
   outline: none;
   color: #3e3c37;
-  font-family: 'DM Sans', 'Noto Sans SC', sans-serif;
-  font-size: 15px;
-  line-height: 1.85;
+  font-family: 'DM Sans', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
 }
 .rdocs-editor .rdocs-block-anchor-target {
   border-radius: 5px;
@@ -4041,7 +4136,16 @@ button.page-icon-display:hover {
   margin-top: 0;
 }
 .rdocs-editor p {
-  margin: 0.75em 0;
+  margin: 1px 0;
+  padding: 3px 2px;
+}
+.rdocs-editor p.is-empty::before,
+.rdocs-editor p.is-editor-empty::before {
+  content: attr(data-placeholder);
+  color: #c0bdb6;
+  float: left;
+  height: 0;
+  pointer-events: none;
 }
 .rdocs-editor h1,
 .rdocs-editor h2,
@@ -5012,11 +5116,7 @@ button.page-icon-display:hover {
   pointer-events: none;
 }
 .rdocs-editor p.is-editor-empty:first-child::before {
-  content: '开始记录想法，或邀请同事一起编辑…';
-  color: #b2aea5;
-  float: left;
-  height: 0;
-  pointer-events: none;
+  content: attr(data-placeholder);
 }
 .collaboration-cursor__caret {
   border-left: 1px solid;
@@ -7956,8 +8056,45 @@ button.page-icon-display:hover {
   left: 72px;
   z-index: 3;
 }
-.database-table-grid tr.selected td {
+.database-table-grid tbody tr:hover td,
+.database-table-grid tbody tr:hover .database-col-check,
+.database-table-grid tbody tr:hover .database-col-index,
+.database-table-grid tbody tr:hover .database-col-title {
+  background: #f3f1ea;
+}
+.database-table-grid tr.selected td,
+.database-table-grid tr.selected .database-col-check,
+.database-table-grid tr.selected .database-col-index,
+.database-table-grid tr.selected .database-col-title {
   background: #f4f1e8;
+}
+.database-title-button {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.database-title-button:hover {
+  color: #2383e2;
+}
+.database-table-aggregations select,
+.database-table-aggregations label span {
+  opacity: 0;
+}
+.database-table-aggregations:hover select,
+.database-table-aggregations:hover label span,
+.database-table-aggregations select:focus {
+  opacity: 1;
 }
 .database-col-resize {
   position: absolute;
@@ -7998,7 +8135,7 @@ button.page-icon-display:hover {
   color: #787671;
 }
 .database-table th:first-child {
-  width: 250px;
+  width: 36px;
 }
 .database-table th button {
   border: 0;
