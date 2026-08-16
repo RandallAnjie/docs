@@ -943,6 +943,7 @@ function DatabaseCell({
   actorId,
   reminderSourceId,
   onOpenRecord,
+  forceEdit,
 }: {
   property: DatabasePropertySummary;
   value: JsonValue | undefined;
@@ -955,6 +956,7 @@ function DatabaseCell({
   actorId?: string;
   reminderSourceId?: string;
   onOpenRecord?: () => void;
+  forceEdit?: boolean;
 }) {
   const [draft, setDraft] = useState(() => toInputValue(property, value));
   const [saving, setSaving] = useState(false);
@@ -1148,7 +1150,7 @@ function DatabaseCell({
       </div>
     );
   }
-  if (property.type === 'title' && onOpenRecord) {
+  if (property.type === 'title' && onOpenRecord && !forceEdit) {
     return (
       <div className={`database-input-cell database-title-open ${saving ? 'saving' : ''}`}>
         <button type="button" className="database-title-button" onClick={() => onOpenRecord()}>
@@ -1438,6 +1440,7 @@ function TableDatabaseView({
                         property.type === 'checkbox' ||
                         property.type === 'button' ||
                         (selectedCell && editing);
+                      const editTitle = property.type === 'title' && selectedCell && editing;
                       return (
                         <td
                           key={property.id}
@@ -1452,7 +1455,7 @@ function TableDatabaseView({
                             else setEditing(true);
                           }}
                         >
-                          {live || property.type === 'title' ? (
+                          {live || (property.type === 'title' && !editTitle) ? (
                             <DatabaseCell
                               property={property}
                               value={row.values[property.id]}
@@ -1465,6 +1468,7 @@ function TableDatabaseView({
                               onOpenRecord={
                                 property.type === 'title' ? () => onExpandRow?.(row) : undefined
                               }
+                              forceEdit={editTitle}
                               actorId={actorId}
                               reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
                             />
@@ -1999,9 +2003,9 @@ function BoardDatabaseView(props: DatabaseViewProps) {
                   event.dataTransfer.setData('application/x-rdocs-row', row.id);
                 }}
               >
-                <a href={`/p/${encodeURIComponent(row.pageId)}`}>
+                <button type="button" onClick={() => props.onExpandRow?.(row)}>
                   {rowTitle(row, props.properties)}
-                </a>
+                </button>
                 {props.properties
                   .filter((property) => property.id !== titleProperty(props.properties)?.id)
                   .slice(0, 3)
@@ -2022,7 +2026,16 @@ function BoardDatabaseView(props: DatabaseViewProps) {
               </article>
             ))}
             {props.canEdit ? (
-              <button type="button" onClick={props.addRow}>
+              <button
+                type="button"
+                onClick={() => {
+                  const title = titleProperty(props.properties);
+                  void props.createRow({
+                    ...(title ? { [title.id]: '未命名' } : {}),
+                    ...(name === '未分组' ? {} : { [groupProperty.id]: group.value }),
+                  });
+                }}
+              >
                 <Plus size={13} /> 新建
               </button>
             ) : null}
@@ -2154,17 +2167,18 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
                 ) : null}
               </header>
               {dayRows.map((row) => (
-                <a
+                <button
                   key={row.id}
-                  href={`/p/${encodeURIComponent(row.pageId)}`}
+                  type="button"
                   draggable={props.canEdit && dateProperty.type === 'date'}
+                  onClick={() => props.onExpandRow?.(row)}
                   onDragStart={(event) => {
                     event.dataTransfer.effectAllowed = 'move';
                     event.dataTransfer.setData('application/x-rdocs-row', row.id);
                   }}
                 >
                   {rowTitle(row, props.properties)}
-                </a>
+                </button>
               ))}
             </section>
           );
@@ -2175,16 +2189,17 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
           <summary>无日期 · {unscheduled.length}</summary>
           <div>
             {unscheduled.map((row) => (
-              <a
+              <button
                 key={row.id}
-                href={`/p/${encodeURIComponent(row.pageId)}`}
+                type="button"
                 draggable={props.canEdit && dateProperty.type === 'date'}
+                onClick={() => props.onExpandRow?.(row)}
                 onDragStart={(event) =>
                   event.dataTransfer.setData('application/x-rdocs-row', row.id)
                 }
               >
                 {rowTitle(row, props.properties)}
-              </a>
+              </button>
             ))}
           </div>
         </details>
@@ -2199,14 +2214,14 @@ function ListDatabaseView(props: DatabaseViewProps) {
   return (
     <div className="database-list-view">
       {props.rows.map((row) => (
-        <a key={row.id} href={`/p/${encodeURIComponent(row.pageId)}`}>
+        <button key={row.id} type="button" onClick={() => props.onExpandRow?.(row)}>
           <FileText size={17} />
           <strong>{rowTitle(row, props.properties)}</strong>
           {props.properties.slice(1, 4).map((property) => (
             <span key={property.id}>{valueText(row.values[property.id]) || '—'}</span>
           ))}
           <ExternalLink size={14} />
-        </a>
+        </button>
       ))}
     </div>
   );
@@ -2222,7 +2237,9 @@ function GalleryDatabaseView(props: DatabaseViewProps) {
           <div className="database-gallery-cover">
             {rowTitle(row, props.properties).slice(0, 1)}
           </div>
-          <a href={`/p/${encodeURIComponent(row.pageId)}`}>{rowTitle(row, props.properties)}</a>
+          <button type="button" onClick={() => props.onExpandRow?.(row)}>
+            {rowTitle(row, props.properties)}
+          </button>
           {props.properties.slice(1, 4).map((property) => (
             <p key={property.id}>
               <small>{property.name}</small> {valueText(row.values[property.id]) || '—'}
@@ -5067,7 +5084,19 @@ export function DatabaseCanvas({
 
   const refresh = useCallback(async () => {
     const next = await getDatabase(snapshot.database.id);
-    setSnapshot(next);
+    setSnapshot((current) => {
+      if (
+        current.database.updatedAt === next.database.updatedAt &&
+        current.rows.length === next.rows.length &&
+        current.rows.every(
+          (row, index) =>
+            row.id === next.rows[index]?.id && row.updatedAt === next.rows[index]?.updatedAt,
+        )
+      ) {
+        return current;
+      }
+      return next;
+    });
   }, [snapshot.database.id]);
 
   useEffect(() => {

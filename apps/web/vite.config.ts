@@ -10,7 +10,13 @@ export default defineConfig({
     cssCodeSplit: true,
     modulePreload: {
       resolveDependencies: (_filename, deps) =>
-        deps.filter((dep) => !dep.includes('database') && !dep.includes('katex')),
+        deps.filter(
+          (dep) =>
+            !dep.includes('database') &&
+            !dep.includes('katex') &&
+            !dep.includes('editor') &&
+            !dep.includes('collab'),
+        ),
     },
     rollupOptions: {
       output: {

@@ -178,12 +178,17 @@ const DatabaseCanvas = lazy(() =>
   import('./DatabaseCanvas').then((module) => ({ default: module.DatabaseCanvas })),
 );
 import type { LocalIdentity } from './identity';
-import { DiscoveryDialog, type DiscoveryTab } from './DiscoveryDialog';
+import type { DiscoveryTab } from './DiscoveryDialog';
+
+const DiscoveryDialog = lazy(() =>
+  import('./DiscoveryDialog').then((module) => ({ default: module.DiscoveryDialog })),
+);
 import { EditorBlockHandle } from './EditorBlockHandle';
 import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell, PageNotificationControl, PageReminderControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
+import { ShareLinkSettings } from './ShareLinkSettings';
 import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
 import {
@@ -228,6 +233,7 @@ import {
   isSidebarToggleKey,
   matchesMediaQuery,
   readSidebarCollapsed,
+  searchShortcutLabel,
   shouldIgnoreSidebarShortcut,
   SIDEBAR_UNPEEK_DELAY_MS,
   writeSidebarCollapsed,
@@ -1191,24 +1197,30 @@ function TenantHome({
         if (!active) return;
         setSpaces(nextSpaces);
         setSpacesLoading(false);
-        const pageResults = await Promise.allSettled(
-          nextSpaces
-            .filter((space) => space.archivedAt === null)
-            .map(async (space) => ({
-              spaceId: space.id,
-              pages: (await listPages(space.id)).pages,
-            })),
+        const liveSpaces = nextSpaces.filter((space) => space.archivedAt === null);
+        const first = liveSpaces[0];
+        if (first) {
+          const { pages } = await listPages(first.id);
+          if (!active) return;
+          setPagesBySpace({ [first.id]: pages });
+        }
+        const remaining = await Promise.allSettled(
+          liveSpaces.slice(1).map(async (space) => ({
+            spaceId: space.id,
+            pages: (await listPages(space.id)).pages,
+          })),
         );
         if (!active) return;
-        setPagesBySpace(
-          Object.fromEntries(
-            pageResults.flatMap((result) =>
+        setPagesBySpace((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            remaining.flatMap((result) =>
               result.status === 'fulfilled'
                 ? [[result.value.spaceId, result.value.pages] as const]
                 : [],
             ),
           ),
-        );
+        }));
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '无法加载空间');
@@ -1253,7 +1265,7 @@ function TenantHome({
     setBusy(true);
     setError(null);
     try {
-      const { page } = await createPage('欢迎来到 Rdocs', null, space.id);
+      const { page } = await createPage('未命名页面', null, space.id);
       navigateToPage(page.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法创建页面');
@@ -1387,7 +1399,7 @@ function TenantHome({
           >
             <Search size={17} />
             搜索
-            <kbd>⌘ K</kbd>
+            <kbd>{searchShortcutLabel()}</kbd>
           </button>
           <a className="active" href="/">
             <FileText size={17} /> 主页
@@ -1729,16 +1741,18 @@ function TenantHome({
         <TemplateDialog space={templateSpace} onClose={() => setTemplateSpace(null)} />
       ) : null}
       {discoveryTab && selectedOrganization ? (
-        <DiscoveryDialog
-          organizationId={selectedOrganization.id}
-          initialTab={discoveryTab}
-          onClose={() => setDiscoveryTab(null)}
-          onCreatePage={
-            spaces[0] ? () => void createAndOpenPage(spaces[0] as SpaceSummary, null) : undefined
-          }
-          pages={Object.values(pagesBySpace).flat()}
-          spaces={spaces}
-        />
+        <Suspense fallback={null}>
+          <DiscoveryDialog
+            organizationId={selectedOrganization.id}
+            initialTab={discoveryTab}
+            onClose={() => setDiscoveryTab(null)}
+            onCreatePage={
+              spaces[0] ? () => void createAndOpenPage(spaces[0] as SpaceSummary, null) : undefined
+            }
+            pages={Object.values(pagesBySpace).flat()}
+            spaces={spaces}
+          />
+        </Suspense>
       ) : null}
     </main>
   );
@@ -2095,6 +2109,7 @@ function DocumentWorkspace({
   const [organizationSpaces, setOrganizationSpaces] = useState<SpaceSummary[]>([]);
   const [commentSelection, setCommentSelection] = useState<CommentSelection | null>(null);
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [contextTab, setContextTab] = useState<'comments' | 'history' | 'attachments'>('comments');
   const [collapsedPageIds, setCollapsedPageIds] = useState<ReadonlySet<string>>(new Set());
   const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
@@ -2207,6 +2222,24 @@ function DocumentWorkspace({
   useEffect(() => {
     writeSidebarCollapsed(sidebarCollapsed, window.localStorage);
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!pageMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.page-action-menu, .header-actions .icon-button')) return;
+      setPageMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPageMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pageMenuOpen]);
 
   useEffect(() => {
     if (!onLogout || renewTicket) {
@@ -2548,24 +2581,24 @@ function DocumentWorkspace({
     setAiRequest(null);
 
     void (async () => {
-      await settleWithin(Promise.all([flushTitleRef.current(), flushDocumentRef.current()]), 800);
-      if (cancelled || pageSwitchGeneration.current !== generation) return;
+      const loadPage = Promise.all([
+        getPage(requestedPageId),
+        renewTicket
+          ? renewTicket().then((nextTicket) => ({ ticket: nextTicket }))
+          : getCollabTicket(requestedPageId, identity),
+        getPageDatabase(requestedPageId)
+          .catch(() => null)
+          .then(async (owned) => {
+            if (owned) return owned;
+            const linked = await getLinkedDatabase(requestedPageId).catch(() => ({
+              databaseId: null,
+            }));
+            return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
+          }),
+      ]);
+      void settleWithin(Promise.all([flushTitleRef.current(), flushDocumentRef.current()]), 400);
       try {
-        const [{ page: nextPage }, ticketResult, nextDatabase] = await Promise.all([
-          getPage(requestedPageId),
-          renewTicket
-            ? renewTicket().then((nextTicket) => ({ ticket: nextTicket }))
-            : getCollabTicket(requestedPageId, identity),
-          getPageDatabase(requestedPageId)
-            .catch(() => null)
-            .then(async (owned) => {
-              if (owned) return owned;
-              const linked = await getLinkedDatabase(requestedPageId).catch(() => ({
-                databaseId: null,
-              }));
-              return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
-            }),
-        ]);
+        const [{ page: nextPage }, ticketResult, nextDatabase] = await loadPage;
         let nextPages = pagesRef.current;
         if (nextPage.spaceId !== pageRef.current.spaceId) {
           try {
@@ -2861,7 +2894,7 @@ function DocumentWorkspace({
           {!renewTicket ? (
             <button type="button" onClick={() => setDiscoveryTab('search')}>
               <Search size={16} />
-              搜索 <kbd>⌘ K</kbd>
+              搜索 <kbd>{searchShortcutLabel()}</kbd>
             </button>
           ) : null}
           {!renewTicket ? (
@@ -3036,19 +3069,9 @@ function DocumentWorkspace({
                 <MessageSquare size={17} />
               </button>
             ) : null}
-            <button
-              className="header-button"
-              type="button"
-              onClick={() => {
-                if (page.role === 'space_admin' && !renewTicket) {
-                  setAccessDialogOpen(true);
-                  return;
-                }
-                void share();
-              }}
-            >
-              {copied ? <Check size={16} /> : <Share2 size={16} />}
-              {copied ? '已复制' : '分享'}
+            <button className="header-button" type="button" onClick={() => setShareOpen(true)}>
+              <Share2 size={16} />
+              分享
             </button>
             {canEditStructure ? (
               <button
@@ -3337,72 +3360,90 @@ function DocumentWorkspace({
                 onReplace={(text) => insertAiText(text, true)}
               />
             ) : null}
-            {database && (!isSwitching || database.database.pageId === requestedPageId) ? (
-              <Suspense
-                fallback={
-                  <div className="editor-loading" aria-live="polite">
-                    <div className="loading-mark" />
-                    <span>正在打开数据库…</span>
-                  </div>
-                }
-              >
-                <DatabaseCanvas
-                  key={database.database.id}
-                  initialSnapshot={database}
-                  canEdit={canEditStructure && !page.isLocked}
-                  actorId={identity.id}
-                />
-              </Suspense>
-            ) : collab && collab.pageId === page.id ? (
-              <CollaborativeEditor
-                key={page.id}
-                collab={collab}
-                identity={identity}
-                onSelectionQuote={setCommentSelection}
-                onAskAi={openAi}
-                editable={canEdit}
-                onReady={handleEditorReady}
-                onUploadFiles={uploadFilesToPage}
-                onCreateSyncedBlock={createSyncedBlockResource}
-                organizationId={page.organizationId}
-                breadcrumbItems={breadcrumbItems}
-                pageId={page.id}
-                publicShareToken={publicShareToken}
-                publicSiteSlug={publicSite?.slug}
-              />
-            ) : collab ? (
-              <div className="document-switch-hold" aria-busy="true">
+            <div
+              className={
+                isSwitching || (collab && collab.pageId !== page.id)
+                  ? 'document-switch-hold'
+                  : undefined
+              }
+            >
+              {isSwitching || (collab && collab.pageId !== page.id) ? (
                 <div className="document-switch-veil" aria-live="polite">
                   <div className="loading-mark" />
                   <span>正在打开页面…</span>
                 </div>
+              ) : null}
+              {database && database.database.pageId === page.id ? (
+                <Suspense
+                  fallback={
+                    <div className="editor-loading" aria-live="polite">
+                      <div className="loading-mark" />
+                      <span>正在打开数据库…</span>
+                    </div>
+                  }
+                >
+                  <DatabaseCanvas
+                    key={database.database.id}
+                    initialSnapshot={database}
+                    canEdit={canEditStructure && !page.isLocked}
+                    actorId={identity.id}
+                  />
+                </Suspense>
+              ) : collab && collab.pageId === page.id ? (
                 <CollaborativeEditor
-                  key={collab.pageId}
+                  key={page.id}
                   collab={collab}
                   identity={identity}
-                  onSelectionQuote={() => undefined}
-                  editable={false}
-                  onReady={() => undefined}
-                  onUploadFiles={async () => undefined}
-                  onCreateSyncedBlock={async () => ''}
+                  onSelectionQuote={setCommentSelection}
+                  onAskAi={openAi}
+                  onOpenComments={() => {
+                    setContextPanelOpen(true);
+                    setContextTab('comments');
+                  }}
+                  editable={canEdit}
+                  onReady={handleEditorReady}
+                  onUploadFiles={uploadFilesToPage}
+                  onCreateSyncedBlock={createSyncedBlockResource}
                   organizationId={page.organizationId}
                   breadcrumbItems={breadcrumbItems}
-                  pageId={collab.pageId}
+                  pageId={page.id}
                   publicShareToken={publicShareToken}
                   publicSiteSlug={publicSite?.slug}
                 />
-              </div>
-            ) : isSwitching ? (
-              <div className="editor-loading" aria-live="polite">
-                <div className="loading-mark" />
-                <span>正在打开页面…</span>
-              </div>
-            ) : (
-              <div className="editor-loading">
-                <div className="loading-mark" />
-                <span>正在建立加密协作连接…</span>
-              </div>
-            )}
+              ) : collab ? (
+                <div className="document-switch-hold" aria-busy="true">
+                  <div className="document-switch-veil" aria-live="polite">
+                    <div className="loading-mark" />
+                    <span>正在打开页面…</span>
+                  </div>
+                  <CollaborativeEditor
+                    key={collab.pageId}
+                    collab={collab}
+                    identity={identity}
+                    onSelectionQuote={() => undefined}
+                    editable={false}
+                    onReady={() => undefined}
+                    onUploadFiles={async () => undefined}
+                    onCreateSyncedBlock={async () => ''}
+                    organizationId={page.organizationId}
+                    breadcrumbItems={breadcrumbItems}
+                    pageId={collab.pageId}
+                    publicShareToken={publicShareToken}
+                    publicSiteSlug={publicSite?.slug}
+                  />
+                </div>
+              ) : isSwitching ? (
+                <div className="editor-loading" aria-live="polite">
+                  <div className="loading-mark" />
+                  <span>正在打开页面…</span>
+                </div>
+              ) : (
+                <div className="editor-loading">
+                  <div className="loading-mark" />
+                  <span>正在建立加密协作连接…</span>
+                </div>
+              )}
+            </div>
             {pageUpload ? (
               <div className="page-upload-progress" role="status">
                 <span>
@@ -3534,18 +3575,59 @@ function DocumentWorkspace({
           </form>
         </div>
       ) : null}
+      {shareOpen ? (
+        <div className="dialog-backdrop" role="presentation" onClick={() => setShareOpen(false)}>
+          <section
+            className="rdocs-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="分享"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>分享</h2>
+            <p>复制链接发给协作者，或创建可撤销的只读外链。</p>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  void share();
+                }}
+              >
+                {copied ? '已复制页面链接' : '复制页面链接'}
+              </button>
+              {page.role === 'space_admin' && !renewTicket ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShareOpen(false);
+                    setAccessDialogOpen(true);
+                  }}
+                >
+                  管理权限
+                </button>
+              ) : null}
+              <button type="button" onClick={() => setShareOpen(false)}>
+                关闭
+              </button>
+            </div>
+            {!renewTicket ? <ShareLinkSettings pageId={page.id} /> : null}
+          </section>
+        </div>
+      ) : null}
       {accessDialogOpen ? (
         <PageAccessDialog page={page} onClose={() => setAccessDialogOpen(false)} />
       ) : null}
       {discoveryTab ? (
-        <DiscoveryDialog
-          organizationId={page.organizationId}
-          initialTab={discoveryTab}
-          onClose={() => setDiscoveryTab(null)}
-          onCreatePage={() => void createAndOpenPage(null)}
-          pages={pages}
-          spaces={organizationSpaces}
-        />
+        <Suspense fallback={null}>
+          <DiscoveryDialog
+            organizationId={page.organizationId}
+            initialTab={discoveryTab}
+            onClose={() => setDiscoveryTab(null)}
+            onCreatePage={() => void createAndOpenPage(null)}
+            pages={pages}
+            spaces={organizationSpaces}
+          />
+        </Suspense>
       ) : null}
       {pageActionError && !moveDialogOpen ? (
         <p className="page-action-error" role="alert">
@@ -3758,6 +3840,7 @@ function CollaborativeEditor({
   identity,
   onSelectionQuote,
   onAskAi,
+  onOpenComments,
   editable,
   onReady,
   onUploadFiles,
@@ -3772,6 +3855,7 @@ function CollaborativeEditor({
   identity: LocalIdentity;
   onSelectionQuote: (selection: CommentSelection | null) => void;
   onAskAi?: (request: EditorAiRequest) => void;
+  onOpenComments?: () => void;
   editable: boolean;
   onReady: (editor: Editor | null) => void;
   onUploadFiles: (files: File[], target?: Editor | null) => Promise<void>;
@@ -3783,6 +3867,7 @@ function CollaborativeEditor({
   publicSiteSlug?: string;
 }) {
   const editorInstance = useRef<Editor | null>(null);
+  const keepQuote = useRef(false);
   useEffect(() => {
     void import('katex/dist/katex.min.css');
   }, []);
@@ -4074,11 +4159,22 @@ function CollaborativeEditor({
         void uploadFilesRef.current(files);
         return true;
       },
+      handleClick: (_view, _pos, event) => {
+        const target = event.target as HTMLElement | null;
+        const link = target?.closest('a[href]') as HTMLAnchorElement | null;
+        if (!link?.href) return false;
+        if (event.metaKey || event.ctrlKey || !editable) {
+          event.preventDefault();
+          window.open(link.href, '_blank', 'noopener');
+          return true;
+        }
+        return false;
+      },
     },
     onSelectionUpdate: ({ editor: currentEditor }) => {
       const { from, to } = currentEditor.state.selection;
       if (from === to) {
-        onSelectionQuote(null);
+        if (!keepQuote.current) onSelectionQuote(null);
         setAiToolbar(null);
         return;
       }
@@ -4672,6 +4768,20 @@ function CollaborativeEditor({
               const selectionText =
                 from === to ? '' : editor.state.doc.textBetween(from, to, ' ').trim();
               onAskAi({ from, to, selectionText });
+              setAiToolbar(null);
+            },
+            active: false,
+          },
+        ]
+      : []),
+    ...(onOpenComments
+      ? [
+          {
+            label: '评论',
+            icon: <MessageSquare size={16} />,
+            action: () => {
+              keepQuote.current = true;
+              onOpenComments();
               setAiToolbar(null);
             },
             active: false,
