@@ -1360,6 +1360,7 @@ button {
 }
 
 .app-shell {
+  position: relative;
   height: 100vh;
   display: grid;
   grid-template-columns: 244px minmax(520px, 1fr);
@@ -1374,64 +1375,42 @@ button {
   grid-template-columns: 244px minmax(520px, 1fr) 310px;
 }
 .app-shell.sidebar-collapsed {
-  grid-template-columns: 58px minmax(520px, 1fr);
+  grid-template-columns: minmax(520px, 1fr);
 }
 .app-shell.context-panel-open.sidebar-collapsed {
-  grid-template-columns: 58px minmax(520px, 1fr) 310px;
+  grid-template-columns: minmax(520px, 1fr) 310px;
 }
 .app-shell.public-share.sidebar-collapsed {
-  grid-template-columns: 58px minmax(540px, 1fr);
+  grid-template-columns: minmax(540px, 1fr);
 }
 .app-shell.sidebar-collapsed .sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 40;
+  width: 244px;
   overflow: hidden;
+  pointer-events: none;
+  transform: translateX(-100%);
+  box-shadow: none;
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease;
 }
-.sidebar-collapsed .sidebar-top .brand,
-.sidebar-collapsed .workspace-switcher > span:not(.workspace-avatar),
-.sidebar-collapsed .workspace-switcher > svg,
-.sidebar-collapsed .sidebar-nav,
-.sidebar-collapsed .sidebar-actions button kbd,
-.sidebar-collapsed .sidebar-footer > span,
-.sidebar-collapsed .sidebar-footer > div,
-.sidebar-collapsed .sidebar-footer > svg,
-.sidebar-collapsed .sidebar-footer .sidebar-logout {
-  display: none !important;
+.app-shell.sidebar-collapsed.sidebar-peek .sidebar {
+  pointer-events: auto;
+  overflow: visible;
+  transform: translateX(0);
+  box-shadow: 8px 0 28px rgb(25 22 18 / 14%);
 }
-.sidebar-collapsed .sidebar-top {
-  justify-content: center;
-}
-.sidebar-collapsed .workspace-switcher {
-  justify-content: center;
-  padding-inline: 0;
-}
-.sidebar-collapsed .workspace-switcher-root {
-  flex: 0 0 auto;
-}
-.app-shell.sidebar-collapsed .sidebar-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 0 8px;
-}
-.app-shell.sidebar-collapsed .sidebar-actions button,
-.app-shell.sidebar-collapsed .sidebar-actions a {
-  justify-content: center;
-  width: 36px !important;
-  min-width: 36px;
-  overflow: hidden;
-  color: transparent;
-  font-size: 0;
-  padding: 0;
-}
-.app-shell.sidebar-collapsed .sidebar-actions button svg,
-.app-shell.sidebar-collapsed .sidebar-actions a svg {
-  flex: none;
-  color: #6f6b63;
-}
-.sidebar-collapsed .sidebar-footer {
-  display: flex;
-  justify-content: center;
-  padding: 8px 0;
+.sidebar-edge-hotspot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 16px;
 }
 .header-actions {
   position: relative;
@@ -2417,8 +2396,15 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 2px;
   padding: 3px 6px;
+  min-width: 0;
+}
+.sidebar-top > .sidebar-toggle {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
 }
 .icon-button {
   width: 34px;
@@ -2435,6 +2421,17 @@ button {
   border-color: transparent;
   background: transparent;
   color: #77736b;
+}
+.icon-button.subtle:hover,
+.sidebar-toggle:hover {
+  background: #ebebea;
+  color: #37352f;
+}
+.icon-button.subtle:focus-visible,
+.header-account-button:focus-visible,
+.sidebar-toggle:focus-visible {
+  outline: 2px solid #097fe8;
+  outline-offset: 1px;
 }
 .workspace-switcher {
   margin: 0;
@@ -3169,18 +3166,31 @@ button {
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
-  padding: 0 10px 0 14px;
+  padding: 0 10px 0 8px;
   border-bottom: 0;
   background: rgb(255 255 255 / 92%);
   backdrop-filter: blur(10px);
   z-index: 2;
-  overflow: hidden;
+  overflow: visible;
+}
+.header-leading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.header-leading > .sidebar-toggle {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
 }
 .breadcrumbs {
   display: flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
+  overflow: hidden;
   font-size: 13px;
   color: #9b9a97;
 }
@@ -3196,6 +3206,79 @@ button {
   gap: 3px;
   flex: 0 0 auto;
   min-width: 0;
+}
+.header-account {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgb(55 53 47 / 9%);
+}
+.header-account-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.header-account-button:hover,
+.header-account-button[aria-expanded='true'] {
+  background: #f1f1ef;
+}
+.header-account-button .identity-bubble.compact {
+  width: 24px;
+  height: 24px;
+  border-width: 0;
+  font-size: 10px;
+  box-shadow: none;
+}
+.header-account-button .identity-bubble.compact::after {
+  width: 7px;
+  height: 7px;
+  border-width: 1.5px;
+  right: -1px;
+  bottom: -1px;
+}
+.header-account-menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 240px;
+  overflow: hidden;
+  padding: 6px;
+  border: 1px solid rgb(55 53 47 / 12%);
+  border-radius: 8px;
+  background: #fff;
+  color: #37352f;
+  box-shadow: 0 12px 32px rgb(15 15 15 / 18%);
+}
+.header-account-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #37352f;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.header-account-menu button:hover {
+  background: #f1f1ef;
+}
+.header-account-menu button svg {
+  color: #787774;
 }
 .header-button {
   display: flex;
@@ -6947,7 +7030,7 @@ button.page-icon-display:hover {
   }
   .app-shell.sidebar-collapsed,
   .app-shell.context-panel-open.sidebar-collapsed {
-    grid-template-columns: 58px minmax(480px, 1fr);
+    grid-template-columns: minmax(480px, 1fr);
   }
   .context-panel {
     position: fixed;
@@ -7014,7 +7097,13 @@ button.page-icon-display:hover {
     height: auto;
     min-height: 100vh;
   }
-  .sidebar {
+  .sidebar-edge-hotspot,
+  .sidebar-toggle {
+    display: none !important;
+  }
+  .sidebar,
+  .app-shell.sidebar-collapsed .sidebar,
+  .app-shell.sidebar-collapsed.sidebar-peek .sidebar {
     position: fixed;
     z-index: 20;
     top: 3px;
@@ -7024,6 +7113,12 @@ button.page-icon-display:hover {
     height: 38px;
     overflow: visible;
     background: transparent;
+    transform: none;
+    box-shadow: none;
+    pointer-events: auto;
+    inset: auto;
+    bottom: auto;
+    right: auto;
   }
   .sidebar .sidebar-top {
     height: 38px;
