@@ -33,6 +33,49 @@ export type DatabaseAggregation =
   | 'max'
   | 'percent_checked';
 
+export const FILTER_OPERATOR_LABELS: Record<DatabaseFilterOperator, string> = {
+  equals: '等于',
+  not_equals: '不等于',
+  contains: '包含',
+  not_contains: '不包含',
+  greater_than: '大于',
+  less_than: '小于',
+  on_or_before: '不晚于',
+  on_or_after: '不早于',
+  is_empty: '为空',
+  is_not_empty: '不为空',
+};
+
+export const AGGREGATION_LABELS: Record<DatabaseAggregation, string> = {
+  count_all: '计数',
+  count_values: '已填',
+  count_unique: '唯一值',
+  sum: '求和',
+  average: '平均',
+  min: '最小',
+  max: '最大',
+  percent_checked: '完成率',
+};
+
+const OPTION_SWATCHES = [
+  { background: '#eeebe4', color: '#5c5850' },
+  { background: '#e4eee6', color: '#3d5c42' },
+  { background: '#e4ebf4', color: '#3d5270' },
+  { background: '#f3e6e1', color: '#8a4b38' },
+  { background: '#f3ead8', color: '#7a5c24' },
+  { background: '#ece6f2', color: '#5a4570' },
+  { background: '#e6f0ef', color: '#2f5c58' },
+  { background: '#f0e6ea', color: '#704050' },
+] as const;
+
+export function optionSwatch(name: string): { background: string; color: string } {
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = (hash * 31 + name.charCodeAt(index)) >>> 0;
+  }
+  return OPTION_SWATCHES[hash % OPTION_SWATCHES.length] ?? OPTION_SWATCHES[0];
+}
+
 export interface DatabaseRowGroup {
   key: string;
   label: string;

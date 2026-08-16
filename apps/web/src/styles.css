@@ -7326,6 +7326,209 @@ button.page-icon-display:hover {
   gap: 5px;
   padding: 6px 7px;
 }
+.database-view-bar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px 0 8px;
+  border-bottom: 1px solid #efeeeb;
+}
+.database-view-bar > button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b6964;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-view-bar > button:hover,
+.database-view-bar > button.active {
+  background: #f3f2ee;
+  color: #37352f;
+}
+.database-view-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.database-view-chips > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  background: #f1efe8;
+  color: #5c5850;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.database-view-chips button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+.database-view-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% - 2px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  min-width: 280px;
+  max-width: min(420px, 92vw);
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+  box-shadow: 0 10px 28px rgb(40 36 28 / 12%);
+}
+.database-view-popover select,
+.database-view-popover input {
+  width: 100%;
+  border: 1px solid #e4e2dc;
+  border-radius: 6px;
+  background: #fff;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.database-view-popover label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.database-batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  border: 1px solid #e4e2dc;
+  border-radius: 8px;
+  background: #faf9f6;
+  padding: 7px 10px;
+}
+.database-batch-bar strong {
+  font-size: 12px;
+}
+.database-batch-bar button,
+.database-batch-bar select {
+  border: 1px solid #e4e2dc;
+  border-radius: 6px;
+  background: #fff;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.database-option-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-chip-select {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+.database-chip-select select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.database-chip-empty {
+  color: #b0ada6;
+  font-size: 13px;
+}
+.database-multi-chips {
+  position: relative;
+  min-height: 33px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+}
+.database-multi-chips > button {
+  border: 0;
+  background: transparent;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.database-record-drawer {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  margin-top: 10px;
+  border: 1px solid #e4e2dc;
+  border-radius: 10px 10px 0 0;
+  background: #fffcf7;
+  box-shadow: 0 -8px 24px rgb(40 36 28 / 8%);
+  max-height: min(62vh, 560px);
+  overflow: auto;
+}
+.database-record-drawer header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fffcf7;
+  padding: 10px 12px;
+  border-bottom: 1px solid #efeeeb;
+}
+.database-record-drawer header strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-record-drawer header a,
+.database-record-drawer header button {
+  border: 0;
+  background: transparent;
+  color: #6b6964;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.database-record-drawer > div {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+.database-record-drawer > div > label {
+  display: grid;
+  gap: 5px;
+}
+.database-record-drawer > div > label > span {
+  color: #8a877f;
+  font-size: 11px;
+}
 .database-locked {
   display: inline-flex;
   align-items: center;
@@ -7600,6 +7803,67 @@ button.page-icon-display:hover {
 .database-table th:first-child,
 .database-table td:first-child {
   border-left: 1px solid #e9e8e6;
+}
+.database-table-grid .database-col-check,
+.database-table-grid .database-col-index,
+.database-table-grid .database-col-title {
+  position: sticky;
+  z-index: 2;
+  background: #fffcf7;
+}
+.database-table-grid .database-col-check {
+  left: 0;
+  width: 36px !important;
+  min-width: 36px;
+  text-align: center;
+}
+.database-table-grid .database-col-index {
+  left: 36px;
+  width: 36px !important;
+  min-width: 36px;
+  color: #b0ada6;
+  font-size: 11px;
+  text-align: center;
+}
+.database-table-grid .database-col-title {
+  left: 72px;
+  z-index: 3;
+}
+.database-table-grid tr.selected td {
+  background: #f4f1e8;
+}
+.database-col-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  z-index: 4;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+}
+.database-table th {
+  position: relative;
+}
+.database-col-add {
+  width: 40px !important;
+  min-width: 40px;
+}
+.database-col-add button {
+  justify-content: center;
+}
+.database-table-aggregations label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.database-table-aggregations select {
+  border: 0;
+  background: transparent;
+  color: #9b9994;
+  font: inherit;
+  font-size: 11px;
+  max-width: 72px;
 }
 .database-table th {
   width: 190px;

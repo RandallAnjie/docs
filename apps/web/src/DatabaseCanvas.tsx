@@ -1,6 +1,7 @@
 import {
   Archive,
   Activity,
+  ArrowUpDown,
   BarChart3,
   CalendarDays,
   Check,
@@ -11,13 +12,17 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
   FileText,
+  Filter,
   GalleryHorizontal,
   KanbanSquare,
   LayoutDashboard,
   LayoutTemplate,
+  Layers,
   List,
   ListPlus,
+  Maximize2,
   Lock,
   MapPinned,
   Plus,
@@ -94,8 +99,10 @@ import {
   importDatabaseCsv,
 } from './api';
 import {
+  AGGREGATION_LABELS,
   applyDatabaseView,
   databaseAggregationValue,
+  FILTER_OPERATOR_LABELS,
   databaseCalendarDays,
   databaseDateRange,
   databaseViewFilters,
@@ -104,6 +111,7 @@ import {
   moveDatabaseDate,
   orderedVisibleDatabaseProperties,
   resizeDatabaseDate,
+  optionSwatch,
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
@@ -619,6 +627,99 @@ function PlaceCell({
   );
 }
 
+function OptionChip({ name }: { name: string }) {
+  const swatch = optionSwatch(name);
+  return (
+    <span
+      className="database-option-chip"
+      style={{ background: swatch.background, color: swatch.color }}
+    >
+      {name}
+    </span>
+  );
+}
+
+function OptionChipSelect({
+  disabled,
+  emptyLabel,
+  onChange,
+  options,
+  value,
+}: {
+  disabled: boolean;
+  emptyLabel: string;
+  onChange: (value: string) => void;
+  options: string[];
+  value: string;
+}) {
+  return (
+    <div className="database-chip-select">
+      {value ? (
+        <OptionChip name={value} />
+      ) : (
+        <span className="database-chip-empty">{emptyLabel}</span>
+      )}
+      <select
+        aria-label="选择选项"
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">{emptyLabel}</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function MultiSelectChips({
+  disabled,
+  onChange,
+  options,
+  value,
+}: {
+  disabled: boolean;
+  onChange: (value: string[]) => void;
+  options: string[];
+  value: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="database-multi-chips">
+      <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)}>
+        {value.length ? (
+          value.map((item) => <OptionChip key={item} name={item} />)
+        ) : (
+          <span>添加</span>
+        )}
+      </button>
+      {open ? (
+        <div className="database-relation-picker">
+          {options.map((option) => {
+            const checked = value.includes(option);
+            return (
+              <label key={option}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() =>
+                    onChange(checked ? value.filter((item) => item !== option) : [...value, option])
+                  }
+                />
+                <OptionChip name={option} />
+              </label>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DatabaseCell({
   property,
   value,
@@ -720,22 +821,29 @@ function DatabaseCell({
   const options = optionNames(property);
   if ((property.type === 'select' || property.type === 'status') && options.length) {
     return (
-      <select
-        className="database-select-cell"
-        value={draft}
+      <OptionChipSelect
         disabled={disabled || saving}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          void flush(event.target.value);
+        emptyLabel="—"
+        onChange={(next) => {
+          setDraft(next);
+          void flush(next);
         }}
-      >
-        <option value="">—</option>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
+        options={options}
+        value={draft}
+      />
+    );
+  }
+  if (property.type === 'multi_select' && options.length) {
+    const selected = Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string')
+      : [];
+    return (
+      <MultiSelectChips
+        disabled={disabled || saving}
+        onChange={(next) => void onSave(next)}
+        options={options}
+        value={selected}
+      />
     );
   }
   if (property.type === 'relation') {
@@ -865,8 +973,12 @@ function TableDatabaseView({
   openProperty,
   view,
   updateViewConfig,
+  selectedRowIds,
+  onToggleRow,
+  onToggleAllRows,
+  onExpandRow,
+  onAddProperty,
 }: DatabaseViewProps & { openProperty: (property: DatabasePropertySummary) => void }) {
-  if (!rows.length) return <EmptyDatabase onCreate={addRow} disabled={!canEdit} />;
   const groupPropertyId =
     typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : null;
   const groups = groupDatabaseRows(rows, groupPropertyId);
@@ -888,28 +1000,85 @@ function TableDatabaseView({
       ? view.config.aggregations
       : {};
   const grouped = Boolean(groupPropertyId);
+  const selected = selectedRowIds ?? new Set<string>();
+  const allSelected = Boolean(rows.length && rows.every((row) => selected.has(row.id)));
+  const extraColumns = 2 + (canEdit ? 1 : 0) + (onAddProperty ? 1 : 0);
+  const resizeColumn = (propertyId: string, width: number) => {
+    void updateViewConfig({
+      ...view.config,
+      propertyWidths: { ...propertyWidths, [propertyId]: Math.min(480, Math.max(96, width)) },
+    });
+  };
   return (
     <div className="database-table-wrap">
-      <table className="database-table">
+      <table className="database-table database-table-grid">
         <thead>
           <tr>
-            {properties.map((property) => (
-              <th
-                key={property.id}
-                style={{
-                  width:
-                    typeof propertyWidths[property.id] === 'number'
-                      ? Number(propertyWidths[property.id])
-                      : undefined,
-                }}
-              >
-                <button type="button" onClick={() => openProperty(property)}>
-                  <span>{PROPERTY_LABELS[property.type]}</span>
-                  {property.name}
-                  <ChevronDown size={12} />
+            <th className="database-col-check">
+              <input
+                type="checkbox"
+                aria-label="全选当前视图"
+                checked={allSelected}
+                disabled={!rows.length}
+                onChange={() => onToggleAllRows?.()}
+              />
+            </th>
+            <th className="database-col-index">#</th>
+            {properties.map((property, index) => {
+              const width =
+                typeof propertyWidths[property.id] === 'number'
+                  ? Number(propertyWidths[property.id])
+                  : index === 0
+                    ? 240
+                    : 168;
+              return (
+                <th
+                  key={property.id}
+                  className={property.type === 'title' ? 'database-col-title' : undefined}
+                  style={{ width }}
+                >
+                  <button type="button" onClick={() => openProperty(property)}>
+                    <span>{PROPERTY_LABELS[property.type]}</span>
+                    {property.name}
+                    <ChevronDown size={12} />
+                  </button>
+                  <i
+                    className="database-col-resize"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`调整${property.name}列宽`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      const header = (event.currentTarget as HTMLElement).parentElement;
+                      const startX = event.clientX;
+                      const startWidth = width;
+                      let latest = startWidth;
+                      const move = (moveEvent: MouseEvent) => {
+                        latest = Math.min(
+                          480,
+                          Math.max(96, startWidth + moveEvent.clientX - startX),
+                        );
+                        if (header) header.style.width = `${latest}px`;
+                      };
+                      const up = () => {
+                        window.removeEventListener('mousemove', move);
+                        window.removeEventListener('mouseup', up);
+                        resizeColumn(property.id, latest);
+                      };
+                      window.addEventListener('mousemove', move);
+                      window.addEventListener('mouseup', up);
+                    }}
+                  />
+                </th>
+              );
+            })}
+            {onAddProperty && canEdit ? (
+              <th className="database-col-add">
+                <button type="button" aria-label="添加属性" onClick={onAddProperty}>
+                  <Plus size={14} />
                 </button>
               </th>
-            ))}
+            ) : null}
             {canEdit ? <th className="database-row-actions-heading" /> : null}
           </tr>
         </thead>
@@ -918,7 +1087,7 @@ function TableDatabaseView({
             {grouped ? (
               <tbody className="database-table-group-heading">
                 <tr>
-                  <th colSpan={properties.length + (canEdit ? 1 : 0)}>
+                  <th colSpan={properties.length + extraColumns}>
                     <button
                       type="button"
                       onClick={() => {
@@ -940,10 +1109,22 @@ function TableDatabaseView({
             ) : null}
             {!collapsedGroups.has(group.key) ? (
               <tbody>
-                {group.rows.map((row) => (
-                  <tr key={row.id}>
+                {group.rows.map((row, rowIndex) => (
+                  <tr key={row.id} className={selected.has(row.id) ? 'selected' : undefined}>
+                    <td className="database-col-check">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择${rowTitle(row, properties)}`}
+                        checked={selected.has(row.id)}
+                        onChange={() => onToggleRow?.(row.id)}
+                      />
+                    </td>
+                    <td className="database-col-index">{rowIndex + 1}</td>
                     {properties.map((property) => (
-                      <td key={property.id}>
+                      <td
+                        key={property.id}
+                        className={property.type === 'title' ? 'database-col-title' : undefined}
+                      >
                         <DatabaseCell
                           property={property}
                           value={row.values[property.id]}
@@ -958,8 +1139,17 @@ function TableDatabaseView({
                         />
                       </td>
                     ))}
+                    {onAddProperty && canEdit ? <td className="database-col-add" /> : null}
                     {canEdit ? (
                       <td className="database-row-actions">
+                        <button
+                          type="button"
+                          title="展开记录"
+                          aria-label={`展开${rowTitle(row, properties)}`}
+                          onClick={() => onExpandRow?.(row)}
+                        >
+                          <Maximize2 size={14} />
+                        </button>
                         <button
                           type="button"
                           title="复制记录"
@@ -980,25 +1170,47 @@ function TableDatabaseView({
                     ) : null}
                   </tr>
                 ))}
-                {Object.keys(aggregations).length ? (
-                  <tr className="database-table-aggregations">
-                    {properties.map((property) => {
-                      const aggregation = aggregations[property.id];
-                      return (
-                        <td key={property.id}>
-                          {typeof aggregation === 'string'
-                            ? databaseAggregationValue(
-                                group.rows,
-                                property.id,
-                                aggregation as DatabaseAggregation,
-                              )
-                            : ''}
-                        </td>
-                      );
-                    })}
-                    {canEdit ? <td /> : null}
-                  </tr>
-                ) : null}
+                <tr className="database-table-aggregations">
+                  <td className="database-col-check" />
+                  <td className="database-col-index" />
+                  {properties.map((property) => {
+                    const aggregation =
+                      typeof aggregations[property.id] === 'string'
+                        ? (aggregations[property.id] as DatabaseAggregation)
+                        : property.type === 'number'
+                          ? 'sum'
+                          : 'count_all';
+                    return (
+                      <td key={property.id}>
+                        <label>
+                          <select
+                            aria-label={`${property.name}统计`}
+                            disabled={!canEdit}
+                            value={aggregation}
+                            onChange={(event) =>
+                              void updateViewConfig({
+                                ...view.config,
+                                aggregations: {
+                                  ...aggregations,
+                                  [property.id]: event.target.value,
+                                },
+                              })
+                            }
+                          >
+                            {Object.entries(AGGREGATION_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                          <b>{databaseAggregationValue(group.rows, property.id, aggregation)}</b>
+                        </label>
+                      </td>
+                    );
+                  })}
+                  {onAddProperty && canEdit ? <td /> : null}
+                  {canEdit ? <td /> : null}
+                </tr>
               </tbody>
             ) : null}
           </Fragment>
@@ -1006,8 +1218,10 @@ function TableDatabaseView({
       </table>
       {canEdit ? (
         <button className="database-new-row" type="button" onClick={addRow}>
-          <Plus size={14} /> 新建
+          <Plus size={14} /> 新建记录
         </button>
+      ) : !rows.length ? (
+        <EmptyDatabase onCreate={addRow} disabled />
       ) : null}
     </div>
   );
@@ -1032,6 +1246,284 @@ interface DatabaseViewProps {
   duplicateRow: (row: DatabaseRowSummary) => void;
   executeButton: (row: DatabaseRowSummary, property: DatabasePropertySummary) => Promise<void>;
   updateViewConfig: (config: Record<string, JsonValue>) => Promise<void>;
+  selectedRowIds?: ReadonlySet<string>;
+  onToggleRow?: (rowId: string) => void;
+  onToggleAllRows?: () => void;
+  onExpandRow?: (row: DatabaseRowSummary) => void;
+  onAddProperty?: () => void;
+}
+
+function DatabaseViewBar({
+  view,
+  properties,
+  canEdit,
+  onUpdate,
+}: {
+  view: DatabaseViewSummary;
+  properties: DatabasePropertySummary[];
+  canEdit: boolean;
+  onUpdate: (config: Record<string, JsonValue>) => Promise<void>;
+}) {
+  const [panel, setPanel] = useState<'fields' | 'filter' | 'group' | 'sort' | null>(null);
+  const [filterPropertyId, setFilterPropertyId] = useState(properties[0]?.id ?? '');
+  const [filterOperator, setFilterOperator] = useState<DatabaseFilterOperator>('equals');
+  const [filterValue, setFilterValue] = useState('');
+  const filters = databaseViewFilters(view.config);
+  const sorts = databaseViewSorts(view.config);
+  const groupPropertyId =
+    typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : '';
+  const visibleIds = new Set(
+    Array.isArray(view.config.visiblePropertyIds)
+      ? view.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string')
+      : properties.map((property) => property.id),
+  );
+  const togglePanel = (next: typeof panel) =>
+    setPanel((current) => (current === next ? null : next));
+  return (
+    <div className="database-view-bar">
+      <button
+        className={filters.length || panel === 'filter' ? 'active' : undefined}
+        type="button"
+        onClick={() => togglePanel('filter')}
+      >
+        <Filter size={14} /> 筛选{filters.length ? ` ${filters.length}` : ''}
+      </button>
+      <button
+        className={sorts.length || panel === 'sort' ? 'active' : undefined}
+        type="button"
+        onClick={() => togglePanel('sort')}
+      >
+        <ArrowUpDown size={14} /> 排序{sorts.length ? ` ${sorts.length}` : ''}
+      </button>
+      <button
+        className={groupPropertyId || panel === 'group' ? 'active' : undefined}
+        type="button"
+        onClick={() => togglePanel('group')}
+      >
+        <Layers size={14} /> 分组
+      </button>
+      <button
+        className={panel === 'fields' ? 'active' : undefined}
+        type="button"
+        onClick={() => togglePanel('fields')}
+      >
+        <Eye size={14} /> 字段
+      </button>
+      <div className="database-view-chips">
+        {filters.map((filter, index) => (
+          <span key={`${filter.propertyId}:${index}`}>
+            {properties.find((property) => property.id === filter.propertyId)?.name ?? '字段'}{' '}
+            {FILTER_OPERATOR_LABELS[filter.operator]}
+            {filter.value !== null && filter.value !== '' ? ` ${valueText(filter.value)}` : ''}
+            {canEdit ? (
+              <button
+                type="button"
+                aria-label="移除筛选"
+                onClick={() =>
+                  void onUpdate({
+                    ...view.config,
+                    filters: filters
+                      .filter((_, candidate) => candidate !== index)
+                      .map(({ propertyId, operator, value }) => ({ propertyId, operator, value })),
+                  })
+                }
+              >
+                ×
+              </button>
+            ) : null}
+          </span>
+        ))}
+      </div>
+      {panel === 'filter' ? (
+        <div className="database-view-popover">
+          <select
+            value={filterPropertyId}
+            onChange={(event) => setFilterPropertyId(event.target.value)}
+          >
+            {properties.map((property) => (
+              <option key={property.id} value={property.id}>
+                {property.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterOperator}
+            onChange={(event) => setFilterOperator(event.target.value as DatabaseFilterOperator)}
+          >
+            {Object.entries(FILTER_OPERATOR_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          {filterOperator !== 'is_empty' && filterOperator !== 'is_not_empty' ? (
+            <input
+              value={filterValue}
+              onChange={(event) => setFilterValue(event.target.value)}
+              placeholder="值"
+            />
+          ) : null}
+          <button
+            type="button"
+            disabled={!canEdit || !filterPropertyId}
+            onClick={() => {
+              void onUpdate({
+                ...view.config,
+                filters: [
+                  ...filters.map(({ propertyId, operator, value }) => ({
+                    propertyId,
+                    operator,
+                    value,
+                  })),
+                  {
+                    propertyId: filterPropertyId,
+                    operator: filterOperator,
+                    value:
+                      filterOperator === 'is_empty' || filterOperator === 'is_not_empty'
+                        ? null
+                        : filterValue,
+                  },
+                ],
+              });
+              setFilterValue('');
+            }}
+          >
+            添加
+          </button>
+        </div>
+      ) : null}
+      {panel === 'sort' ? (
+        <div className="database-view-popover">
+          {properties.map((property) => {
+            const current = sorts.find((sort) => sort.propertyId === property.id);
+            return (
+              <label key={property.id}>
+                {property.name}
+                <select
+                  disabled={!canEdit}
+                  value={current?.direction ?? ''}
+                  onChange={(event) => {
+                    const direction = event.target.value;
+                    const next = sorts.filter((sort) => sort.propertyId !== property.id);
+                    if (direction === 'ascending' || direction === 'descending') {
+                      next.push({ propertyId: property.id, direction });
+                    }
+                    void onUpdate({
+                      ...view.config,
+                      sorts: next.map(({ propertyId, direction: value }) => ({
+                        propertyId,
+                        direction: value,
+                      })),
+                    });
+                  }}
+                >
+                  <option value="">不排序</option>
+                  <option value="ascending">升序</option>
+                  <option value="descending">降序</option>
+                </select>
+              </label>
+            );
+          })}
+        </div>
+      ) : null}
+      {panel === 'group' ? (
+        <div className="database-view-popover">
+          <select
+            disabled={!canEdit}
+            value={groupPropertyId}
+            onChange={(event) =>
+              void onUpdate({ ...view.config, groupPropertyId: event.target.value || null })
+            }
+          >
+            <option value="">不分组</option>
+            {properties
+              .filter((property) =>
+                ['status', 'select', 'person', 'checkbox', 'multi_select'].includes(property.type),
+              )
+              .map((property) => (
+                <option key={property.id} value={property.id}>
+                  {property.name}
+                </option>
+              ))}
+          </select>
+        </div>
+      ) : null}
+      {panel === 'fields' ? (
+        <div className="database-view-popover">
+          {properties.map((property) => (
+            <label key={property.id} className="database-dialog-checkbox">
+              <input
+                type="checkbox"
+                checked={property.type === 'title' || visibleIds.has(property.id)}
+                disabled={!canEdit || property.type === 'title'}
+                onChange={(event) => {
+                  const next = new Set(visibleIds);
+                  if (event.target.checked) next.add(property.id);
+                  else next.delete(property.id);
+                  void onUpdate({ ...view.config, visiblePropertyIds: [...next] });
+                }}
+              />
+              {property.name}
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RecordDrawer({
+  actorId,
+  canEdit,
+  onClose,
+  onSave,
+  organizationId,
+  properties,
+  row,
+}: {
+  actorId: string;
+  canEdit: boolean;
+  onClose: () => void;
+  onSave: (
+    row: DatabaseRowSummary,
+    property: DatabasePropertySummary,
+    value: JsonValue,
+  ) => Promise<void>;
+  organizationId: string;
+  properties: DatabasePropertySummary[];
+  row: DatabaseRowSummary;
+}) {
+  return (
+    <div className="database-record-drawer" role="dialog" aria-label="记录详情">
+      <header>
+        <strong>{rowTitle(row, properties)}</strong>
+        <a href={`/p/${encodeURIComponent(row.pageId)}`}>打开页面</a>
+        <button type="button" onClick={onClose} aria-label="关闭记录">
+          ×
+        </button>
+      </header>
+      <div>
+        {properties.map((property) => (
+          <label key={property.id}>
+            <span>
+              {PROPERTY_LABELS[property.type]} · {property.name}
+            </span>
+            <DatabaseCell
+              actorId={actorId}
+              disabled={!canEdit}
+              onSave={(value) => onSave(row, property, value)}
+              openPage={property.type === 'title' ? row.pageId : undefined}
+              organizationId={organizationId}
+              property={property}
+              reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
+              rowPageId={row.pageId}
+              value={row.values[property.id]}
+            />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function PropertyPicker({
@@ -3983,6 +4475,8 @@ export function DatabaseCanvas({
   const [restoringRowId, setRestoringRowId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selectedRowIds, setSelectedRowIds] = useState<ReadonlySet<string>>(new Set());
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   const csvInput = useRef<HTMLInputElement>(null);
   const viewSaveQueue = useRef(new Map<string, Promise<void>>());
   const viewSaveVersion = useRef(new Map<string, number>());
@@ -4008,6 +4502,13 @@ export function DatabaseCanvas({
       ),
     );
   }, [activeView?.config, query, snapshot.properties, snapshot.rows]);
+
+  useEffect(() => {
+    setSelectedRowIds((current) => {
+      const next = new Set([...current].filter((id) => filteredRows.some((row) => row.id === id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [filteredRows]);
 
   const createRow = async (values: Record<string, JsonValue>) => {
     if (!editable || busy) return false;
@@ -4279,7 +4780,31 @@ export function DatabaseCanvas({
     duplicateRow: (row) => void duplicateRow(row),
     executeButton: runButton,
     updateViewConfig,
+    selectedRowIds,
+    onToggleRow: (rowId) => {
+      setSelectedRowIds((current) => {
+        const next = new Set(current);
+        if (next.has(rowId)) next.delete(rowId);
+        else next.add(rowId);
+        return next;
+      });
+    },
+    onToggleAllRows: () => {
+      setSelectedRowIds((current) =>
+        filteredRows.length && filteredRows.every((row) => current.has(row.id))
+          ? new Set()
+          : new Set(filteredRows.map((row) => row.id)),
+      );
+    },
+    onExpandRow: (row) => setExpandedRowId(row.id),
+    onAddProperty: editable ? () => setPropertyDialog('new') : undefined,
   };
+
+  const selectedRows = snapshot.rows.filter((row) => selectedRowIds.has(row.id));
+  const bulkProperty = snapshot.properties.find(
+    (property) => property.type === 'status' || property.type === 'select',
+  );
+  const expandedRow = snapshot.rows.find((row) => row.id === expandedRowId) ?? null;
 
   return (
     <section className="database-canvas">
@@ -4445,6 +4970,63 @@ export function DatabaseCanvas({
           ) : null}
         </div>
       </div>
+      {activeView ? (
+        <DatabaseViewBar
+          canEdit={editable}
+          properties={snapshot.properties}
+          view={activeView}
+          onUpdate={updateViewConfig}
+        />
+      ) : null}
+      {selectedRows.length ? (
+        <div className="database-batch-bar">
+          <strong>已选 {selectedRows.length} 条</strong>
+          {bulkProperty ? (
+            <select
+              aria-label={`批量修改${bulkProperty.name}`}
+              defaultValue=""
+              onChange={(event) => {
+                const value = event.target.value;
+                if (!value) return;
+                void Promise.all(
+                  selectedRows.map((row) => saveCell(row, bulkProperty, value)),
+                ).then(() => setSelectedRowIds(new Set()));
+                event.currentTarget.value = '';
+              }}
+            >
+              <option value="">批量改{bulkProperty.name}</option>
+              {optionNames(bulkProperty).map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              void Promise.all(selectedRows.map((row) => duplicateRow(row))).then(() =>
+                setSelectedRowIds(new Set()),
+              );
+            }}
+          >
+            复制
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void Promise.all(selectedRows.map((row) => removeRow(row))).then(() =>
+                setSelectedRowIds(new Set()),
+              );
+            }}
+          >
+            归档
+          </button>
+          <button type="button" onClick={() => setSelectedRowIds(new Set())}>
+            取消
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <p className="database-error" role="alert">
           {error}
@@ -4453,6 +5035,17 @@ export function DatabaseCanvas({
       <div className="database-view-container">
         {renderView(viewProps, (property) => editable && setPropertyDialog(property))}
       </div>
+      {expandedRow ? (
+        <RecordDrawer
+          actorId={actorId}
+          canEdit={editable}
+          organizationId={snapshot.database.organizationId}
+          properties={snapshot.properties}
+          row={expandedRow}
+          onClose={() => setExpandedRowId(null)}
+          onSave={saveCell}
+        />
+      ) : null}
       {propertyDialog ? (
         <PropertyDialog
           databaseId={snapshot.database.id}
