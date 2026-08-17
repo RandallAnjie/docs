@@ -1039,7 +1039,7 @@ function PasskeyGate({
         ) : null}
         {!unavailable ? (
           <a className="auth-switch" href={registering ? '/login' : '/register'}>
-            {registering ? '已有设备密钥？返回登录' : '还没有账号？用设备密钥注册'}
+            {registering ? '已有可用设备密钥？返回登录' : '还没有可用设备密钥？用同一邮箱重新登记'}
           </a>
         ) : null}
         <a className="auth-switch" href="/" style={{ marginTop: 10 }}>

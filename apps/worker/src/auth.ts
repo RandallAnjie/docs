@@ -60,7 +60,7 @@ interface ChallengeRow {
 interface CredentialRow {
   credential_id: string;
   user_id: string;
-  public_key: ArrayBuffer;
+  public_key: unknown;
   counter: number;
   transports_json: string;
   device_type: 'singleDevice' | 'multiDevice';
@@ -153,14 +153,49 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
+function base64UrlToBytes(value: string): Uint8Array {
+  const padded = value
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(Math.ceil(value.length / 4) * 4, '=');
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function bytesFromUnknown(value: unknown): Uint8Array | null {
+  if (typeof value === 'string') {
+    if (!value || value === '{}') return null;
+    try {
+      return base64UrlToBytes(value);
+    } catch {
+      const bytes = new TextEncoder().encode(value);
+      return bytes.length ? bytes : null;
+    }
+  }
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return null;
+}
+
+export function encodePasskeyPublicKey(bytes: Uint8Array): string {
+  return base64Url(bytes);
+}
+
+export function decodeStoredPasskeyPublicKey(value: unknown): Uint8Array | null {
+  const bytes = bytesFromUnknown(value);
+  if (!bytes || bytes.length < 16) return null;
+  if (bytes.length === 2 && bytes[0] === 0x7b && bytes[1] === 0x7d) return null;
+  return bytes;
+}
+
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return base64Url(bytes);
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 async function sha256(value: string): Promise<string> {
@@ -373,12 +408,7 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
       .bind(email)
       .first<{ id: string }>();
     if (existing) {
-      const credential = await env.DB.prepare(
-        'SELECT 1 AS found FROM passkey_credentials WHERE user_id = ? LIMIT 1',
-      )
-        .bind(existing.id)
-        .first<{ found: number }>();
-      if (credential || !invitationId) {
+      if (await userHasUsablePasskey(env, existing.id)) {
         return error('该邮箱已存在，请先使用已有设备密钥登录', 409);
       }
       userId = existing.id;
@@ -389,12 +419,12 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
 
   const credentials = (
     await env.DB.prepare(
-      `SELECT credential_id, transports_json
+      `SELECT credential_id, public_key, transports_json
          FROM passkey_credentials
         WHERE user_id = ?`,
     )
       .bind(userId)
-      .all<{ credential_id: string; transports_json: string }>()
+      .all<{ credential_id: string; public_key: unknown; transports_json: string }>()
   ).results;
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
@@ -403,10 +433,12 @@ async function registrationOptions(request: Request, env: Env): Promise<Response
     userName: email,
     userDisplayName: displayName,
     attestationType: 'none',
-    excludeCredentials: credentials.map((credential) => ({
-      id: credential.credential_id,
-      transports: transports(credential.transports_json),
-    })),
+    excludeCredentials: credentials
+      .filter((credential) => decodeStoredPasskeyPublicKey(credential.public_key))
+      .map((credential) => ({
+        id: credential.credential_id,
+        transports: transports(credential.transports_json),
+      })),
     authenticatorSelection: {
       residentKey: 'required',
       userVerification: 'required',
@@ -459,7 +491,16 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
     expectedOrigin: configuration.origin,
     expectedRPID: configuration.rpId,
     requireUserVerification: true,
-  }).catch(() => null);
+  }).catch((reason: unknown) => {
+    console.error(
+      JSON.stringify({
+        event: 'passkey_registration_verify_failed',
+        level: 'error',
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    );
+    return null;
+  });
   if (!verification?.verified || !verification.registrationInfo) {
     return error('无法验证设备密钥', 401);
   }
@@ -492,7 +533,11 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
       .first<{ id: string }>();
     createsUser = !existing;
   }
+  if (!userId) return error('设备登记用户信息缺失', 409);
   if (!(await consumeChallenge(env, challenge))) return error('设备登记请求已被使用', 409);
+  if (!createsUser && !authenticated.user) {
+    await deleteCorruptPasskeys(env, userId);
+  }
 
   const now = Date.now();
   const credentialInsert = env.DB.prepare(
@@ -503,7 +548,7 @@ async function verifyRegistration(request: Request, env: Env): Promise<Response>
   ).bind(
     credential.id,
     userId,
-    toArrayBuffer(credential.publicKey),
+    encodePasskeyPublicKey(credential.publicKey),
     credential.counter,
     JSON.stringify(credential.transports ?? []),
     registration.credentialDeviceType,
@@ -563,6 +608,39 @@ async function authenticationOptions(request: Request, env: Env): Promise<Respon
   return json({ challengeId, options });
 }
 
+async function listStoredPasskeys(
+  env: Env,
+  userId: string,
+): Promise<Array<{ credential_id: string; public_key: unknown }>> {
+  return (
+    await env.DB.prepare(
+      'SELECT credential_id, public_key FROM passkey_credentials WHERE user_id = ?',
+    )
+      .bind(userId)
+      .all<{ credential_id: string; public_key: unknown }>()
+  ).results;
+}
+
+async function userHasUsablePasskey(env: Env, userId: string): Promise<boolean> {
+  const credentials = await listStoredPasskeys(env, userId);
+  return credentials.some((credential) => decodeStoredPasskeyPublicKey(credential.public_key));
+}
+
+async function deleteCorruptPasskeys(env: Env, userId: string): Promise<void> {
+  const credentials = await listStoredPasskeys(env, userId);
+  const corrupt = credentials.filter(
+    (credential) => !decodeStoredPasskeyPublicKey(credential.public_key),
+  );
+  if (!corrupt.length) return;
+  await env.DB.batch(
+    corrupt.map((credential) =>
+      env.DB.prepare('DELETE FROM passkey_credentials WHERE credential_id = ?').bind(
+        credential.credential_id,
+      ),
+    ),
+  );
+}
+
 async function findCredential(env: Env, credentialId: string): Promise<CredentialRow | null> {
   return env.DB.prepare(
     `SELECT c.credential_id, c.user_id, c.public_key, c.counter, c.transports_json,
@@ -609,13 +687,17 @@ async function verifyAuthentication(request: Request, env: Env): Promise<Respons
   }
   const stored = await findCredential(env, body.response.id);
   if (!stored || stored.status !== 'active') return error('未找到此设备密钥', 401);
+  const publicKey = decodeStoredPasskeyPublicKey(stored.public_key);
+  if (!publicKey) {
+    return error('此设备密钥数据已损坏，请前往注册页用同一邮箱重新登记', 401);
+  }
   const expectedUserHandle = base64Url(new TextEncoder().encode(stored.user_id));
   if (body.response.response.userHandle !== expectedUserHandle) {
     return error('设备密钥用户标识不匹配', 401);
   }
   const credential: WebAuthnCredential = {
     id: stored.credential_id,
-    publicKey: new Uint8Array(stored.public_key),
+    publicKey: Uint8Array.from(publicKey),
     counter: Number(stored.counter),
     transports: transports(stored.transports_json),
   };
@@ -626,7 +708,16 @@ async function verifyAuthentication(request: Request, env: Env): Promise<Respons
     expectedRPID: configuration.rpId,
     credential,
     requireUserVerification: true,
-  }).catch(() => null);
+  }).catch((reason: unknown) => {
+    console.error(
+      JSON.stringify({
+        event: 'passkey_authentication_verify_failed',
+        level: 'error',
+        message: reason instanceof Error ? reason.message : String(reason),
+      }),
+    );
+    return null;
+  });
   if (!verification?.verified) return error('无法验证设备密钥', 401);
   if (verification.authenticationInfo.credentialDeviceType !== stored.device_type) {
     return error('设备密钥备份属性异常', 401);
