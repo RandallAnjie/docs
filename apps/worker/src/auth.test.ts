@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { authMode, handleAuthApi, isTrustedMutationOrigin } from './auth';
+import {
+  authMode,
+  decodeStoredPasskeyPublicKey,
+  encodePasskeyPublicKey,
+  handleAuthApi,
+  isTrustedMutationOrigin,
+} from './auth';
 import type { Env } from './env';
 
 function env(overrides: Partial<Env> = {}): Env {
@@ -137,5 +143,22 @@ describe('passkey authentication configuration', () => {
       registrationOpen: true,
       expectedOrigin: 'https://docs.example.com',
     });
+  });
+});
+
+describe('passkey public key storage', () => {
+  it('round-trips COSE bytes as base64url text', () => {
+    const original = new Uint8Array([165, 1, 2, 3, 38, 32, 1, 33, 88, 32, ...Array(32).fill(7)]);
+    const encoded = encodePasskeyPublicKey(original);
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(JSON.stringify(encoded)).not.toBe('"{}"');
+    expect([...decodeStoredPasskeyPublicKey(encoded)!]).toEqual([...original]);
+  });
+
+  it('rejects the JSON-empty-object blob RandallFlare D1 stored for ArrayBuffers', () => {
+    expect(decodeStoredPasskeyPublicKey('{}')).toBeNull();
+    expect(decodeStoredPasskeyPublicKey(new Uint8Array([0x7b, 0x7d]))).toBeNull();
+    expect(decodeStoredPasskeyPublicKey(new Uint8Array([0x7b, 0x7d]).buffer)).toBeNull();
+    expect(decodeStoredPasskeyPublicKey('')).toBeNull();
   });
 });
