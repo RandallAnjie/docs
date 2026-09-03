@@ -1,4 +1,8 @@
-export const MAX_COLLAB_FRAME_BYTES = 256 * 1024;
+export const MAX_COLLAB_CHUNK_BYTES = 64 * 1024;
+export const MAX_COLLAB_UPDATE_BYTES = 8 * 1024 * 1024;
+/** One transport frame. Assembled Yjs updates may be up to MAX_COLLAB_UPDATE_BYTES. */
+export const MAX_COLLAB_FRAME_BYTES = MAX_COLLAB_CHUNK_BYTES;
+export const MAX_UNCHUNKED_HTTP_SYNC_BYTES = MAX_COLLAB_CHUNK_BYTES + 32 * 1024;
 export const MAX_REVISION_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 1024 * 1024 * 1024;
 export const ATTACHMENT_DIRECT_UPLOAD_BYTES = 8 * 1024 * 1024;

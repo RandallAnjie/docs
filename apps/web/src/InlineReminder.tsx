@@ -4,7 +4,16 @@ import { NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import { CalendarClock, Check, Pencil, Trash2, X } from 'lucide-react';
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from 'react';
+import { createPortal } from 'react-dom';
 
 import type { AuthUserSummary } from '@rdocs/shared';
 
@@ -185,6 +194,31 @@ function InlineReminderNodeView(props: NodeViewProps) {
   const recipientName = String(props.node.attrs.recipientName ?? '');
   const displayDueAt = Number(props.node.attrs.dueAt ?? 0);
   const delivered = displayDueAt > 0 && displayDueAt <= Date.now();
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPopoverPos(null);
+      return;
+    }
+    const update = () => {
+      const rect = chipRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(370, window.innerWidth - 24);
+      setPopoverPos({
+        top: rect.bottom + 7,
+        left: Math.min(Math.max(12, rect.left), window.innerWidth - width - 12),
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [open]);
 
   return (
     <NodeViewWrapper
@@ -193,6 +227,7 @@ function InlineReminderNodeView(props: NodeViewProps) {
       contentEditable={false}
     >
       <button
+        ref={chipRef}
         type="button"
         className="rdocs-inline-reminder-chip"
         aria-expanded={open}
@@ -201,90 +236,105 @@ function InlineReminderNodeView(props: NodeViewProps) {
         {delivered ? <Check size={13} /> : <CalendarClock size={13} />}
         {reminderLabel(displayDueAt, recipientName)}
       </button>
-      {open ? (
-        <form className="rdocs-inline-reminder-popover" onSubmit={(event) => void submit(event)}>
-          <header>
-            <span>
-              <strong>正文提醒</strong>
-              <small>提醒会随页面权限变化自动失效</small>
-            </span>
-            <button type="button" aria-label="关闭" onClick={() => setOpen(false)}>
-              <X size={14} />
-            </button>
-          </header>
-          {context?.canEdit &&
-          !context.publicShareToken &&
-          (!createdBy || createdBy === context.actorId) ? (
-            <>
-              <label>
-                提醒谁
-                <select
-                  value={recipientId}
-                  disabled={busy || loading}
-                  onChange={(event) => setRecipientId(event.target.value)}
-                >
-                  {recipients.map((recipient) => (
-                    <option key={recipient.id} value={recipient.id}>
-                      {recipient.displayName} {recipient.id === context.actorId ? '（我）' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                提醒内容
-                <input
-                  value={message}
-                  maxLength={500}
-                  disabled={busy}
-                  onChange={(event) => setMessage(event.target.value)}
-                />
-              </label>
-              <div className="rdocs-inline-reminder-time">
-                <label>
-                  日期和时间
-                  <input
-                    type="datetime-local"
-                    value={dueLocal}
-                    min={localDateTimeValue(Date.now() + 60_000)}
-                    disabled={busy}
-                    onChange={(event) => setDueLocal(event.target.value)}
-                  />
-                </label>
-                <label>
-                  提前量
-                  <select
-                    value={leadMinutes}
-                    disabled={busy}
-                    onChange={(event) => setLeadMinutes(Number(event.target.value))}
-                  >
-                    {LEAD_OPTIONS.map((option) => (
-                      <option key={option.minutes} value={option.minutes}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {error ? <p role="alert">{error}</p> : null}
-              <footer>
-                <button
-                  type="button"
-                  className="danger"
-                  disabled={busy}
-                  onClick={() => void remove()}
-                >
-                  <Trash2 size={13} /> 删除
+      {open && popoverPos
+        ? createPortal(
+            <form
+              className="rdocs-inline-reminder-popover"
+              style={
+                {
+                  '--reminder-top': `${popoverPos.top}px`,
+                  '--reminder-left': `${popoverPos.left}px`,
+                } as CSSProperties
+              }
+              onSubmit={(event) => void submit(event)}
+            >
+              <header>
+                <span>
+                  <strong>正文提醒</strong>
+                  <small>提醒会随页面权限变化自动失效</small>
+                </span>
+                <button type="button" aria-label="关闭" onClick={() => setOpen(false)}>
+                  <X size={14} />
                 </button>
-                <button type="submit" disabled={busy || loading || !recipientId || !message.trim()}>
-                  <Pencil size={13} /> {busy ? '保存中…' : reminderId ? '保存修改' : '创建提醒'}
-                </button>
-              </footer>
-            </>
-          ) : (
-            <p>{delivered ? '提醒时间已到' : '此提醒为只读'}</p>
-          )}
-        </form>
-      ) : null}
+              </header>
+              {context?.canEdit &&
+              !context.publicShareToken &&
+              (!createdBy || createdBy === context.actorId) ? (
+                <>
+                  <label>
+                    提醒谁
+                    <select
+                      value={recipientId}
+                      disabled={busy || loading}
+                      onChange={(event) => setRecipientId(event.target.value)}
+                    >
+                      {recipients.map((recipient) => (
+                        <option key={recipient.id} value={recipient.id}>
+                          {recipient.displayName} {recipient.id === context.actorId ? '（我）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    提醒内容
+                    <input
+                      value={message}
+                      maxLength={500}
+                      disabled={busy}
+                      onChange={(event) => setMessage(event.target.value)}
+                    />
+                  </label>
+                  <div className="rdocs-inline-reminder-time">
+                    <label>
+                      日期和时间
+                      <input
+                        type="datetime-local"
+                        value={dueLocal}
+                        min={localDateTimeValue(Date.now() + 60_000)}
+                        disabled={busy}
+                        onChange={(event) => setDueLocal(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      提前量
+                      <select
+                        value={leadMinutes}
+                        disabled={busy}
+                        onChange={(event) => setLeadMinutes(Number(event.target.value))}
+                      >
+                        {LEAD_OPTIONS.map((option) => (
+                          <option key={option.minutes} value={option.minutes}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {error ? <p role="alert">{error}</p> : null}
+                  <footer>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy}
+                      onClick={() => void remove()}
+                    >
+                      <Trash2 size={13} /> 删除
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={busy || loading || !recipientId || !message.trim()}
+                    >
+                      <Pencil size={13} /> {busy ? '保存中…' : reminderId ? '保存修改' : '创建提醒'}
+                    </button>
+                  </footer>
+                </>
+              ) : (
+                <p>{delivered ? '提醒时间已到' : '此提醒为只读'}</p>
+              )}
+            </form>,
+            document.body,
+          )
+        : null}
     </NodeViewWrapper>
   );
 }

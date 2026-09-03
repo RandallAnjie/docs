@@ -12,7 +12,12 @@ describe('export archives', () => {
   });
 
   it('emits html and pdf payloads', () => {
-    expect(markdownToHtmlDocument('标题', '## 小节\n\n**粗体**')).toContain('<h2>小节</h2>');
+    const html = markdownToHtmlDocument('标题', '## 小节\n\n**粗体**\n\n- 一项');
+    expect(html).toContain('<h2>小节</h2>');
+    expect(html).toContain('<p><strong>粗体</strong></p>');
+    expect(html).toContain('<ul><li>一项</li></ul>');
+    expect(html).not.toMatch(/<p>\s*<h2/);
+    expect(html).not.toMatch(/<p>\s*<ul/);
     expect(new TextDecoder().decode(simplePdf('标题', '正文')).startsWith('%PDF-1.4')).toBe(true);
   });
 });

@@ -6464,10 +6464,10 @@ button.page-icon-display:hover {
   color: #7d786f;
 }
 .rdocs-inline-reminder-popover {
-  position: absolute;
+  position: fixed;
   z-index: 65;
-  top: calc(100% + 7px);
-  left: 0;
+  top: var(--reminder-top, 0);
+  left: var(--reminder-left, 0);
   display: grid;
   width: min(370px, calc(100vw - 24px));
   gap: 9px;

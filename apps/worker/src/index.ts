@@ -6,8 +6,15 @@ import {
   EDITOR_SCHEMA_VERSION,
   isPageId,
   MAX_ATTACHMENT_BYTES,
+  MAX_COLLAB_CHUNK_BYTES,
   MAX_HTTP_SYNC_BODY_BYTES,
   MAX_REVISION_SNAPSHOT_BYTES,
+  MAX_UNCHUNKED_HTTP_SYNC_BYTES,
+  HTTP_SYNC_CHUNK_COUNT_HEADER,
+  HTTP_SYNC_CHUNK_ID_HEADER,
+  HTTP_SYNC_CHUNK_INDEX_HEADER,
+  HTTP_SYNC_CHUNK_PROTOCOL,
+  HTTP_SYNC_PROTOCOL_HEADER,
   type AuthUserSummary,
   type AttachmentSummary,
   type FavoritePageResult,
@@ -4070,10 +4077,14 @@ async function syncCollaborationOverHttp(
     return error('页面权限已变化', 403);
   }
 
+  const protocol = request.headers.get(HTTP_SYNC_PROTOCOL_HEADER);
+  const chunked = protocol === HTTP_SYNC_CHUNK_PROTOCOL;
+  const maxIncoming = chunked ? MAX_COLLAB_CHUNK_BYTES : MAX_UNCHUNKED_HTTP_SYNC_BYTES;
   const declaredLength = Number(request.headers.get('content-length') ?? 0);
-  if (declaredLength > MAX_HTTP_SYNC_BODY_BYTES) return error('同步请求过大', 413);
+  if (declaredLength > maxIncoming) return error('同步请求过大', 413);
   const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_HTTP_SYNC_BODY_BYTES) return error('同步请求过大', 413);
+  if (body.byteLength > maxIncoming) return error('同步请求过大', 413);
+  if (!chunked && body.byteLength > MAX_HTTP_SYNC_BODY_BYTES) return error('同步请求过大', 413);
 
   const room =
     resourceKind === 'page'
@@ -4090,6 +4101,15 @@ async function syncCollaborationOverHttp(
     'x-rdocs-editing-enabled': '1',
     'x-rdocs-resource-kind': resourceKind,
   });
+  for (const name of [
+    HTTP_SYNC_PROTOCOL_HEADER,
+    HTTP_SYNC_CHUNK_ID_HEADER,
+    HTTP_SYNC_CHUNK_INDEX_HEADER,
+    HTTP_SYNC_CHUNK_COUNT_HEADER,
+  ]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
   const response = await room.fetch('https://rdocs.internal/internal/http-sync', {
     method: 'POST',
     headers,

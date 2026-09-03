@@ -1,10 +1,11 @@
-import { MAX_COLLAB_FRAME_BYTES } from './limits';
+import { MAX_COLLAB_UPDATE_BYTES } from './limits';
 
 const HTTP_SYNC_PROTOCOL_VERSION = 1;
 const FIELD_COUNT = 3;
 const UINT32_BYTES = 4;
 
-export const MAX_HTTP_SYNC_BODY_BYTES = 1 + FIELD_COUNT * (UINT32_BYTES + MAX_COLLAB_FRAME_BYTES);
+export const MAX_HTTP_SYNC_BODY_BYTES = 1 + FIELD_COUNT * (UINT32_BYTES + MAX_COLLAB_UPDATE_BYTES);
+export const HTTP_SYNC_FIELD_TOO_LARGE = 'http_sync_field_too_large';
 
 export interface HttpSyncRequest {
   clientStateVector: Uint8Array;
@@ -21,7 +22,7 @@ export interface HttpSyncResponse {
 function encodeFields(fields: readonly Uint8Array[]): Uint8Array {
   if (fields.length !== FIELD_COUNT) throw new Error('http_sync_field_count');
   for (const field of fields) {
-    if (field.byteLength > MAX_COLLAB_FRAME_BYTES) throw new Error('http_sync_field_too_large');
+    if (field.byteLength > MAX_COLLAB_UPDATE_BYTES) throw new Error(HTTP_SYNC_FIELD_TOO_LARGE);
   }
 
   const size = 1 + fields.reduce((total, field) => total + UINT32_BYTES + field.byteLength, 0);
@@ -50,7 +51,7 @@ function decodeFields(payload: Uint8Array): [Uint8Array, Uint8Array, Uint8Array]
     if (offset + UINT32_BYTES > payload.byteLength) throw new Error('http_sync_truncated');
     const length = view.getUint32(offset);
     offset += UINT32_BYTES;
-    if (length > MAX_COLLAB_FRAME_BYTES) throw new Error('http_sync_field_too_large');
+    if (length > MAX_COLLAB_UPDATE_BYTES) throw new Error(HTTP_SYNC_FIELD_TOO_LARGE);
     if (offset + length > payload.byteLength) throw new Error('http_sync_truncated');
     fields.push(payload.slice(offset, offset + length));
     offset += length;
