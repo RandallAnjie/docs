@@ -2486,7 +2486,7 @@ function DocumentWorkspace({
     provider.on('status', ({ status }: { status: string }) => {
       httpTransport.setSocketLive(status === 'connected');
     });
-    httpTransport.setSocketLive(provider.wsconnected);
+    httpTransport.setSocketLive(true);
     void httpTransport.start();
     setCollab({ ydoc, provider, pageId: page.id });
 

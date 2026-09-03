@@ -18,6 +18,7 @@ export type HttpCollaborationState = 'synced' | 'disconnected' | 'forbidden' | '
 
 const OVERLOAD_STATUSES = new Set([500, 502, 503, 504]);
 const SOCKET_LIVE_POLL_MS = 15_000;
+const HTTP_FALLBACK_DELAY_MS = 1_500;
 const OVERLOAD_BACKOFF_MAX_MS = 30_000;
 
 interface HttpCollaborationOptions {
@@ -74,7 +75,12 @@ export class HttpCollaborationTransport {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.handleVisibility);
     }
-    return this.syncNow();
+    if (this.socketLive) {
+      this.schedule(SOCKET_LIVE_POLL_MS);
+      return Promise.resolve();
+    }
+    this.schedule(HTTP_FALLBACK_DELAY_MS);
+    return Promise.resolve();
   }
 
   setSocketLive(live: boolean): void {
@@ -82,7 +88,15 @@ export class HttpCollaborationTransport {
     this.socketLive = live;
     this.syncAgain = false;
     if (this.stopped) return;
-    this.schedule(live ? SOCKET_LIVE_POLL_MS : 500);
+    if (live) {
+      globalThis.clearTimeout(this.timer);
+      this.timer = undefined;
+      this.timerDeadline = Number.POSITIVE_INFINITY;
+      this.abortController?.abort();
+      this.schedule(SOCKET_LIVE_POLL_MS);
+      return;
+    }
+    this.schedule(500);
   }
 
   stop(): void {
@@ -111,6 +125,10 @@ export class HttpCollaborationTransport {
     globalThis.clearTimeout(this.timer);
     this.timer = undefined;
     this.timerDeadline = Number.POSITIVE_INFINITY;
+    if (this.socketLive) {
+      this.schedule(SOCKET_LIVE_POLL_MS);
+      return;
+    }
     if (this.running) {
       this.syncAgain = true;
       return;

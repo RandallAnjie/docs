@@ -10,6 +10,7 @@ import {
   documentSyncedBlockIds,
   documentSyncedBlockResourceIds,
   encodeStoredBytes,
+  restoredTailNeedsCompact,
   syncedBlockDeleteUpdate,
   syncedBlockRestoreUpdate,
   syncedBlockUnsyncUpdate,
@@ -244,6 +245,14 @@ describe('page link projection', () => {
       'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     ]);
     document.destroy();
+  });
+});
+
+describe('restored collaboration tail', () => {
+  it('compacts any updates applied after the latest snapshot', () => {
+    expect(restoredTailNeedsCompact(0)).toBe(false);
+    expect(restoredTailNeedsCompact(1)).toBe(true);
+    expect(restoredTailNeedsCompact(100)).toBe(true);
   });
 });
 
