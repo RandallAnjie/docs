@@ -4,7 +4,11 @@ import { EditorState, TextSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { describe, expect, it } from 'vitest';
 
-import { applyBlockGapFixes, isGapCursorPosition } from './editor-block-gaps';
+import {
+  applyBlockGapFixes,
+  clickIsAboveFirstBlock,
+  isGapCursorPosition,
+} from './editor-block-gaps';
 
 const schema = getSchema([StarterKit]);
 
@@ -13,24 +17,51 @@ function horizontalRuleDoc() {
 }
 
 describe('applyBlockGapFixes', () => {
-  it('adds empty paragraphs before and after a leading/trailing block', () => {
+  it('does not keep a standing first line above a leading block', () => {
     const state = EditorState.create({ schema, doc: horizontalRuleDoc() });
     const transaction = applyBlockGapFixes(state);
     expect(transaction).not.toBeNull();
-    expect(transaction!.doc.firstChild?.type.name).toBe('paragraph');
+    expect(transaction!.doc.firstChild?.type.name).toBe('horizontalRule');
     expect(transaction!.doc.lastChild?.type.name).toBe('paragraph');
     expect(transaction!.doc.lastChild?.content.size).toBe(0);
-    expect(transaction!.doc.childCount).toBe(3);
+    expect(transaction!.doc.childCount).toBe(2);
   });
 
-  it('does not add extra paragraphs when the document already starts and ends with them', () => {
+  it('removes an unused empty first line once the caret leaves it', () => {
     const paragraph = schema.nodes.paragraph!.create();
-    const doc = schema.node('doc', null, [
-      paragraph,
-      schema.nodes.horizontalRule!.create(),
-      paragraph,
-    ]);
-    const state = EditorState.create({ schema, doc });
+    const rule = schema.nodes.horizontalRule!.create();
+    const doc = schema.node('doc', null, [paragraph, rule, paragraph]);
+    const state = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, doc.content.size - 1),
+    });
+    const transaction = applyBlockGapFixes(state)!;
+    expect(transaction.doc.firstChild?.type.name).toBe('horizontalRule');
+    expect(transaction.doc.lastChild?.type.name).toBe('paragraph');
+    expect(transaction.doc.childCount).toBe(2);
+  });
+
+  it('keeps an empty first line while the caret is in it', () => {
+    const paragraph = schema.nodes.paragraph!.create();
+    const rule = schema.nodes.horizontalRule!.create();
+    const doc = schema.node('doc', null, [paragraph, rule, paragraph]);
+    const state = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, 1),
+    });
+    expect(applyBlockGapFixes(state)).toBeNull();
+  });
+
+  it('does not add extra paragraphs when the document already ends with one', () => {
+    const paragraph = schema.nodes.paragraph!.create();
+    const doc = schema.node('doc', null, [schema.nodes.horizontalRule!.create(), paragraph]);
+    const state = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, doc.content.size - 1),
+    });
     expect(applyBlockGapFixes(state)).toBeNull();
   });
 
@@ -60,9 +91,9 @@ describe('applyBlockGapFixes', () => {
       selection: new GapCursor(doc.resolve(end)),
     });
     const transaction = applyBlockGapFixes(state)!;
-    expect(transaction.doc.childCount).toBe(3);
-    expect(transaction.doc.firstChild?.type.name).toBe('paragraph');
+    expect(transaction.doc.firstChild?.type.name).toBe('horizontalRule');
     expect(transaction.doc.lastChild?.type.name).toBe('paragraph');
+    expect(transaction.doc.childCount).toBe(2);
     expect(transaction.selection).toBeInstanceOf(TextSelection);
   });
 
@@ -77,7 +108,18 @@ describe('applyBlockGapFixes', () => {
       selection: new GapCursor(doc.resolve(pos)),
     });
     const transaction = applyBlockGapFixes(state)!;
-    expect(transaction.doc.child(2)?.type.name).toBe('paragraph');
-    expect(transaction.doc.childCount).toBe(5);
+    expect(transaction.doc.child(1)?.type.name).toBe('paragraph');
+    expect(transaction.doc.firstChild?.type.name).toBe('horizontalRule');
+    expect(transaction.doc.lastChild?.type.name).toBe('paragraph');
+    expect(transaction.doc.childCount).toBe(4);
+  });
+});
+
+describe('clickIsAboveFirstBlock', () => {
+  it('treats a click above a leading block like a gap between blocks', () => {
+    const rule = schema.nodes.horizontalRule!.create();
+    expect(clickIsAboveFirstBlock(rule, 40, 80)).toBe(true);
+    expect(clickIsAboveFirstBlock(rule, 90, 80)).toBe(false);
+    expect(clickIsAboveFirstBlock(schema.nodes.paragraph!.create(), 40, 80)).toBe(false);
   });
 });
