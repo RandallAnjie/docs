@@ -5278,6 +5278,43 @@ button.page-icon-display:hover {
 .document-switch-hold {
   position: relative;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.document-switch-progress {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 4;
+  height: 2px;
+  overflow: hidden;
+  background: #efece6;
+}
+.document-switch-progress > i {
+  display: block;
+  width: 40%;
+  height: 100%;
+  background: #c85436;
+  transform-origin: left center;
+  animation: document-switch-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes document-switch-indeterminate {
+  0% {
+    transform: translateX(-120%) scaleX(0.4);
+  }
+  50% {
+    transform: translateX(40%) scaleX(1);
+  }
+  100% {
+    transform: translateX(280%) scaleX(0.4);
+  }
+}
 .document-switch-veil {
   position: absolute;
   inset: 0;

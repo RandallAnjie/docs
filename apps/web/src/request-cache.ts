@@ -4,7 +4,7 @@ export function cachedRequest<T>(key: string, load: () => Promise<T>): Promise<T
   const existing = inflight.get(key);
   if (existing) return existing as Promise<T>;
   const pending = load().finally(() => {
-    window.setTimeout(() => {
+    globalThis.setTimeout(() => {
       if (inflight.get(key) === pending) inflight.delete(key);
     }, 15_000);
   });

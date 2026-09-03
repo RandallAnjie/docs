@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { listPages } from './api';
+import { clearCachedRequest } from './request-cache';
 
 describe('page tree API', () => {
   afterEach(() => {
+    clearCachedRequest();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });

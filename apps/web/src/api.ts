@@ -65,6 +65,7 @@ import type {
   JsonValue,
 } from '@rdocs/shared';
 import { ATTACHMENT_DIRECT_UPLOAD_BYTES, ATTACHMENT_PART_BYTES } from '@rdocs/shared';
+import { cachedRequest, clearCachedRequest } from './request-cache';
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -148,9 +149,13 @@ export function createPage(
   parentId: string | null = null,
   spaceId?: string,
 ): Promise<CreatePageResponse> {
-  return request('/api/pages', {
+  return request<CreatePageResponse>('/api/pages', {
     method: 'POST',
     body: JSON.stringify({ title, parentId, spaceId }),
+  }).then((result) => {
+    if (spaceId) clearCachedRequest(`tree:${spaceId}`);
+    else clearCachedRequest();
+    return result;
   });
 }
 
@@ -233,10 +238,12 @@ export async function importMarkdownZip(
 }
 
 export function listPages(spaceId?: string): Promise<ListPagesResponse> {
-  return request(
-    spaceId ? `/api/spaces/${encodeURIComponent(spaceId)}/tree` : '/api/pages',
-    undefined,
-    { retryTransientGet: true, timeoutMs: 5_000 },
+  const key = spaceId ? `tree:${spaceId}` : 'pages';
+  return cachedRequest(key, () =>
+    request(spaceId ? `/api/spaces/${encodeURIComponent(spaceId)}/tree` : '/api/pages', undefined, {
+      retryTransientGet: true,
+      timeoutMs: 5_000,
+    }),
   );
 }
 
@@ -431,7 +438,12 @@ export function recordPublicSiteEvent(
 }
 
 export function getPage(pageId: string): Promise<{ page: PageSummary }> {
-  return request(`/api/pages/${encodeURIComponent(pageId)}`);
+  return cachedRequest(`page:${pageId}`, () =>
+    request(`/api/pages/${encodeURIComponent(pageId)}`, undefined, {
+      retryTransientGet: true,
+      timeoutMs: 8_000,
+    }),
+  );
 }
 
 export async function getPageDatabase(pageId: string): Promise<DatabaseSnapshot | null> {
@@ -1043,6 +1055,7 @@ export function updatePageTitle(
       body: JSON.stringify({ title }),
     });
   }
+  clearCachedRequest(`page:${pageId}`);
   return request(`/api/pages/${encodeURIComponent(pageId)}`, {
     method: 'PATCH',
     keepalive: options.keepalive,
@@ -1062,6 +1075,7 @@ export function updatePageAppearance(
     isLocked?: boolean;
   },
 ): Promise<{ page: PageSummary }> {
+  clearCachedRequest(`page:${pageId}`);
   return request(`/api/pages/${encodeURIComponent(pageId)}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
@@ -1174,10 +1188,14 @@ export function getCollabTicket(
   pageId: string,
   actor: { id: string; name: string },
 ): Promise<CollabTicketResponse> {
-  return request(`/api/pages/${encodeURIComponent(pageId)}/collab-ticket`, {
-    method: 'POST',
-    body: JSON.stringify({ actorId: actor.id, displayName: actor.name }),
-  });
+  return request(
+    `/api/pages/${encodeURIComponent(pageId)}/collab-ticket`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ actorId: actor.id, displayName: actor.name }),
+    },
+    { timeoutMs: 8_000 },
+  );
 }
 
 export async function createSyncedBlock(
