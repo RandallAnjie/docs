@@ -10,7 +10,7 @@ Rdocs 使用 WebAuthn 设备密钥，不走 GitHub OAuth，不保存密码，也
 - 生产和仓库配置均为 `AUTH_MODE=passkey`。
 - 服务端不再包含匿名 Phase 0 业务模式；即使误配为 `phase0` 也会保持设备密钥登录。
 - 一次性的 `PASSKEY_ENROLLMENT_SECRET` 已从 Rdocs Worker 和本机删除，不能恢复，也不影响已有设备密钥登录。
-- 未登录用户默认看到落地页；登录和注册都使用设备密钥。公开只读分享与 Sites 仍不需要登录。
+- 未登录用户默认看到落地页；登录和注册都使用设备密钥。公开分享链接与 Sites 仍不需要登录。
 
 ## 日常登录
 

@@ -21,6 +21,7 @@ import {
   type RecentPageResult,
   type RevisionKind,
   type RevisionSummary,
+  type ShareLinkRole,
   type ShareLinkSummary,
   type SpaceGrantPrincipalType,
   type SpaceRole,
@@ -72,6 +73,7 @@ import { syncedBlockTicketRole } from './synced-block-access';
 import { bumpSyncedBlocksForPageSubtree } from './synced-block-acl';
 import { handleTenancyApi } from './tenancy';
 import { handleWorkspaceExtrasApi } from './workspace-extras';
+import { isShareLinkRole, publicShareDisplayName, publicShareTicketRole } from './share-access';
 import { signCollabTicket, verifyCollabTicket } from './tickets';
 import {
   handlePlatformApi,
@@ -224,7 +226,7 @@ interface ShareLinkRow {
   organization_id: string;
   page_id: string;
   token_hash: string;
-  role: 'viewer' | 'commenter';
+  role: ShareLinkRole;
   expires_at: number | null;
   revoked_at: number | null;
   created_by: string;
@@ -1372,7 +1374,7 @@ async function createShareLink(
     expiresInDays?: unknown;
   } | null;
   const role = input?.role ?? 'viewer';
-  if (role !== 'viewer') return error('当前仅支持只读公开分享', 400);
+  if (!isShareLinkRole(role)) return error('分享权限无效', 400);
   const expiresInDays = input?.expiresInDays;
   if (
     expiresInDays !== null &&
@@ -1469,14 +1471,15 @@ async function resolvePublicShare(request: Request, env: Env, token: string): Pr
     return error('协作服务尚未配置', 503);
   }
   const expiresAt = Math.min(now + 5 * 60 * 1_000, share.expires_at ?? Number.MAX_SAFE_INTEGER);
+  const ticketRole = publicShareTicketRole(share.role, page.isLocked);
   const ticket = await signCollabTicket(
     {
       version: 1,
       pageId: page.id,
       generation: page.currentGeneration,
       actorId: `share_${share.id}`,
-      displayName: '外部只读',
-      role: 'viewer',
+      displayName: publicShareDisplayName(ticketRole),
+      role: ticketRole,
       aclVersion: page.aclVersion,
       issuedAt: now,
       expiresAt,
@@ -1489,7 +1492,7 @@ async function resolvePublicShare(request: Request, env: Env, token: string): Pr
   ].slice(-5);
   return json(
     {
-      page: { ...page, role: 'viewer' },
+      page: { ...page, role: ticketRole },
       share: shareLinkFromRow(share),
       ticket,
       expiresAt,
@@ -1501,6 +1504,49 @@ async function resolvePublicShare(request: Request, env: Env, token: string): Pr
       },
     },
   );
+}
+
+async function requireEditablePublicShare(
+  env: Env,
+  token: string,
+): Promise<{ share: ShareLinkRow; page: PageSummary } | null> {
+  const share = await findPublicShareByToken(env, token);
+  if (!share) return null;
+  const page = await findPage(env, share.page_id);
+  if (!page?.collaborationEnabled) return null;
+  if (publicShareTicketRole(share.role, page.isLocked) !== 'editor') return null;
+  return { share, page };
+}
+
+async function updatePublicSharePage(request: Request, env: Env, token: string): Promise<Response> {
+  const access = await requireEditablePublicShare(env, token);
+  if (!access) return error('分享链接不存在或无权编辑', 404);
+  const body = (await request.json().catch(() => null)) as { title?: unknown } | null;
+  if (!body || typeof body.title !== 'string') return error('title 必须是字符串', 400);
+  const title = (body.title.trim() || '未命名页面').slice(0, MAX_TITLE_LENGTH);
+  const now = Date.now();
+  await env.DB.prepare(
+    'UPDATE pages SET title = ?, updated_by = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+  )
+    .bind(title, access.share.created_by, now, access.page.id)
+    .run();
+  const updated = await findPage(env, access.page.id);
+  if (!updated) return error('分享页面已不可用', 404);
+  await pageAudit(env, updated, access.share.created_by, 'page.title.updated', {
+    viaShareLink: access.share.id,
+    title,
+  });
+  return json({ page: { ...updated, role: 'editor' as const } });
+}
+
+async function uploadPublicShareAttachment(
+  request: Request,
+  env: Env,
+  token: string,
+): Promise<Response> {
+  const access = await requireEditablePublicShare(env, token);
+  if (!access) return error('分享链接不存在或无权编辑', 404);
+  return uploadAttachment(request, env, access.page, access.share.created_by);
 }
 
 async function issuePublicSyncedBlockTicket(
@@ -1530,22 +1576,28 @@ async function issuePublicSyncedBlockTicket(
   await touchSyncedBlockReference(env, blockId, containerPageId);
   const issuedAt = Date.now();
   const expiresAt = issuedAt + 5 * 60 * 1000;
+  const ticketRole = publicShareTicketRole(share.role, Boolean(page.isLocked));
   const ticket = await signCollabTicket(
     {
       version: 1,
       resourceKind: 'synced_block',
       pageId: blockId,
       generation: block.currentGeneration,
-      actorId: `share-${share.id}`,
-      displayName: '外部只读',
-      role: 'viewer',
+      actorId: `share_${share.id}`,
+      displayName: publicShareDisplayName(ticketRole),
+      role: ticketRole,
       aclVersion: block.aclVersion,
       issuedAt,
       expiresAt,
     },
     env.COLLAB_TICKET_SECRET,
   );
-  return json({ ticket, expiresAt, generation: block.currentGeneration, role: 'viewer' });
+  return json({
+    ticket,
+    expiresAt,
+    generation: block.currentGeneration,
+    role: ticketRole,
+  });
 }
 
 async function captureRevision(
@@ -4149,6 +4201,22 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const publicShareMatch = url.pathname.match(/^\/api\/public\/shares\/([^/]+)$/);
   if (publicShareMatch?.[1] && request.method === 'GET') {
     return resolvePublicShare(request, env, decodeURIComponent(publicShareMatch[1]));
+  }
+  if (publicShareMatch?.[1] && request.method === 'PATCH') {
+    if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+    return updatePublicSharePage(request, env, decodeURIComponent(publicShareMatch[1]));
+  }
+
+  const publicShareAttachmentMatch = url.pathname.match(
+    /^\/api\/public\/shares\/([^/]+)\/attachments$/,
+  );
+  if (publicShareAttachmentMatch?.[1] && request.method === 'POST') {
+    if (!isTrustedMutationOrigin(request, env)) return error('请求来源不允许', 403);
+    return uploadPublicShareAttachment(
+      request,
+      env,
+      decodeURIComponent(publicShareAttachmentMatch[1]),
+    );
   }
 
   const publicSyncedBlockTicketMatch = url.pathname.match(

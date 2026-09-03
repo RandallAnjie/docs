@@ -113,6 +113,7 @@ const MIGRATIONS = [
   '0030_notion_completion.sql',
   '0031_rf_email_inbound.sql',
   '0032_workspace_extras.sql',
+  '0033_share_link_editor.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -212,6 +213,13 @@ describe('database migrations', () => {
         .get(),
     ).toMatchObject({ total: 0 });
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(
+      (
+        database
+          .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'share_links'")
+          .get() as { sql: string }
+      ).sql,
+    ).toContain("'editor'");
     expect(
       database
         .prepare(

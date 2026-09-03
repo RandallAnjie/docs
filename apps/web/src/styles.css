@@ -2047,7 +2047,7 @@ button {
 }
 .share-link-create {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
   margin-top: 11px;
 }

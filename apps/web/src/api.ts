@@ -48,6 +48,7 @@ import type {
   ProjectWorkspaceSummary,
   RecentPageResult,
   RestoreRevisionResponse,
+  ShareLinkRole,
   ShareLinkSummary,
   SiteAnalyticsDay,
   SiteSearchResult,
@@ -314,7 +315,7 @@ export function listShareLinks(pageId: string): Promise<{ links: ShareLinkSummar
 
 export function createShareLink(
   pageId: string,
-  input: { role: 'viewer' | 'commenter'; expiresInDays: number | null },
+  input: { role: ShareLinkRole; expiresInDays: number | null },
 ): Promise<{ link: ShareLinkSummary; token: string }> {
   return request(`/api/pages/${encodeURIComponent(pageId)}/share-links`, {
     method: 'POST',
@@ -936,7 +937,28 @@ export async function uploadAttachment(
   pageId: string,
   file: File,
   onProgress?: (uploadedBytes: number, totalBytes: number) => void,
+  options: { shareToken?: string } = {},
 ): Promise<{ attachment: AttachmentSummary }> {
+  if (options.shareToken) {
+    if (file.size > ATTACHMENT_DIRECT_UPLOAD_BYTES) {
+      throw new Error('公开分享一次最多上传 8 MB 的附件');
+    }
+    onProgress?.(0, file.size);
+    const response = await fetch(
+      `/api/public/shares/${encodeURIComponent(options.shareToken)}/attachments`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': file.type || 'application/octet-stream',
+          'x-rdocs-file-name': encodeURIComponent(file.name),
+        },
+        body: file,
+      },
+    );
+    const result = await readUploadResponse<{ attachment: AttachmentSummary }>(response);
+    onProgress?.(file.size, file.size);
+    return result;
+  }
   if (file.size <= ATTACHMENT_DIRECT_UPLOAD_BYTES) {
     onProgress?.(0, file.size);
     const response = await fetch(`/api/pages/${encodeURIComponent(pageId)}/attachments`, {
@@ -1011,8 +1033,15 @@ export function attachmentDownloadUrl(attachmentId: string): string {
 export function updatePageTitle(
   pageId: string,
   title: string,
-  options: { keepalive?: boolean } = {},
+  options: { keepalive?: boolean; shareToken?: string } = {},
 ): Promise<{ page: PageSummary }> {
+  if (options.shareToken) {
+    return request(`/api/public/shares/${encodeURIComponent(options.shareToken)}`, {
+      method: 'PATCH',
+      keepalive: options.keepalive,
+      body: JSON.stringify({ title }),
+    });
+  }
   return request(`/api/pages/${encodeURIComponent(pageId)}`, {
     method: 'PATCH',
     keepalive: options.keepalive,

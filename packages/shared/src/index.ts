@@ -666,10 +666,12 @@ export interface PageReminderSummary {
   updatedAt: number;
 }
 
+export type ShareLinkRole = 'viewer' | 'commenter' | 'editor';
+
 export interface ShareLinkSummary {
   id: string;
   pageId: string;
-  role: 'viewer' | 'commenter';
+  role: ShareLinkRole;
   expiresAt: number | null;
   revokedAt: number | null;
   createdBy: string;
