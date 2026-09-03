@@ -4,6 +4,7 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import {
   ArrowDown,
   ArrowUp,
+  BetweenHorizontalStart,
   CheckSquare,
   Code2,
   Copy,
@@ -196,19 +197,27 @@ export function EditorBlockHandle({
   const targetNode = targetPosition >= 0 ? editor.state.doc.nodeAt(targetPosition) : null;
   const transformable = Boolean(targetNode && TRANSFORMABLE_BLOCKS.has(targetNode.type.name));
 
-  const insertBelow = () => {
-    const current = editor.state.doc.nodeAt(targetPosition);
-    if (!current) return;
-    const insertionPosition = targetPosition + current.nodeSize;
+  const insertParagraph = (position: number) => {
     editor
       .chain()
       .focus()
-      .insertContentAt(insertionPosition, {
+      .insertContentAt(position, {
         type: 'paragraph',
         content: [{ type: 'text', text: '/' }],
       })
-      .setTextSelection(insertionPosition + 2)
+      .setTextSelection(position + 2)
       .run();
+  };
+
+  const insertAbove = () => {
+    if (targetPosition < 0) return;
+    insertParagraph(targetPosition);
+  };
+
+  const insertBelow = () => {
+    const current = editor.state.doc.nodeAt(targetPosition);
+    if (!current) return;
+    insertParagraph(targetPosition + current.nodeSize);
   };
 
   const duplicate = () => {
@@ -276,6 +285,20 @@ export function EditorBlockHandle({
       onElementDragStart={() => setMenuOpen(false)}
     >
       <div className="rdocs-block-controls" ref={controls}>
+        {!movement.up ? (
+          <button
+            type="button"
+            className="rdocs-block-add"
+            title="在上方插入内容块"
+            aria-label="在上方插入内容块"
+            disabled={targetPosition < 0}
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
+            onClick={insertAbove}
+          >
+            <BetweenHorizontalStart size={15} />
+          </button>
+        ) : null}
         <button
           type="button"
           className="rdocs-block-add"
@@ -374,6 +397,26 @@ export function EditorBlockHandle({
               </>
             ) : null}
             <label>操作</label>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                insertAbove();
+                setMenuOpen(false);
+              }}
+            >
+              <BetweenHorizontalStart size={14} /> 上方插入
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                insertBelow();
+                setMenuOpen(false);
+              }}
+            >
+              <Plus size={14} /> 下方插入
+            </button>
             <button
               type="button"
               role="menuitem"

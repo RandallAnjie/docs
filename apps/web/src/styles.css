@@ -4157,12 +4157,18 @@ button.page-icon-display:hover {
     outline-color 180ms ease,
     background-color 180ms ease;
 }
-.rdocs-editor > *:first-child {
+.rdocs-editor > p:first-child,
+.rdocs-editor > h1:first-child,
+.rdocs-editor > h2:first-child,
+.rdocs-editor > h3:first-child {
   margin-top: 0;
 }
 .rdocs-editor p {
   margin: 1px 0;
   padding: 3px 2px;
+}
+.ProseMirror-gapcursor {
+  display: none;
 }
 .rdocs-editor p.is-empty::before,
 .rdocs-editor p.is-editor-empty::before {
