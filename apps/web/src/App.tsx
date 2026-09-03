@@ -137,10 +137,6 @@ import {
   searchPages,
   getAuthSession,
   getCollabTicket,
-  getDatabase,
-  getLinkedDatabase,
-  getPageDatabase,
-  getPage,
   getPublicSite,
   getPublicShare,
   listPages,
@@ -175,6 +171,12 @@ import { ChunkingWebSocket } from './chunking-websocket';
 import { BlockGapParagraphs } from './editor-block-gaps';
 import { EditorTableControls } from './EditorTableControls';
 import { HttpCollaborationTransport } from './http-collaboration';
+import {
+  LOCAL_DOC_HYDRATE_MS,
+  prefetchPageOpen,
+  startPageOpen,
+  waitWithBudget,
+} from './page-workspace-load';
 import { SpaceIcon } from './space-icon';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
 import { blockAnchorFromHash, blockAnchorUrl, encodeRelativePosition } from './block-anchor';
@@ -1796,25 +1798,19 @@ function Workspace({
     let active = true;
     setLoading(true);
     setError(null);
-    getPage(pageId)
-      .then(async ({ page }) => {
-        const [{ ticket }, { pages }, database] = await Promise.all([
-          getCollabTicket(pageId, identity),
-          listPages(page.spaceId),
-          getPageDatabase(pageId).then(async (owned) => {
-            if (owned) return owned;
-            const linked = await getLinkedDatabase(pageId).catch(() => ({ databaseId: null }));
-            return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
-          }),
-        ]);
-        if (active) {
-          setBootstrap({
-            page,
-            pages: pages.some((candidate) => candidate.id === page.id) ? pages : [...pages, page],
-            ticket,
-            database,
-          });
-        }
+    const started = startPageOpen(pageId, identity);
+    void Promise.all([started.page, started.ticket, started.database])
+      .then(async ([{ page }, { ticket }, database]) => {
+        if (!active) return;
+        const treeReady = await waitWithBudget(started.pages, 80);
+        const pages = treeReady ? await started.pages : [page];
+        if (!active) return;
+        setBootstrap({
+          page,
+          pages,
+          ticket,
+          database,
+        });
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '页面加载失败');
@@ -2167,6 +2163,26 @@ function DocumentWorkspace({
   pageRef.current = page;
   pagesRef.current = pages;
   const isSwitching = pageSwitching || requestedPageId !== page.id;
+  const collabReady = Boolean(collab && collab.pageId === page.id && !isSwitching);
+
+  useEffect(() => {
+    let cancelled = false;
+    const spaceId = page.spaceId;
+    void listPages(spaceId)
+      .then(({ pages: listed }) => {
+        if (cancelled) return;
+        setPages((current) => {
+          const currentPage = pageRef.current;
+          return listed.some((item) => item.id === currentPage.id)
+            ? listed
+            : [...listed, currentPage];
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [page.spaceId]);
   const previewPage =
     requestedPageId === page.id
       ? page
@@ -2488,16 +2504,29 @@ function DocumentWorkspace({
     });
     httpTransport.setSocketLive(true);
     void httpTransport.start();
-    setCollab({ ydoc, provider, pageId: page.id });
+    const publish = () => {
+      if (disposed) return;
+      setCollab({ ydoc, provider, pageId: page.id });
+    };
+    if (offlinePersistence) {
+      void waitWithBudget(offlinePersistence.whenSynced, LOCAL_DOC_HYDRATE_MS).then((ready) => {
+        if (ready && !disposed) setOfflineReady(true);
+        publish();
+      });
+    } else {
+      publish();
+    }
 
     return () => {
       disposed = true;
       if (httpTransportRef.current === httpTransport) httpTransportRef.current = null;
-      httpTransport.stop();
       provider.awareness.off('change', updateCollaborators);
-      provider.destroy();
-      offlinePersistence?.destroy();
-      ydoc.destroy();
+      window.setTimeout(() => {
+        httpTransport.stop();
+        provider.destroy();
+        offlinePersistence?.destroy();
+        ydoc.destroy();
+      }, 400);
     };
   }, [
     identity.color,
@@ -2589,50 +2618,38 @@ function DocumentWorkspace({
     setAiRequest(null);
 
     void (async () => {
-      const loadPage = Promise.all([
-        getPage(requestedPageId),
-        renewTicket
-          ? renewTicket().then((nextTicket) => ({ ticket: nextTicket }))
-          : getCollabTicket(requestedPageId, identity),
-        getPageDatabase(requestedPageId)
-          .catch(() => null)
-          .then(async (owned) => {
-            if (owned) return owned;
-            const linked = await getLinkedDatabase(requestedPageId).catch(() => ({
-              databaseId: null,
-            }));
-            return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
-          }),
-      ]);
+      const started = startPageOpen(requestedPageId, identity, { renewTicket });
+      const previousSpaceId = pageRef.current.spaceId;
       void settleWithin(Promise.all([flushTitleRef.current(), flushDocumentRef.current()]), 400);
       try {
-        const [{ page: nextPage }, ticketResult, nextDatabase] = await loadPage;
-        let nextPages = pagesRef.current;
-        if (nextPage.spaceId !== pageRef.current.spaceId) {
-          try {
-            nextPages = (await listPages(nextPage.spaceId)).pages;
-          } catch {
-            nextPages = [nextPage];
-          }
-        }
-        nextPages = mergePageIntoList(nextPages, nextPage);
+        const [{ page: nextPage }, ticketResult] = await Promise.all([
+          started.page,
+          started.ticket,
+        ]);
         if (cancelled || pageSwitchGeneration.current !== generation) return;
         setPage(nextPage);
-        setPages(nextPages);
         setTicket(ticketResult.ticket);
-        setDatabase(nextDatabase);
         setTitle(nextPage.title);
         latestTitle.current = nextPage.title;
         savedTitle.current = nextPage.title;
         setMoveParentId(nextPage.parentId ?? '');
+        setPages((current) => mergePageIntoList(current, nextPage));
+        setPageSwitching(false);
+        void started.database.then((nextDatabase) => {
+          if (cancelled || pageSwitchGeneration.current !== generation) return;
+          setDatabase(nextDatabase);
+        });
+        if (nextPage.spaceId !== previousSpaceId) {
+          void started.pages.then((nextPages) => {
+            if (cancelled || pageSwitchGeneration.current !== generation) return;
+            setPages(mergePageIntoList(nextPages, nextPage));
+          });
+        }
       } catch (reason) {
         if (cancelled || pageSwitchGeneration.current !== generation) return;
         setPageActionError(reason instanceof Error ? reason.message : '页面加载失败');
         navigateToPage(pageRef.current.id, { replace: true });
-      } finally {
-        if (!cancelled && pageSwitchGeneration.current === generation) {
-          setPageSwitching(false);
-        }
+        setPageSwitching(false);
       }
     })();
 
@@ -2938,6 +2955,7 @@ function DocumentWorkspace({
             creatingUnder={creatingUnder}
             onToggle={togglePage}
             onCreateChild={(parentId) => void createAndOpenPage(parentId)}
+            onPrefetch={(pageId) => prefetchPageOpen(pageId, identity)}
             canCreate={canEditStructure}
             favoritedPageIds={favorited ? new Set([page.id]) : undefined}
             onFavorite={(pageId, next) => {
@@ -3373,17 +3391,11 @@ function DocumentWorkspace({
                 onReplace={(text) => insertAiText(text, true)}
               />
             ) : null}
-            <div
-              className={
-                isSwitching || (collab && collab.pageId !== page.id)
-                  ? 'document-switch-hold'
-                  : undefined
-              }
-            >
-              {isSwitching || (collab && collab.pageId !== page.id) ? (
-                <div className="document-switch-veil" aria-live="polite">
-                  <div className="loading-mark" />
-                  <span>正在打开页面…</span>
+            <div className={collab && !collabReady ? 'document-switch-hold' : undefined}>
+              {isSwitching || (collab && !collabReady) ? (
+                <div className="document-switch-progress" aria-live="polite">
+                  <i />
+                  <span className="sr-only">正在打开页面…</span>
                 </div>
               ) : null}
               {database && database.database.pageId === page.id ? (
@@ -3402,7 +3414,7 @@ function DocumentWorkspace({
                     actorId={identity.id}
                   />
                 </Suspense>
-              ) : collab && collab.pageId === page.id ? (
+              ) : collabReady && collab ? (
                 <CollaborativeEditor
                   key={page.id}
                   collab={collab}
@@ -3424,36 +3436,25 @@ function DocumentWorkspace({
                   publicSiteSlug={publicSite?.slug}
                 />
               ) : collab ? (
-                <div className="document-switch-hold" aria-busy="true">
-                  <div className="document-switch-veil" aria-live="polite">
-                    <div className="loading-mark" />
-                    <span>正在打开页面…</span>
-                  </div>
-                  <CollaborativeEditor
-                    key={collab.pageId}
-                    collab={collab}
-                    identity={identity}
-                    onSelectionQuote={() => undefined}
-                    editable={false}
-                    onReady={() => undefined}
-                    onUploadFiles={async () => undefined}
-                    onCreateSyncedBlock={async () => ''}
-                    organizationId={page.organizationId}
-                    breadcrumbItems={breadcrumbItems}
-                    pageId={collab.pageId}
-                    publicShareToken={publicShareToken}
-                    publicSiteSlug={publicSite?.slug}
-                  />
-                </div>
-              ) : isSwitching ? (
+                <CollaborativeEditor
+                  key={collab.pageId}
+                  collab={collab}
+                  identity={identity}
+                  onSelectionQuote={() => undefined}
+                  editable={false}
+                  onReady={() => undefined}
+                  onUploadFiles={async () => undefined}
+                  onCreateSyncedBlock={async () => ''}
+                  organizationId={page.organizationId}
+                  breadcrumbItems={breadcrumbItems}
+                  pageId={collab.pageId}
+                  publicShareToken={publicShareToken}
+                  publicSiteSlug={publicSite?.slug}
+                />
+              ) : (
                 <div className="editor-loading" aria-live="polite">
                   <div className="loading-mark" />
                   <span>正在打开页面…</span>
-                </div>
-              ) : (
-                <div className="editor-loading">
-                  <div className="loading-mark" />
-                  <span>正在建立加密协作连接…</span>
                 </div>
               )}
             </div>
@@ -3658,6 +3659,7 @@ function PageTree({
   creatingUnder,
   onToggle,
   onCreateChild,
+  onPrefetch,
   canCreate,
   favoritedPageIds,
   onFavorite,
@@ -3670,6 +3672,7 @@ function PageTree({
   creatingUnder: string | null | undefined;
   onToggle: (pageId: string) => void;
   onCreateChild: (parentId: string) => void;
+  onPrefetch?: (pageId: string) => void;
   canCreate: boolean;
   favoritedPageIds?: ReadonlySet<string>;
   onFavorite?: (pageId: string, next: boolean) => void;
@@ -3687,6 +3690,7 @@ function PageTree({
           creatingUnder={creatingUnder}
           onToggle={onToggle}
           onCreateChild={onCreateChild}
+          onPrefetch={onPrefetch}
           canCreate={canCreate}
           favoritedPageIds={favoritedPageIds}
           onFavorite={onFavorite}
@@ -3705,6 +3709,7 @@ function PageTreeItem({
   creatingUnder,
   onToggle,
   onCreateChild,
+  onPrefetch,
   canCreate,
   favoritedPageIds,
   onFavorite,
@@ -3717,6 +3722,7 @@ function PageTreeItem({
   creatingUnder: string | null | undefined;
   onToggle: (pageId: string) => void;
   onCreateChild: (parentId: string) => void;
+  onPrefetch?: (pageId: string) => void;
   canCreate: boolean;
   favoritedPageIds?: ReadonlySet<string>;
   onFavorite?: (pageId: string, next: boolean) => void;
@@ -3757,7 +3763,12 @@ function PageTreeItem({
         >
           {hasChildren && (collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />)}
         </button>
-        <a href={`/p/${encodeURIComponent(node.id)}`} aria-current={active ? 'page' : undefined}>
+        <a
+          href={`/p/${encodeURIComponent(node.id)}`}
+          aria-current={active ? 'page' : undefined}
+          onPointerEnter={() => onPrefetch?.(node.id)}
+          onPointerDown={() => onPrefetch?.(node.id)}
+        >
           {node.icon ? <span className="page-tree-icon">{node.icon}</span> : <FileText size={14} />}
           <span>{node.title || '无标题'}</span>
         </a>
@@ -3837,6 +3848,7 @@ function PageTreeItem({
           creatingUnder={creatingUnder}
           onToggle={onToggle}
           onCreateChild={onCreateChild}
+          onPrefetch={onPrefetch}
           canCreate={canCreate}
           favoritedPageIds={favoritedPageIds}
           onFavorite={onFavorite}
