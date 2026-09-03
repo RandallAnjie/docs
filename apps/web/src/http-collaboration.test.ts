@@ -79,10 +79,16 @@ describe('HttpCollaborationTransport', () => {
     const awareness = new Awareness(clientDocument);
     const assembler = new ChunkAssembler();
     const chunkedCalls: number[] = [];
+    let inflight = 0;
+    let maxInflight = 0;
 
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init: RequestInit) => {
+        inflight += 1;
+        maxInflight = Math.max(maxInflight, inflight);
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 5));
+        inflight -= 1;
         const headers = new Headers(init.headers);
         const raw = new Uint8Array(init.body as ArrayBuffer);
         let payload: Uint8Array = raw;
@@ -125,6 +131,7 @@ describe('HttpCollaborationTransport', () => {
     expect(serverDocument.getText('default').toString().length).toBe(300 * 1024);
     expect(chunkedCalls.length).toBeGreaterThan(1);
     expect(Math.max(...chunkedCalls)).toBeLessThanOrEqual(64 * 1024);
+    expect(maxInflight).toBe(1);
     transport.stop();
     awareness.destroy();
     clientDocument.destroy();
@@ -162,6 +169,77 @@ describe('HttpCollaborationTransport', () => {
     await transport.flushNow();
     expect(states).toContain('disconnected');
     const calls = fetchMock.mock.calls.length;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    transport.stop();
+    awareness.destroy();
+    clientDocument.destroy();
+  });
+
+  it('does not immediately retry a 502 overload', async () => {
+    const emptyDocument = new Y.Doc();
+    const empty = encodeHttpSyncResponse({
+      serverUpdate: new Uint8Array(),
+      serverStateVector: Y.encodeStateVector(emptyDocument),
+      awarenessUpdate: new Uint8Array(),
+    });
+    emptyDocument.destroy();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(toArrayBuffer(empty)))
+      .mockResolvedValue(new Response('bad gateway', { status: 502 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    const states: string[] = [];
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'ticket',
+      renewTicket: async () => 'ticket',
+      onState: (state) => states.push(state),
+      pollIntervalMs: 60_000,
+    });
+    await transport.start();
+    clientDocument.getText('default').insert(0, 'retry-storm');
+    await transport.flushNow();
+    expect(states).toContain('disconnected');
+    const calls = fetchMock.mock.calls.length;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    transport.stop();
+    awareness.destroy();
+    clientDocument.destroy();
+  });
+
+  it('does not POST on every keystroke while the websocket is live', async () => {
+    const emptyDocument = new Y.Doc();
+    const empty = encodeHttpSyncResponse({
+      serverUpdate: new Uint8Array(),
+      serverStateVector: Y.encodeStateVector(emptyDocument),
+      awarenessUpdate: new Uint8Array(),
+    });
+    emptyDocument.destroy();
+    const fetchMock = vi.fn(async () => new Response(toArrayBuffer(empty)));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'ticket',
+      renewTicket: async () => 'ticket',
+      onState: () => undefined,
+      pollIntervalMs: 60_000,
+    });
+    await transport.start();
+    transport.setSocketLive(true);
+    const calls = fetchMock.mock.calls.length;
+    clientDocument.getText('default').insert(0, 'ws-owns-this');
     await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
     expect(fetchMock.mock.calls.length).toBe(calls);
     transport.stop();

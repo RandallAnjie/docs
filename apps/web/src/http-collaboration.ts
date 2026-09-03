@@ -16,6 +16,10 @@ import * as Y from 'yjs';
 
 export type HttpCollaborationState = 'synced' | 'disconnected' | 'forbidden' | 'rebased';
 
+const OVERLOAD_STATUSES = new Set([500, 502, 503, 504]);
+const SOCKET_LIVE_POLL_MS = 15_000;
+const OVERLOAD_BACKOFF_MAX_MS = 30_000;
+
 interface HttpCollaborationOptions {
   pageId: string;
   document: Y.Doc;
@@ -47,6 +51,8 @@ export class HttpCollaborationTransport {
   private running = false;
   private syncAgain = false;
   private stopped = true;
+  private socketLive = false;
+  private retryNotBefore = 0;
   private abortController: AbortController | undefined;
 
   constructor(options: HttpCollaborationOptions) {
@@ -69,6 +75,14 @@ export class HttpCollaborationTransport {
       document.addEventListener('visibilitychange', this.handleVisibility);
     }
     return this.syncNow();
+  }
+
+  setSocketLive(live: boolean): void {
+    if (this.socketLive === live) return;
+    this.socketLive = live;
+    this.syncAgain = false;
+    if (this.stopped) return;
+    this.schedule(live ? SOCKET_LIVE_POLL_MS : 500);
   }
 
   stop(): void {
@@ -132,10 +146,11 @@ export class HttpCollaborationTransport {
         this.stop();
         return;
       }
-      if (response.status === 413) {
+      if (response.status === 413 || OVERLOAD_STATUSES.has(response.status)) {
         this.syncAgain = false;
+        this.failures += 1;
         this.onState('disconnected');
-        this.schedule(15_000);
+        this.schedule(this.backoffMs(response.status === 413));
         return;
       }
       if (response.status === 202 || !response.ok) throw new Error(`http_sync_${response.status}`);
@@ -143,25 +158,32 @@ export class HttpCollaborationTransport {
       const payload = decodeHttpSyncResponse(new Uint8Array(await response.arrayBuffer()));
       this.applyResponse(payload);
       this.failures = 0;
+      this.retryNotBefore = 0;
       this.renewedAfterAuthorizationFailure = false;
       this.onState('synced');
       const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-      this.schedule(hidden ? Math.max(8_000, this.pollIntervalMs) : this.pollIntervalMs);
+      const idle = hidden || this.socketLive;
+      this.schedule(
+        idle ? Math.max(SOCKET_LIVE_POLL_MS, this.pollIntervalMs) : this.pollIntervalMs,
+      );
     } catch (reason) {
       if (this.stopped || (reason instanceof DOMException && reason.name === 'AbortError')) return;
       const tooLarge =
         reason instanceof Error &&
         (reason.message === HTTP_SYNC_FIELD_TOO_LARGE || reason.message === 'http_sync_413');
-      if (tooLarge) this.syncAgain = false;
+      const overload =
+        reason instanceof Error &&
+        (reason.message.startsWith('http_sync_50') || reason.message === 'http_sync_500');
+      if (tooLarge || overload) this.syncAgain = false;
       this.failures += 1;
-      if (this.failures >= 3 || tooLarge) this.onState('disconnected');
-      this.schedule(tooLarge ? 15_000 : Math.min(250 * 2 ** (this.failures - 1), 2_000));
+      if (this.failures >= 3 || tooLarge || overload) this.onState('disconnected');
+      this.schedule(this.backoffMs(tooLarge || overload));
     } finally {
       this.running = false;
       this.abortController = undefined;
       if (this.syncAgain && !this.stopped) {
         this.syncAgain = false;
-        this.schedule(25);
+        this.schedule(this.socketLive ? SOCKET_LIVE_POLL_MS : 25);
       }
     }
   }
@@ -176,19 +198,30 @@ export class HttpCollaborationTransport {
   };
 
   private readonly handleDocumentUpdate = (_update: Uint8Array, origin: unknown): void => {
-    if (origin !== this) this.schedule(25);
+    if (origin === this || this.socketLive) return;
+    this.schedule(25);
   };
 
   private readonly handleAwarenessUpdate = (
     _changes: { added: number[]; updated: number[]; removed: number[] },
     origin: unknown,
   ): void => {
-    if (origin !== this) this.schedule(400);
+    if (origin === this || this.socketLive) return;
+    this.schedule(400);
   };
+
+  private backoffMs(severe: boolean): number {
+    const delay = severe
+      ? Math.min(15_000 * 2 ** Math.max(0, this.failures - 1), OVERLOAD_BACKOFF_MAX_MS)
+      : Math.min(2_000 * 2 ** Math.max(0, this.failures - 1), OVERLOAD_BACKOFF_MAX_MS);
+    this.retryNotBefore = Date.now() + delay;
+    return delay;
+  }
 
   private schedule(delayMs: number): void {
     if (this.stopped) return;
-    const deadline = Date.now() + delayMs;
+    const wait = Math.max(delayMs, this.retryNotBefore - Date.now());
+    const deadline = Date.now() + wait;
     if (this.timer !== undefined && deadline >= this.timerDeadline) return;
     globalThis.clearTimeout(this.timer);
     this.timerDeadline = deadline;
@@ -196,7 +229,7 @@ export class HttpCollaborationTransport {
       this.timer = undefined;
       this.timerDeadline = Number.POSITIVE_INFINITY;
       void this.syncNow();
-    }, delayMs);
+    }, wait);
   }
 
   private sendSyncRequest(): Promise<Response> {
@@ -228,26 +261,24 @@ export class HttpCollaborationTransport {
   private async postChunkedSync(body: Uint8Array): Promise<Response> {
     const id = crypto.randomUUID();
     const chunks = splitBytes(body, MAX_COLLAB_CHUNK_BYTES);
-    const responses = await Promise.all(
-      chunks.map((chunk, index) =>
-        this.postSync(chunk, {
-          [HTTP_SYNC_PROTOCOL_HEADER]: HTTP_SYNC_CHUNK_PROTOCOL,
-          [HTTP_SYNC_CHUNK_ID_HEADER]: id,
-          [HTTP_SYNC_CHUNK_INDEX_HEADER]: String(index),
-          [HTTP_SYNC_CHUNK_COUNT_HEADER]: String(chunks.length),
-        }),
-      ),
-    );
-    const failed = responses.find((response) => !response.ok && response.status !== 202);
-    const completed = responses.find((response) => response.status === 200);
-    for (const response of responses) {
-      if (response !== failed && response !== completed && response.body) {
-        void response.body.cancel().catch(() => undefined);
+    let last: Response | null = null;
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      if (!chunk) continue;
+      const response = await this.postSync(chunk, {
+        [HTTP_SYNC_PROTOCOL_HEADER]: HTTP_SYNC_CHUNK_PROTOCOL,
+        [HTTP_SYNC_CHUNK_ID_HEADER]: id,
+        [HTTP_SYNC_CHUNK_INDEX_HEADER]: String(index),
+        [HTTP_SYNC_CHUNK_COUNT_HEADER]: String(chunks.length),
+      });
+      if (!response.ok && response.status !== 202) {
+        if (last?.body) void last.body.cancel().catch(() => undefined);
+        return response;
       }
+      if (last?.body && last !== response) void last.body.cancel().catch(() => undefined);
+      last = response;
     }
-    if (failed) return failed;
-    if (completed) return completed;
-    return responses[responses.length - 1] ?? new Response(null, { status: 503 });
+    return last ?? new Response(null, { status: 503 });
   }
 
   private applyResponse(response: HttpSyncResponse): void {

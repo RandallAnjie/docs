@@ -476,6 +476,7 @@ export class DocumentRoom {
   private readonly httpChunks = createChunkAssembler();
   private messageQueue: Promise<void> = Promise.resolve();
   private maintenanceQueue: Promise<void> = Promise.resolve();
+  private httpSyncBusy = false;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -652,7 +653,18 @@ export class DocumentRoom {
     }
 
     if (url.pathname === '/internal/http-sync' && request.method === 'POST') {
-      const syncTask = this.messageQueue.then(() => this.handleHttpSync(request));
+      if (this.httpSyncBusy) {
+        return new Response('Collaboration room busy', {
+          status: 503,
+          headers: { 'retry-after': '1' },
+        });
+      }
+      this.httpSyncBusy = true;
+      const syncTask = this.messageQueue
+        .then(() => this.handleHttpSync(request))
+        .finally(() => {
+          this.httpSyncBusy = false;
+        });
       this.messageQueue = syncTask.then(
         () => undefined,
         () => undefined,

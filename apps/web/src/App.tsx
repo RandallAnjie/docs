@@ -2481,6 +2481,10 @@ function DocumentWorkspace({
       },
     });
     httpTransportRef.current = httpTransport;
+    provider.on('status', ({ status }: { status: string }) => {
+      httpTransport.setSocketLive(status === 'connected');
+    });
+    httpTransport.setSocketLive(provider.wsconnected);
     void httpTransport.start();
     setCollab({ ydoc, provider, pageId: page.id });
 
