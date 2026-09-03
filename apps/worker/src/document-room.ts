@@ -97,6 +97,17 @@ interface SearchPageRow extends RevisionPageRow {
   title: string;
 }
 
+/** RandallFlare DO SQL is JSON over HTTP with an 8 MiB body cap. */
+const MAX_DO_SQL_TEXT_BYTES = 6 * 1024 * 1024;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
 function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
@@ -104,13 +115,25 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-function decodeStoredBytes(value: unknown): Uint8Array {
+export function encodeStoredBytes(bytes: Uint8Array): string {
+  const encoded = bytesToBase64(bytes);
+  if (encoded.length > MAX_DO_SQL_TEXT_BYTES) throw new Error(HTTP_SYNC_FIELD_TOO_LARGE);
+  return encoded;
+}
+
+export function decodeStoredBytes(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
-  if (typeof value === 'string') return base64ToBytes(value);
+  if (typeof value === 'string') {
+    try {
+      return base64ToBytes(value);
+    } catch {
+      throw new Error('invalid_stored_blob');
+    }
+  }
   throw new Error('invalid_stored_blob');
 }
 
@@ -501,21 +524,56 @@ export class DocumentRoom {
   }
 
   private async restoreDocument(): Promise<void> {
-    const snapshots = (await this.state.storage.sql
-      .exec('SELECT seq, state_blob FROM snapshots ORDER BY seq DESC LIMIT 1')
-      .toArray()) as unknown as SnapshotRow[];
-    const snapshot = snapshots[0];
-    if (snapshot) {
-      Y.applyUpdate(this.document, decodeStoredBytes(snapshot.state_blob), 'restore');
-      this.currentSeq = Number(snapshot.seq);
-    }
+    try {
+      const snapshots = (await this.state.storage.sql
+        .exec('SELECT seq, state_blob FROM snapshots ORDER BY seq DESC LIMIT 1')
+        .toArray()) as unknown as SnapshotRow[];
+      const snapshot = snapshots[0];
+      if (snapshot) {
+        try {
+          Y.applyUpdate(this.document, decodeStoredBytes(snapshot.state_blob), 'restore');
+          this.currentSeq = Number(snapshot.seq);
+        } catch (reason) {
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              event: 'document_snapshot_restore_failed',
+              message: reason instanceof Error ? reason.message : String(reason),
+            }),
+          );
+          this.currentSeq = 0;
+        }
+      }
 
-    const updates = (await this.state.storage.sql
-      .exec('SELECT seq, update_blob FROM updates WHERE seq > ? ORDER BY seq ASC', this.currentSeq)
-      .toArray()) as unknown as UpdateRow[];
-    for (const update of updates) {
-      Y.applyUpdate(this.document, decodeStoredBytes(update.update_blob), 'restore');
-      this.currentSeq = Number(update.seq);
+      const updates = (await this.state.storage.sql
+        .exec(
+          'SELECT seq, update_blob FROM updates WHERE seq > ? ORDER BY seq ASC',
+          this.currentSeq,
+        )
+        .toArray()) as unknown as UpdateRow[];
+      for (const update of updates) {
+        try {
+          Y.applyUpdate(this.document, decodeStoredBytes(update.update_blob), 'restore');
+          this.currentSeq = Number(update.seq);
+        } catch (reason) {
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              event: 'document_update_restore_failed',
+              seq: update.seq,
+              message: reason instanceof Error ? reason.message : String(reason),
+            }),
+          );
+        }
+      }
+    } catch (reason) {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'document_restore_failed',
+          message: reason instanceof Error ? reason.message : String(reason),
+        }),
+      );
     }
   }
 
@@ -527,6 +585,9 @@ export class DocumentRoom {
       console.error(
         JSON.stringify({ level: 'error', event: 'document_room_fetch_failed', message }),
       );
+      if (message === HTTP_SYNC_FIELD_TOO_LARGE) {
+        return new Response('Sync payload too large', { status: 413 });
+      }
       return new Response(`rdocs_do_error:${message}`.slice(0, 500), { status: 500 });
     }
   }
@@ -751,11 +812,26 @@ export class DocumentRoom {
       const generation = Number(request.headers.get('x-rdocs-generation'));
       const resourceKind =
         request.headers.get('x-rdocs-resource-kind') === 'synced_block' ? 'synced_block' : 'page';
-      await this.commitDocumentUpdate(clientUpdate, actorId, 'http-sync', {
-        pageId,
-        generation,
-        resourceKind,
-      });
+      try {
+        await this.commitDocumentUpdate(clientUpdate, actorId, 'http-sync', {
+          pageId,
+          generation,
+          resourceKind,
+        });
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        if (message === HTTP_SYNC_FIELD_TOO_LARGE) {
+          return new Response('Sync request too large', { status: 413 });
+        }
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'http_sync_persist_failed',
+            message,
+          }),
+        );
+        return new Response('Failed to persist sync', { status: 503 });
+      }
     }
 
     if (awarenessUpdate.byteLength > 0) {
@@ -1090,7 +1166,7 @@ export class DocumentRoom {
       nextSeq,
       crypto.randomUUID(),
       actorId,
-      toArrayBuffer(update),
+      encodeStoredBytes(update),
       update.byteLength,
       Date.now(),
     );
@@ -1547,8 +1623,8 @@ export class DocumentRoom {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       id,
       this.currentSeq,
-      toArrayBuffer(state),
-      toArrayBuffer(vector),
+      encodeStoredBytes(state),
+      encodeStoredBytes(vector),
       kind,
       createdBy,
       Date.now(),
@@ -1605,8 +1681,8 @@ export class DocumentRoom {
       `INSERT INTO snapshots(id, seq, state_blob, state_vector, kind, created_by, created_at)
        VALUES (?, 0, ?, ?, 'restore', ?, ?)`,
       snapshotId,
-      toArrayBuffer(state),
-      toArrayBuffer(stateVector),
+      encodeStoredBytes(state),
+      encodeStoredBytes(stateVector),
       request.headers.get('x-rdocs-actor-id'),
       Date.now(),
     );
