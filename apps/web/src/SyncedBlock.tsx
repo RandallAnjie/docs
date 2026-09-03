@@ -262,7 +262,7 @@ function SyncedBlockNodeView(props: NodeViewProps) {
     provider.on('status', ({ status }: { status: string }) => {
       httpTransport.setSocketLive(status === 'connected');
     });
-    httpTransport.setSocketLive(provider.wsconnected);
+    httpTransport.setSocketLive(true);
     void httpTransport.start();
     if (!disposed) setCollab({ document, provider, ticket: session.ticket });
     return () => {

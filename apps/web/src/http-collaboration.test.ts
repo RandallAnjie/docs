@@ -59,6 +59,7 @@ describe('HttpCollaborationTransport', () => {
       pollIntervalMs: 60_000,
     });
     await transport.start();
+    await transport.flushNow();
     expect(clientDocument.getText('default').toString()).toBe('server');
 
     clientDocument.getText('default').insert(6, '-client');
@@ -125,6 +126,7 @@ describe('HttpCollaborationTransport', () => {
       pollIntervalMs: 60_000,
     });
     await transport.start();
+    await transport.flushNow();
     clientDocument.getText('default').insert(0, 'a'.repeat(300 * 1024));
     await transport.flushNow();
 
@@ -165,6 +167,7 @@ describe('HttpCollaborationTransport', () => {
       pollIntervalMs: 60_000,
     });
     await transport.start();
+    await transport.flushNow();
     clientDocument.getText('default').insert(0, 'overflow');
     await transport.flushNow();
     expect(states).toContain('disconnected');
@@ -203,6 +206,7 @@ describe('HttpCollaborationTransport', () => {
       pollIntervalMs: 60_000,
     });
     await transport.start();
+    await transport.flushNow();
     clientDocument.getText('default').insert(0, 'retry-storm');
     await transport.flushNow();
     expect(states).toContain('disconnected');
@@ -237,6 +241,7 @@ describe('HttpCollaborationTransport', () => {
       pollIntervalMs: 60_000,
     });
     await transport.start();
+    await transport.flushNow();
     transport.setSocketLive(true);
     const calls = fetchMock.mock.calls.length;
     clientDocument.getText('default').insert(0, 'ws-owns-this');
@@ -273,6 +278,7 @@ describe('HttpCollaborationTransport', () => {
     });
 
     await transport.start();
+    await transport.flushNow();
     expect(states).toEqual(['rebased']);
     expect(fetch).toHaveBeenCalledTimes(1);
 
@@ -308,9 +314,34 @@ describe('HttpCollaborationTransport', () => {
     });
 
     await transport.start();
+    await transport.flushNow();
     await vi.waitFor(() => expect(states).toContain('synced'));
     expect(renewTicket).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(2);
+    transport.stop();
+    awareness.destroy();
+    clientDocument.destroy();
+  });
+
+  it('does not POST a full-document sync while the websocket handshake is live', async () => {
+    const fetchMock = vi.fn(async () => new Response('unused'));
+    vi.stubGlobal('fetch', fetchMock);
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'ticket',
+      renewTicket: async () => 'ticket',
+      onState: () => undefined,
+      pollIntervalMs: 60_000,
+    });
+    transport.setSocketLive(true);
+    await transport.start();
+    await transport.flushNow();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
+    expect(fetchMock).not.toHaveBeenCalled();
     transport.stop();
     awareness.destroy();
     clientDocument.destroy();

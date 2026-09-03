@@ -36,8 +36,13 @@ const MESSAGE_AWARENESS = 1;
 const SYNC_STEP_1 = 0;
 const SYNC_STEP_2 = 1;
 const SYNC_UPDATE = 2;
-const SNAPSHOT_UPDATE_COUNT = 100;
-const SNAPSHOT_BYTE_COUNT = 512 * 1024;
+export const SNAPSHOT_UPDATE_COUNT = 100;
+export const SNAPSHOT_BYTE_COUNT = 512 * 1024;
+export const RESTORE_UPDATE_BATCH = 40;
+
+export function restoredTailNeedsCompact(updateCount: number): boolean {
+  return updateCount > 0;
+}
 const HTTP_AWARENESS_TIMEOUT_MS = 10_000;
 const AUTOMATIC_REVISION_INTERVAL_MS = 15 * 60 * 1_000;
 const EDITING_SESSION_IDLE_MS = 30 * 60 * 1_000;
@@ -468,6 +473,7 @@ export class DocumentRoom {
   private currentSeq = 0;
   private updatesSinceSnapshot = 0;
   private bytesSinceSnapshot = 0;
+  private needsCompactAfterRestore = false;
   private editingEnabled = true;
   private readonly httpAwarenessSeenAt = new Map<number, number>();
   private readonly sockets = new Set<WebSocket>();
@@ -485,6 +491,16 @@ export class DocumentRoom {
       await this.initializeStorage();
       await this.restoreDocument();
     });
+    void this.ready.then(
+      () => {
+        if (!this.needsCompactAfterRestore) return;
+        this.enqueueMaintenance(async () => {
+          if (this.updatesSinceSnapshot === 0) return;
+          await this.createSnapshot('automatic');
+        });
+      },
+      () => undefined,
+    );
 
     this.awareness.on('update', ({ added, updated, removed }: AwarenessChange, origin: unknown) => {
       const changed = added.concat(updated, removed);
@@ -525,6 +541,9 @@ export class DocumentRoom {
   }
 
   private async restoreDocument(): Promise<void> {
+    this.needsCompactAfterRestore = false;
+    this.updatesSinceSnapshot = 0;
+    this.bytesSinceSnapshot = 0;
     try {
       const snapshots = (await this.state.storage.sql
         .exec('SELECT seq, state_blob FROM snapshots ORDER BY seq DESC LIMIT 1')
@@ -546,27 +565,43 @@ export class DocumentRoom {
         }
       }
 
-      const updates = (await this.state.storage.sql
-        .exec(
-          'SELECT seq, update_blob FROM updates WHERE seq > ? ORDER BY seq ASC',
-          this.currentSeq,
-        )
-        .toArray()) as unknown as UpdateRow[];
-      for (const update of updates) {
-        try {
-          Y.applyUpdate(this.document, decodeStoredBytes(update.update_blob), 'restore');
-          this.currentSeq = Number(update.seq);
-        } catch (reason) {
-          console.error(
-            JSON.stringify({
-              level: 'error',
-              event: 'document_update_restore_failed',
-              seq: update.seq,
-              message: reason instanceof Error ? reason.message : String(reason),
-            }),
-          );
+      let restoredUpdates = 0;
+      let restoredBytes = 0;
+      while (true) {
+        const fromSeq = this.currentSeq;
+        const updates = (await this.state.storage.sql
+          .exec(
+            'SELECT seq, update_blob FROM updates WHERE seq > ? ORDER BY seq ASC LIMIT ?',
+            this.currentSeq,
+            RESTORE_UPDATE_BATCH,
+          )
+          .toArray()) as unknown as UpdateRow[];
+        if (updates.length === 0) break;
+        for (const update of updates) {
+          const seq = Number(update.seq);
+          try {
+            const bytes = decodeStoredBytes(update.update_blob);
+            Y.applyUpdate(this.document, bytes, 'restore');
+            restoredUpdates += 1;
+            restoredBytes += bytes.byteLength;
+          } catch (reason) {
+            console.error(
+              JSON.stringify({
+                level: 'error',
+                event: 'document_update_restore_failed',
+                seq: update.seq,
+                message: reason instanceof Error ? reason.message : String(reason),
+              }),
+            );
+          }
+          if (Number.isFinite(seq)) this.currentSeq = seq;
         }
+        if (this.currentSeq <= fromSeq) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
+      this.updatesSinceSnapshot = restoredUpdates;
+      this.bytesSinceSnapshot = restoredBytes;
+      this.needsCompactAfterRestore = restoredTailNeedsCompact(restoredUpdates);
     } catch (reason) {
       console.error(
         JSON.stringify({
@@ -1643,7 +1678,29 @@ export class DocumentRoom {
     );
     this.updatesSinceSnapshot = 0;
     this.bytesSinceSnapshot = 0;
+    await this.pruneCompactedHistory(this.currentSeq, id);
     return { id, seq: this.currentSeq, state, stateVector: vector, contentHash };
+  }
+
+  private async pruneCompactedHistory(seq: number, keepSnapshotId: string): Promise<void> {
+    try {
+      await this.state.storage.sql.exec('DELETE FROM updates WHERE seq <= ?', seq);
+      await this.state.storage.sql.exec(
+        'DELETE FROM snapshots WHERE seq < ? OR (seq = ? AND id != ?)',
+        seq,
+        seq,
+        keepSnapshotId,
+      );
+    } catch (reason) {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'document_history_prune_failed',
+          seq,
+          message: reason instanceof Error ? reason.message : String(reason),
+        }),
+      );
+    }
   }
 
   private async initializeGeneration(request: Request): Promise<Response> {
