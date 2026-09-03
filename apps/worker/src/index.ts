@@ -4182,7 +4182,9 @@ async function openCollaborationSocket(
 
 async function handleApi(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
-  void processDueScheduledJobs(env).catch(() => undefined);
+  if (!url.pathname.includes('/collaboration-sync') && !url.pathname.includes('/collab-ticket')) {
+    void processDueScheduledJobs(env).catch(() => undefined);
+  }
 
   const enterprise = await handleEnterpriseProtocol(request, env);
   if (enterprise) return enterprise;
