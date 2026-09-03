@@ -4235,10 +4235,12 @@ export async function handleDatabasesApi(
     if (!isPageId(pageId)) return error('页面 ID 无效', 400);
     if (request.method === 'POST') return createDatabase(request, env, pageId, actor);
     if (request.method === 'GET') {
+      const pageAccess = await requirePageAction(env, pageId, actor.id, 'view');
+      if (!pageAccess) return error('页面不存在或无权访问', 404);
       const authorization = await authorizeDatabasePage(env, pageId, actor.id, 'view');
       return authorization
         ? json(await snapshot(env, authorization, actor.id))
-        : error('此页面不是数据库或无权访问', 404);
+        : json({ database: null });
     }
   }
 
