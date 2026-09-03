@@ -49,6 +49,22 @@ describe('AI markdown insertion', () => {
     ]);
   });
 
+  it('turns GFM tables into table nodes', () => {
+    const content = markdownToEditorContent(
+      ['| 城市 | 人口 |', '| --- | ---: |', '| 上海 | 2487 |'].join('\n'),
+    );
+    expect(content[0]?.type).toBe('table');
+    const headerRow = content[0]?.content?.[0];
+    const bodyRow = content[0]?.content?.[1];
+    expect(headerRow && 'content' in headerRow ? headerRow.content?.[0]?.type : null).toBe(
+      'tableHeader',
+    );
+    expect(bodyRow && 'content' in bodyRow ? bodyRow.content?.[1] : null).toMatchObject({
+      type: 'tableCell',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '2487' }] }],
+    });
+  });
+
   it('unwraps a whole-document markdown fence and keeps task items', () => {
     const content = markdownToEditorContent('```markdown\n- [x] 已完成\n- [ ] 待办\n```');
     expect(content).toEqual([

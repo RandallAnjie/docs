@@ -8,7 +8,7 @@ import type { NodeViewProps } from '@tiptap/react';
 import { EditorContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Copy, RefreshCw, RotateCcw, Trash2, Unlink } from 'lucide-react';
-import { useCallback, useEffect, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
@@ -28,6 +28,7 @@ import { attachmentEditorBlocks } from './AttachmentBlocks';
 import { confirmDialog, showToast } from './dialogs';
 import { ChunkingWebSocket } from './chunking-websocket';
 import { BlockGapParagraphs } from './editor-block-gaps';
+import { handleRdocsPaste } from './paste-content';
 import { EditorTableControls } from './EditorTableControls';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
@@ -79,6 +80,7 @@ function SyncedBlockEditor({
   onReady: (editor: Editor | null) => void;
   provider: WebsocketProvider;
 }) {
+  const editorRef = useRef<Editor | null>(null);
   const editor = useEditor(
     {
       editable,
@@ -103,11 +105,13 @@ function SyncedBlockEditor({
       editorProps: {
         attributes: { class: 'rdocs-synced-block-editor', spellcheck: 'true' },
         transformPastedHTML: (html) => unwrapPhrasingWrappedBlocks(html),
+        handlePaste: (view, event) => handleRdocsPaste(editorRef.current, view, event),
       },
     },
     [document, provider],
   );
 
+  editorRef.current = editor;
   useEffect(() => editor?.setEditable(editable), [editable, editor]);
   useEffect(() => {
     onReady(editor);
