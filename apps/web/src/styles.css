@@ -4007,6 +4007,10 @@ button.page-icon-display:hover {
 }
 .rdocs-drag-handle-portal {
   z-index: 110;
+  /* Extend the hit area toward the block so the pointer never leaves hover
+     while traveling from the node to the add / drag buttons. */
+  padding: 8px 24px 8px 8px;
+  margin: -8px -24px -8px -8px;
 }
 .rdocs-block-controls {
   position: relative;
