@@ -1900,6 +1900,25 @@ button {
   font-size: 8px;
   font-weight: 700;
 }
+.space-icon-field {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.space-icon-preview {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid #d9d5cd;
+  border-radius: 8px;
+  background: #fff;
+  color: #4f4b44;
+}
+.space-icon-preview svg {
+  display: block;
+}
 .space-settings-form input,
 .space-settings-form select {
   width: 100%;
@@ -6764,8 +6783,14 @@ button.page-icon-display:hover {
   background: #ebebea;
 }
 .notion-space-row > span {
+  display: grid;
+  place-items: center;
   color: #9b9a97;
-  font-size: 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+.notion-space-row > span svg {
+  display: block;
 }
 .notion-space-row strong {
   overflow: hidden;
@@ -6957,7 +6982,11 @@ button.page-icon-display:hover {
   border-radius: 7px;
   background: #f1f1ef;
   color: #787774;
-  font-size: 12px;
+  font-size: 16px;
+  line-height: 1;
+}
+.notion-teamspace-main > span svg {
+  display: block;
 }
 .notion-teamspace-main strong,
 .notion-teamspace-main small {

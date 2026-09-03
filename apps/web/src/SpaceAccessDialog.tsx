@@ -19,6 +19,7 @@ import {
   updateSpace,
 } from './api';
 import { confirmDialog } from './dialogs';
+import { SpaceIcon } from './space-icon';
 
 type Principal = { type: SpaceGrantPrincipalType; id: string };
 
@@ -229,12 +230,17 @@ export function SpaceAccessDialog({
           </label>
           <label>
             <span>图标</span>
-            <input
-              value={icon}
-              onChange={(event) => setIcon(event.target.value)}
-              maxLength={40}
-              placeholder="可选，例如 📚"
-            />
+            <span className="space-icon-field">
+              <span className="space-icon-preview">
+                <SpaceIcon icon={icon} size={16} />
+              </span>
+              <input
+                value={icon}
+                onChange={(event) => setIcon(event.target.value)}
+                maxLength={40}
+                placeholder="📚 或 book-open"
+              />
+            </span>
           </label>
           <label>
             <span>可见性</span>

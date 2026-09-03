@@ -173,6 +173,7 @@ import {
 } from './dialogs';
 import { ChunkingWebSocket } from './chunking-websocket';
 import { HttpCollaborationTransport } from './http-collaboration';
+import { SpaceIcon } from './space-icon';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
 import { blockAnchorFromHash, blockAnchorUrl, encodeRelativePosition } from './block-anchor';
 import { CommentsPanel } from './CommentsPanel';
@@ -1462,7 +1463,9 @@ function TenantHome({
               return (
                 <section className="notion-space-group" key={space.id}>
                   <div className="notion-space-row">
-                    <span>{space.icon || '◆'}</span>
+                    <span>
+                      <SpaceIcon icon={space.icon} size={14} />
+                    </span>
                     <strong>{space.name}</strong>
                     {canCreate ? (
                       <span className="notion-space-create-actions">
@@ -1589,7 +1592,9 @@ function TenantHome({
                           else void openNewPage(space);
                         }}
                       >
-                        <span>{space.icon || '◆'}</span>
+                        <span>
+                          <SpaceIcon icon={space.icon} size={18} />
+                        </span>
                         <div>
                           <strong>{space.name}</strong>
                           <small>
