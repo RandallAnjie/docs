@@ -688,6 +688,21 @@ describe('structured database integration', () => {
       .run(pageId, now);
     const env = testEnv(database);
 
+    const emptyDatabaseResponse = await handleDatabasesApi(
+      new Request(`https://docs.test/api/pages/${pageId}/database`),
+      env,
+      owner,
+    );
+    expect(emptyDatabaseResponse?.status).toBe(200);
+    await expect(emptyDatabaseResponse?.json()).resolves.toEqual({ database: null });
+
+    const missingPageDatabaseResponse = await handleDatabasesApi(
+      new Request('https://docs.test/api/pages/22222222-2222-4222-8222-222222222222/database'),
+      env,
+      owner,
+    );
+    expect(missingPageDatabaseResponse?.status).toBe(404);
+
     const createdResponse = await handleDatabasesApi(
       new Request(`https://docs.test/api/pages/${pageId}/database`, {
         method: 'POST',

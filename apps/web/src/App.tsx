@@ -2330,24 +2330,6 @@ function DocumentWorkspace({
     };
   }, [page.organizationId, renewTicket]);
 
-  useEffect(() => {
-    if (isSwitching || (database && database.database.pageId === page.id)) return;
-    let active = true;
-    void getPageDatabase(page.id)
-      .then(async (owned) => {
-        if (owned) return owned;
-        const linked = await getLinkedDatabase(page.id).catch(() => ({ databaseId: null }));
-        return linked.databaseId ? getDatabase(linked.databaseId).catch(() => null) : null;
-      })
-      .then((snapshot) => {
-        if (active && snapshot) setDatabase(snapshot);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [database, isSwitching, page.id]);
-
   useLayoutEffect(() => {
     const navigation = sidebarNavigation.current;
     const activeLink = navigation?.querySelector<HTMLElement>('a[aria-current="page"]');

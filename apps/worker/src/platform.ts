@@ -1846,8 +1846,17 @@ export function webManifest(): Response {
   );
 }
 
-export function serviceWorkerScript(): Response {
-  const script = `const CACHE='rdocs-shell-v3';
+export function serviceWorkerSource(): string {
+  return `const CACHE='rdocs-shell-v4';
+const isAppNavigation = (request) => {
+  if (request.method !== 'GET' || request.mode !== 'navigate') return false;
+  let url;
+  try { url = new URL(request.url); } catch { return false; }
+  if (url.origin !== self.location.origin) return false;
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/collab/') || url.pathname.startsWith('/scim/')) return false;
+  return true;
+};
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(['/'])));
   self.skipWaiting();
@@ -1858,31 +1867,21 @@ self.addEventListener('activate', (event) => {
   );
 });
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/collab/')) return;
-  if (url.pathname.startsWith('/assets/')) {
-    event.respondWith(
-      caches.open(CACHE).then((cache) =>
-        cache.match(event.request).then((cached) => {
-          if (cached) return cached;
-          return fetch(event.request).then((response) => {
-            if (response.ok) void cache.put(event.request, response.clone());
-            return response;
-          });
-        }),
-      ),
-    );
-    return;
-  }
+  if (!isAppNavigation(event.request)) return;
   event.respondWith(
     fetch(event.request).then((response) => {
-      const copy = response.clone();
-      void caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+      if (response.ok) {
+        const copy = response.clone();
+        void caches.open(CACHE).then((cache) => cache.put('/', copy).catch(() => undefined));
+      }
       return response;
-    }).catch(() => caches.match(event.request).then((cached) => cached || caches.match('/')))
+    }).catch(() => caches.match('/'))
   );
 });`;
-  return new Response(script, {
+}
+
+export function serviceWorkerScript(): Response {
+  return new Response(serviceWorkerSource(), {
     headers: {
       'content-type': 'application/javascript; charset=utf-8',
       'cache-control': 'no-cache',

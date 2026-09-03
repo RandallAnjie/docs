@@ -442,7 +442,8 @@ export async function getPageDatabase(pageId: string): Promise<DatabaseSnapshot 
     const responseBody = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(responseBody?.error ?? `数据库加载失败（${response.status}）`);
   }
-  return (await response.json()) as DatabaseSnapshot;
+  const payload = (await response.json()) as DatabaseSnapshot | { database: null };
+  return payload.database ? (payload as DatabaseSnapshot) : null;
 }
 
 export function createPageDatabase(
