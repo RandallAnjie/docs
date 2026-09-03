@@ -4117,7 +4117,14 @@ async function syncCollaborationOverHttp(
   });
   const responseHeaders = new Headers(response.headers);
   responseHeaders.set('cache-control', 'no-store');
-  return new Response(response.body, { status: response.status, headers: responseHeaders });
+  if (response.status < 500) {
+    return new Response(response.body, { status: response.status, headers: responseHeaders });
+  }
+  const text = await response.text();
+  if (text.includes('http_sync_field_too_large') || text.includes('Sync payload too large')) {
+    return error('同步内容过大', 413);
+  }
+  return new Response(text, { status: response.status, headers: responseHeaders });
 }
 
 async function openCollaborationSocket(

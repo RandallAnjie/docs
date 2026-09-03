@@ -3,11 +3,13 @@ import * as Y from 'yjs';
 
 import {
   collaborationRoleCanEdit,
+  decodeStoredBytes,
   documentDeletedSyncedBlockCount,
   documentContainsSyncedBlock,
   documentPageLinkIds,
   documentSyncedBlockIds,
   documentSyncedBlockResourceIds,
+  encodeStoredBytes,
   syncedBlockDeleteUpdate,
   syncedBlockRestoreUpdate,
   syncedBlockUnsyncUpdate,
@@ -242,5 +244,20 @@ describe('page link projection', () => {
       'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     ]);
     document.destroy();
+  });
+});
+
+describe('durable object blob encoding', () => {
+  it('round-trips binary updates as JSON-safe base64', () => {
+    const bytes = new Uint8Array([0, 1, 2, 255, 10, 13, 0]);
+    const encoded = encodeStoredBytes(bytes);
+    expect(JSON.parse(JSON.stringify({ blob: encoded })).blob).toBe(encoded);
+    expect([...decodeStoredBytes(encoded)]).toEqual([...bytes]);
+    expect(JSON.stringify({ blob: bytes.buffer })).toBe('{"blob":{}}');
+  });
+
+  it('rejects non-base64 SQL text as invalid_stored_blob', () => {
+    expect(() => decodeStoredBytes('{}')).toThrow('invalid_stored_blob');
+    expect(() => decodeStoredBytes(null)).toThrow('invalid_stored_blob');
   });
 });
