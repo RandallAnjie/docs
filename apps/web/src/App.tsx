@@ -246,6 +246,7 @@ import {
 import { removeAttachmentNodes, topLevelBlocks } from './editor-block-operations';
 import { PageAiComposer, type EditorAiRequest } from './EditorAi';
 import { markdownToEditorContent } from './ai-markdown';
+import { handleRdocsPaste } from './paste-content';
 
 type ConnectionState = 'connecting' | 'connected' | 'synced' | 'disconnected' | 'error';
 
@@ -4166,13 +4167,10 @@ function CollaborativeEditor({
         void uploadFilesRef.current(files);
         return true;
       },
-      handlePaste: (view, event) => {
-        const files = filesFromDataTransfer(event.clipboardData);
-        if (!files.length || !view.editable) return false;
-        event.preventDefault();
-        void uploadFilesRef.current(files);
-        return true;
-      },
+      handlePaste: (view, event) =>
+        handleRdocsPaste(editorInstance.current, view, event, (files) => {
+          void uploadFilesRef.current(files);
+        }),
       handleClick: (_view, _pos, event) => {
         const target = event.target as HTMLElement | null;
         const link = target?.closest('a[href]') as HTMLAnchorElement | null;
