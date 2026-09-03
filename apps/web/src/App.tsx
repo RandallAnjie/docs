@@ -172,6 +172,7 @@ import {
   showToast,
 } from './dialogs';
 import { ChunkingWebSocket } from './chunking-websocket';
+import { BlockGapParagraphs } from './editor-block-gaps';
 import { EditorTableControls } from './EditorTableControls';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { SpaceIcon } from './space-icon';
@@ -4053,6 +4054,7 @@ function CollaborativeEditor({
         undoRedo: false,
         link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
       }),
+      BlockGapParagraphs,
       TaskList,
       TaskItem.configure({ nested: true }),
       TableKit.configure({ table: { resizable: true } }),

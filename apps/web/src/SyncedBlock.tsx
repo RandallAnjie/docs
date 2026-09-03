@@ -27,6 +27,7 @@ import {
 import { attachmentEditorBlocks } from './AttachmentBlocks';
 import { confirmDialog, showToast } from './dialogs';
 import { ChunkingWebSocket } from './chunking-websocket';
+import { BlockGapParagraphs } from './editor-block-gaps';
 import { EditorTableControls } from './EditorTableControls';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
@@ -86,6 +87,7 @@ function SyncedBlockEditor({
           undoRedo: false,
           link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
         }),
+        BlockGapParagraphs,
         Image.configure({ allowBase64: false }),
         TaskList,
         TaskItem.configure({ nested: true }),
