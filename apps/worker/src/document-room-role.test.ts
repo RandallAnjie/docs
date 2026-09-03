@@ -53,6 +53,23 @@ describe('collaboration update deduplication', () => {
     client.destroy();
     server.destroy();
   });
+
+  it('does not clone a large document to accept a new insert', () => {
+    const server = new Y.Doc();
+    server.getText('default').insert(0, 'a'.repeat(200 * 1024));
+    const client = new Y.Doc();
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(server));
+    let insert: Uint8Array = new Uint8Array();
+    client.once('update', (update) => {
+      insert = update;
+    });
+    client.getText('default').insert(200 * 1024, 'tail');
+    expect(yjsUpdateChangesDocument(server, insert)).toBe(true);
+    Y.applyUpdate(server, insert);
+    expect(yjsUpdateChangesDocument(server, insert)).toBe(false);
+    client.destroy();
+    server.destroy();
+  });
 });
 
 describe('synced block reference projection', () => {

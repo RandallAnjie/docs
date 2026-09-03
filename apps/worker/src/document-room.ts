@@ -9,11 +9,22 @@ import {
 import * as Y from 'yjs';
 
 import {
+  ChunkAssembler,
   decodeHttpSyncRequest,
   encodeHttpSyncResponse,
-  MAX_COLLAB_FRAME_BYTES,
+  encodeWsChunkFrames,
+  HTTP_SYNC_CHUNK_COUNT_HEADER,
+  HTTP_SYNC_CHUNK_ID_HEADER,
+  HTTP_SYNC_CHUNK_INDEX_HEADER,
+  HTTP_SYNC_CHUNK_PROTOCOL,
+  HTTP_SYNC_FIELD_TOO_LARGE,
+  HTTP_SYNC_PROTOCOL_HEADER,
+  inspectWsFrame,
+  MAX_COLLAB_CHUNK_BYTES,
+  MAX_COLLAB_UPDATE_BYTES,
   MAX_HTTP_SYNC_BODY_BYTES,
   MAX_REVISION_SNAPSHOT_BYTES,
+  MAX_UNCHUNKED_HTTP_SYNC_BYTES,
 } from '@rdocs/shared';
 
 import type { Env } from './env';
@@ -50,7 +61,7 @@ interface SocketAttachment {
 interface SnapshotRow {
   id?: string;
   seq: number;
-  state_blob: string;
+  state_blob: string | Uint8Array | ArrayBuffer;
 }
 
 interface SnapshotArtifact {
@@ -63,7 +74,7 @@ interface SnapshotArtifact {
 
 interface UpdateRow {
   seq: number;
-  update_blob: string;
+  update_blob: string | Uint8Array | ArrayBuffer;
 }
 
 interface AwarenessChange {
@@ -86,19 +97,25 @@ interface SearchPageRow extends RevisionPageRow {
   title: string;
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
-}
-
 function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;
+}
+
+function decodeStoredBytes(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (typeof value === 'string') return base64ToBytes(value);
+  throw new Error('invalid_stored_blob');
+}
+
+function createChunkAssembler(): ChunkAssembler {
+  return new ChunkAssembler(MAX_COLLAB_UPDATE_BYTES, MAX_COLLAB_CHUNK_BYTES, 8, 30_000);
 }
 
 function syncMessage(subtype: number, payload: Uint8Array): Uint8Array {
@@ -160,6 +177,9 @@ export function yjsUpdateChangesDocument(document: Y.Doc, update: Uint8Array): b
   if (decoded.ds.clients.size === 0) return false;
 
   const before = Y.encodeStateAsUpdate(document);
+  // Cloning a large document just to detect a no-op delete set is more expensive
+  // than persisting the rare no-op, and it is what wedged isolate CPU on big pastes.
+  if (before.byteLength > 128 * 1024) return true;
   const candidate = new Y.Doc();
   try {
     Y.applyUpdate(candidate, before);
@@ -429,7 +449,10 @@ export class DocumentRoom {
   private readonly httpAwarenessSeenAt = new Map<number, number>();
   private readonly sockets = new Set<WebSocket>();
   private readonly attachments = new WeakMap<WebSocket, SocketAttachment>();
+  private readonly wsChunks = new WeakMap<WebSocket, ChunkAssembler>();
+  private readonly httpChunks = createChunkAssembler();
   private messageQueue: Promise<void> = Promise.resolve();
+  private maintenanceQueue: Promise<void> = Promise.resolve();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -483,7 +506,7 @@ export class DocumentRoom {
       .toArray()) as unknown as SnapshotRow[];
     const snapshot = snapshots[0];
     if (snapshot) {
-      Y.applyUpdate(this.document, base64ToBytes(snapshot.state_blob), 'restore');
+      Y.applyUpdate(this.document, decodeStoredBytes(snapshot.state_blob), 'restore');
       this.currentSeq = Number(snapshot.seq);
     }
 
@@ -491,7 +514,7 @@ export class DocumentRoom {
       .exec('SELECT seq, update_blob FROM updates WHERE seq > ? ORDER BY seq ASC', this.currentSeq)
       .toArray()) as unknown as UpdateRow[];
     for (const update of updates) {
-      Y.applyUpdate(this.document, base64ToBytes(update.update_blob), 'restore');
+      Y.applyUpdate(this.document, decodeStoredBytes(update.update_blob), 'restore');
       this.currentSeq = Number(update.seq);
     }
   }
@@ -671,10 +694,13 @@ export class DocumentRoom {
       this.webSocketError(server);
     });
 
-    server.send(syncMessage(SYNC_STEP_1, Y.encodeStateVector(this.document)));
+    this.sendSocket(server, syncMessage(SYNC_STEP_1, Y.encodeStateVector(this.document)));
     const currentClients = [...this.awareness.getStates().keys()];
     if (currentClients.length > 0) {
-      server.send(awarenessMessage(encodeAwarenessUpdate(this.awareness, currentClients)));
+      this.sendSocket(
+        server,
+        awarenessMessage(encodeAwarenessUpdate(this.awareness, currentClients)),
+      );
     }
 
     return new Response(null, { status: 101, webSocket: client });
@@ -685,17 +711,26 @@ export class DocumentRoom {
       return new Response('Collaboration is disabled', { status: 403 });
     }
 
-    const body = new Uint8Array(await request.arrayBuffer());
+    const assembled = await this.readHttpSyncBody(request);
+    if (assembled instanceof Response) return assembled;
+    const body = assembled;
     if (body.byteLength > MAX_HTTP_SYNC_BODY_BYTES) {
       return new Response('Sync request too large', { status: 413 });
     }
     let decodedRequest: ReturnType<typeof decodeHttpSyncRequest>;
     try {
       decodedRequest = decodeHttpSyncRequest(body);
-    } catch {
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '';
+      if (message === HTTP_SYNC_FIELD_TOO_LARGE) {
+        return new Response('Sync request too large', { status: 413 });
+      }
       return new Response('Invalid sync request', { status: 400 });
     }
     const { clientStateVector, clientUpdate, awarenessUpdate } = decodedRequest;
+    if (clientUpdate.byteLength > MAX_COLLAB_UPDATE_BYTES) {
+      return new Response('Sync request too large', { status: 413 });
+    }
     const role = collaborationRoleCanEdit(request.headers.get('x-rdocs-role'))
       ? 'editor'
       : 'viewer';
@@ -716,22 +751,11 @@ export class DocumentRoom {
       const generation = Number(request.headers.get('x-rdocs-generation'));
       const resourceKind =
         request.headers.get('x-rdocs-resource-kind') === 'synced_block' ? 'synced_block' : 'page';
-      if (resourceKind === 'page') await this.beforeDocumentChange(pageId, generation, actorId);
-      await this.persistUpdate(clientUpdate, actorId);
-      Y.applyUpdate(this.document, clientUpdate, 'http-sync');
-      this.broadcast(syncMessage(SYNC_UPDATE, clientUpdate));
-      if (resourceKind === 'page') {
-        await this.enforceSyncedBlockDeletionFences(pageId, actorId);
-      }
-      await this.maybeCreateSnapshot();
-      if (resourceKind === 'page') {
-        await this.afterDocumentChange(pageId, generation, actorId);
-        await this.maybeUpdateSearchProjection(pageId, generation);
-        await this.maybeUpdateSyncedBlockReferences(pageId);
-        await this.maybeUpdatePageLinks(pageId);
-      } else {
-        await this.recordSyncedBlockChange(pageId, generation, actorId);
-      }
+      await this.commitDocumentUpdate(clientUpdate, actorId, 'http-sync', {
+        pageId,
+        generation,
+        resourceKind,
+      });
     }
 
     if (awarenessUpdate.byteLength > 0) {
@@ -767,14 +791,23 @@ export class DocumentRoom {
     }
 
     const currentClients = [...this.awareness.getStates().keys()];
-    const response = encodeHttpSyncResponse({
-      serverUpdate: Y.encodeStateAsUpdate(this.document, clientStateVector),
-      serverStateVector: Y.encodeStateVector(this.document),
-      awarenessUpdate:
-        currentClients.length > 0
-          ? encodeAwarenessUpdate(this.awareness, currentClients)
-          : new Uint8Array(),
-    });
+    let response: Uint8Array;
+    try {
+      response = encodeHttpSyncResponse({
+        serverUpdate: Y.encodeStateAsUpdate(this.document, clientStateVector),
+        serverStateVector: Y.encodeStateVector(this.document),
+        awarenessUpdate:
+          currentClients.length > 0
+            ? encodeAwarenessUpdate(this.awareness, currentClients)
+            : new Uint8Array(),
+      });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '';
+      if (message === HTTP_SYNC_FIELD_TOO_LARGE) {
+        return new Response('Sync payload too large', { status: 413 });
+      }
+      throw reason;
+    }
     return new Response(toArrayBuffer(response), {
       headers: {
         'content-type': 'application/octet-stream',
@@ -782,6 +815,42 @@ export class DocumentRoom {
         'x-rdocs-sync-seq': String(this.currentSeq),
       },
     });
+  }
+
+  private async readHttpSyncBody(request: Request): Promise<Uint8Array | Response> {
+    const raw = new Uint8Array(await request.arrayBuffer());
+    const protocol = request.headers.get(HTTP_SYNC_PROTOCOL_HEADER);
+    if (protocol !== HTTP_SYNC_CHUNK_PROTOCOL) {
+      if (raw.byteLength > MAX_UNCHUNKED_HTTP_SYNC_BYTES) {
+        return new Response('Sync request too large', { status: 413 });
+      }
+      return raw;
+    }
+    if (raw.byteLength > MAX_COLLAB_CHUNK_BYTES) {
+      return new Response('Sync chunk too large', { status: 413 });
+    }
+    const id = request.headers.get(HTTP_SYNC_CHUNK_ID_HEADER) ?? '';
+    const index = Number(request.headers.get(HTTP_SYNC_CHUNK_INDEX_HEADER));
+    const count = Number(request.headers.get(HTTP_SYNC_CHUNK_COUNT_HEADER));
+    if (!id || !Number.isInteger(index) || !Number.isInteger(count)) {
+      return new Response('Invalid sync chunk', { status: 400 });
+    }
+    const result = this.httpChunks.push(id, index, count, raw);
+    if (result.status === 'error') {
+      const status =
+        result.error === 'assembled_too_large' || result.error === 'chunk_too_large' ? 413 : 400;
+      return new Response(result.error, { status });
+    }
+    if (result.status === 'pending') {
+      return new Response(null, {
+        status: 202,
+        headers: {
+          'x-rdocs-chunk-received': String(result.received),
+          'x-rdocs-chunk-count': String(result.count),
+        },
+      });
+    }
+    return result.payload;
   }
 
   private async unsyncSyncedBlock(request: Request): Promise<Response> {
@@ -873,12 +942,19 @@ export class DocumentRoom {
 
   async webSocketMessage(socket: WebSocket, rawMessage: unknown): Promise<void> {
     await this.ready;
-    const message = await normalizeBinaryMessage(rawMessage);
-    if (!message) return;
-    if (message.byteLength > MAX_COLLAB_FRAME_BYTES) {
+    const incoming = await normalizeBinaryMessage(rawMessage);
+    if (!incoming) return;
+    const assembled = this.assembleWebSocketFrame(socket, incoming);
+    if (assembled === 'pending') return;
+    if (assembled === 'invalid') {
+      socket.close(4400, 'invalid_chunk');
+      return;
+    }
+    if (assembled.byteLength > MAX_COLLAB_UPDATE_BYTES) {
       socket.close(4409, 'frame_too_large');
       return;
     }
+    const message = assembled;
 
     try {
       const decoder = decoding.createDecoder(message);
@@ -914,11 +990,38 @@ export class DocumentRoom {
     }
   }
 
+  private assembleWebSocketFrame(
+    socket: WebSocket,
+    incoming: Uint8Array,
+  ): Uint8Array | 'pending' | 'invalid' {
+    const inspected = inspectWsFrame(incoming);
+    if (inspected.kind === 'plain') return incoming;
+    if (inspected.kind === 'invalid') return 'invalid';
+    if (incoming.byteLength > MAX_COLLAB_CHUNK_BYTES + 32) return 'invalid';
+    let assembler = this.wsChunks.get(socket);
+    if (!assembler) {
+      assembler = createChunkAssembler();
+      this.wsChunks.set(socket, assembler);
+    }
+    const result = assembler.push(
+      inspected.id,
+      inspected.index,
+      inspected.count,
+      inspected.payload,
+    );
+    if (result.status === 'error') return 'invalid';
+    if (result.status === 'pending') return 'pending';
+    return result.payload;
+  }
+
   private async handleSyncMessage(socket: WebSocket, decoder: decoding.Decoder): Promise<void> {
     const subtype = decoding.readVarUint(decoder);
     if (subtype === SYNC_STEP_1) {
       const stateVector = decoding.readVarUint8Array(decoder);
-      socket.send(syncMessage(SYNC_STEP_2, Y.encodeStateAsUpdate(this.document, stateVector)));
+      this.sendSocket(
+        socket,
+        syncMessage(SYNC_STEP_2, Y.encodeStateAsUpdate(this.document, stateVector)),
+      );
       return;
     }
 
@@ -930,34 +1033,53 @@ export class DocumentRoom {
     }
 
     const update = decoding.readVarUint8Array(decoder);
-    if (update.byteLength > MAX_COLLAB_FRAME_BYTES) {
+    if (update.byteLength > MAX_COLLAB_UPDATE_BYTES) {
       socket.close(4409, 'update_too_large');
       return;
     }
-    if (!yjsUpdateChangesDocument(this.document, update)) return;
+    await this.commitDocumentUpdate(update, attachment.actorId, socket, {
+      pageId: attachment.pageId,
+      generation: attachment.generation,
+      resourceKind: attachment.resourceKind,
+    });
+  }
 
-    if (attachment.resourceKind === 'page') {
-      await this.beforeDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
-    }
-    await this.persistUpdate(update, attachment.actorId);
-    Y.applyUpdate(this.document, update, socket);
-    this.broadcast(syncMessage(SYNC_UPDATE, update), socket);
-    if (attachment.resourceKind === 'page') {
-      await this.enforceSyncedBlockDeletionFences(attachment.pageId, attachment.actorId);
-    }
-    await this.maybeCreateSnapshot();
-    if (attachment.resourceKind === 'page') {
-      await this.afterDocumentChange(attachment.pageId, attachment.generation, attachment.actorId);
-      await this.maybeUpdateSearchProjection(attachment.pageId, attachment.generation);
-      await this.maybeUpdateSyncedBlockReferences(attachment.pageId);
-      await this.maybeUpdatePageLinks(attachment.pageId);
-    } else {
-      await this.recordSyncedBlockChange(
-        attachment.pageId,
-        attachment.generation,
-        attachment.actorId,
-      );
-    }
+  private enqueueMaintenance(task: () => Promise<void>): void {
+    this.maintenanceQueue = this.maintenanceQueue.then(task, task);
+    this.state.waitUntil(this.maintenanceQueue);
+  }
+
+  private async commitDocumentUpdate(
+    update: Uint8Array,
+    actorId: string,
+    origin: unknown,
+    pageMeta: {
+      pageId: string;
+      generation: number;
+      resourceKind: 'page' | 'synced_block';
+    },
+  ): Promise<boolean> {
+    if (!yjsUpdateChangesDocument(this.document, update)) return false;
+    await this.persistUpdate(update, actorId);
+    Y.applyUpdate(this.document, update, origin);
+    this.broadcast(
+      syncMessage(SYNC_UPDATE, update),
+      origin instanceof WebSocket ? origin : undefined,
+    );
+    this.enqueueMaintenance(async () => {
+      if (pageMeta.resourceKind === 'page') {
+        await this.beforeDocumentChange(pageMeta.pageId, pageMeta.generation, actorId);
+        await this.enforceSyncedBlockDeletionFences(pageMeta.pageId, actorId);
+        await this.afterDocumentChange(pageMeta.pageId, pageMeta.generation, actorId);
+        await this.maybeUpdateSearchProjection(pageMeta.pageId, pageMeta.generation);
+        await this.maybeUpdateSyncedBlockReferences(pageMeta.pageId);
+        await this.maybeUpdatePageLinks(pageMeta.pageId);
+      } else {
+        await this.recordSyncedBlockChange(pageMeta.pageId, pageMeta.generation, actorId);
+      }
+      await this.maybeCreateSnapshot();
+    });
+    return true;
   }
 
   private async persistUpdate(update: Uint8Array, actorId: string): Promise<void> {
@@ -968,7 +1090,7 @@ export class DocumentRoom {
       nextSeq,
       crypto.randomUUID(),
       actorId,
-      bytesToBase64(update),
+      toArrayBuffer(update),
       update.byteLength,
       Date.now(),
     );
@@ -1425,8 +1547,8 @@ export class DocumentRoom {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       id,
       this.currentSeq,
-      bytesToBase64(state),
-      bytesToBase64(vector),
+      toArrayBuffer(state),
+      toArrayBuffer(vector),
       kind,
       createdBy,
       Date.now(),
@@ -1457,7 +1579,7 @@ export class DocumentRoom {
       .toArray()) as unknown as SnapshotRow[];
     const existing = existingSnapshots[0];
     if (existing) {
-      const existingState = base64ToBytes(existing.state_blob);
+      const existingState = decodeStoredBytes(existing.state_blob);
       if ((await sha256Hex(existingState)) !== contentHash) {
         return new Response('Generation already initialized', { status: 409 });
       }
@@ -1483,8 +1605,8 @@ export class DocumentRoom {
       `INSERT INTO snapshots(id, seq, state_blob, state_vector, kind, created_by, created_at)
        VALUES (?, 0, ?, ?, 'restore', ?, ?)`,
       snapshotId,
-      bytesToBase64(state),
-      bytesToBase64(stateVector),
+      toArrayBuffer(state),
+      toArrayBuffer(stateVector),
       request.headers.get('x-rdocs-actor-id'),
       Date.now(),
     );
@@ -1520,14 +1642,20 @@ export class DocumentRoom {
     this.attachments.set(socket, attachment);
   }
 
+  private sendSocket(socket: WebSocket, message: Uint8Array): void {
+    try {
+      for (const frame of encodeWsChunkFrames(message)) {
+        socket.send(frame);
+      }
+    } catch {
+      // Runtime will deliver a close/error callback if the socket is stale.
+    }
+  }
+
   private broadcast(message: Uint8Array, except?: WebSocket): void {
     for (const socket of this.sockets) {
       if (socket === except) continue;
-      try {
-        socket.send(message);
-      } catch {
-        // Runtime will deliver a close/error callback if the socket is stale.
-      }
+      this.sendSocket(socket, message);
     }
   }
 

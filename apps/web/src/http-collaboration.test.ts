@@ -2,7 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Awareness } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 
-import { decodeHttpSyncRequest, encodeHttpSyncResponse, type HttpSyncRequest } from '@rdocs/shared';
+import {
+  ChunkAssembler,
+  decodeHttpSyncRequest,
+  encodeHttpSyncResponse,
+  HTTP_SYNC_CHUNK_COUNT_HEADER,
+  HTTP_SYNC_CHUNK_ID_HEADER,
+  HTTP_SYNC_CHUNK_INDEX_HEADER,
+  HTTP_SYNC_CHUNK_PROTOCOL,
+  HTTP_SYNC_PROTOCOL_HEADER,
+  type HttpSyncRequest,
+} from '@rdocs/shared';
 
 import { HttpCollaborationTransport } from './http-collaboration';
 
@@ -61,6 +71,102 @@ describe('HttpCollaborationTransport', () => {
     awareness.destroy();
     clientDocument.destroy();
     serverDocument.destroy();
+  });
+
+  it('chunks a several-hundred-kilobyte paste across multiple HTTP requests', async () => {
+    const serverDocument = new Y.Doc();
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    const assembler = new ChunkAssembler();
+    const chunkedCalls: number[] = [];
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const headers = new Headers(init.headers);
+        const raw = new Uint8Array(init.body as ArrayBuffer);
+        let payload: Uint8Array = raw;
+        if (headers.get(HTTP_SYNC_PROTOCOL_HEADER) === HTTP_SYNC_CHUNK_PROTOCOL) {
+          chunkedCalls.push(raw.byteLength);
+          const result = assembler.push(
+            headers.get(HTTP_SYNC_CHUNK_ID_HEADER) ?? '',
+            Number(headers.get(HTTP_SYNC_CHUNK_INDEX_HEADER)),
+            Number(headers.get(HTTP_SYNC_CHUNK_COUNT_HEADER)),
+            raw,
+          );
+          if (result.status === 'pending') return new Response(null, { status: 202 });
+          if (result.status === 'error') return new Response(result.error, { status: 400 });
+          payload = result.payload;
+        }
+        const request = decodeHttpSyncRequest(payload);
+        Y.applyUpdate(serverDocument, request.clientUpdate);
+        const response = encodeHttpSyncResponse({
+          serverUpdate: Y.encodeStateAsUpdate(serverDocument, request.clientStateVector),
+          serverStateVector: Y.encodeStateVector(serverDocument),
+          awarenessUpdate: new Uint8Array(),
+        });
+        return new Response(toArrayBuffer(response));
+      }),
+    );
+
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'ticket',
+      renewTicket: async () => 'renewed-ticket',
+      onState: () => undefined,
+      pollIntervalMs: 60_000,
+    });
+    await transport.start();
+    clientDocument.getText('default').insert(0, 'a'.repeat(300 * 1024));
+    await transport.flushNow();
+
+    expect(serverDocument.getText('default').toString().length).toBe(300 * 1024);
+    expect(chunkedCalls.length).toBeGreaterThan(1);
+    expect(Math.max(...chunkedCalls)).toBeLessThanOrEqual(64 * 1024);
+    transport.stop();
+    awareness.destroy();
+    clientDocument.destroy();
+    serverDocument.destroy();
+  });
+
+  it('does not immediately retry a 413 payload', async () => {
+    const emptyDocument = new Y.Doc();
+    const empty = encodeHttpSyncResponse({
+      serverUpdate: new Uint8Array(),
+      serverStateVector: Y.encodeStateVector(emptyDocument),
+      awarenessUpdate: new Uint8Array(),
+    });
+    emptyDocument.destroy();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(toArrayBuffer(empty)))
+      .mockResolvedValue(new Response('too large', { status: 413 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const clientDocument = new Y.Doc();
+    const awareness = new Awareness(clientDocument);
+    const states: string[] = [];
+    const transport = new HttpCollaborationTransport({
+      pageId: '6863a1ea-2cc1-4a74-9019-8449a04d2246',
+      document: clientDocument,
+      awareness,
+      ticket: 'ticket',
+      renewTicket: async () => 'ticket',
+      onState: (state) => states.push(state),
+      pollIntervalMs: 60_000,
+    });
+    await transport.start();
+    clientDocument.getText('default').insert(0, 'overflow');
+    await transport.flushNow();
+    expect(states).toContain('disconnected');
+    const calls = fetchMock.mock.calls.length;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    transport.stop();
+    awareness.destroy();
+    clientDocument.destroy();
   });
 
   it('reports a restored generation without retrying the old room', async () => {

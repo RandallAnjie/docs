@@ -1,3 +1,5 @@
+import { markdownToFlowHtml } from '@rdocs/shared';
+
 function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
@@ -150,21 +152,16 @@ export async function unzipEntries(
   return files;
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
 export function markdownToHtmlDocument(title: string, markdown: string): string {
-  const escaped = markdown.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const body = escaped
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/^\- (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
-    .replace(/\n{2,}/g, '</p><p>')
-    .replace(/\n/g, '<br />');
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" /><title>${title.replace(/</g, '')}</title>
+  const body = markdownToFlowHtml(markdown);
+  const safeTitle = escapeHtml(title);
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" /><title>${safeTitle}</title>
 <style>body{font:16px/1.6 system-ui,sans-serif;max-width:720px;margin:40px auto;color:#222}code{background:#f4f2ed;padding:1px 4px}</style>
-</head><body><p>${body}</p></body></html>`;
+</head><body>${body}</body></html>`;
 }
 
 export function simplePdf(title: string, text: string): Uint8Array {

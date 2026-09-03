@@ -101,16 +101,17 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import * as Y from 'yjs';
 import './sites.css';
 
-import type {
-  AuthSessionResponse,
-  AuthUserSummary,
-  AttachmentSummary,
-  DatabaseSnapshot,
-  OrganizationSummary,
-  PageSummary,
-  SiteSummary,
-  SpaceSummary,
-  SpaceVisibility,
+import {
+  unwrapPhrasingWrappedBlocks,
+  type AuthSessionResponse,
+  type AuthUserSummary,
+  type AttachmentSummary,
+  type DatabaseSnapshot,
+  type OrganizationSummary,
+  type PageSummary,
+  type SiteSummary,
+  type SpaceSummary,
+  type SpaceVisibility,
 } from '@rdocs/shared';
 
 import {
@@ -170,6 +171,7 @@ import {
   promptDialog,
   showToast,
 } from './dialogs';
+import { ChunkingWebSocket } from './chunking-websocket';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
 import { blockAnchorFromHash, blockAnchorUrl, encodeRelativePosition } from './block-anchor';
@@ -2412,6 +2414,7 @@ function DocumentWorkspace({
       {
         params: { ticket },
         maxBackoffTime: 2_000,
+        WebSocketPolyfill: ChunkingWebSocket as unknown as typeof WebSocket,
       },
     );
 
@@ -4127,6 +4130,7 @@ function CollaborativeEditor({
         class: 'rdocs-editor',
         spellcheck: 'true',
       },
+      transformPastedHTML: (html) => unwrapPhrasingWrappedBlocks(html),
       handleKeyDown: (_view, event) => {
         const slash = slashKeyRef.current;
         if (!slash.isOpen) return false;

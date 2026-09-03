@@ -13,7 +13,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
-import type { SyncedBlockReferenceSummary } from '@rdocs/shared';
+import { unwrapPhrasingWrappedBlocks, type SyncedBlockReferenceSummary } from '@rdocs/shared';
 
 import {
   deleteAllSyncedBlock,
@@ -26,6 +26,7 @@ import {
 } from './api';
 import { attachmentEditorBlocks } from './AttachmentBlocks';
 import { confirmDialog, showToast } from './dialogs';
+import { ChunkingWebSocket } from './chunking-websocket';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
 import { contentForSyncedEditor, draggingNodeJson, filesFromDataTransfer } from './page-upload';
@@ -98,6 +99,7 @@ function SyncedBlockEditor({
       ],
       editorProps: {
         attributes: { class: 'rdocs-synced-block-editor', spellcheck: 'true' },
+        transformPastedHTML: (html) => unwrapPhrasingWrappedBlocks(html),
       },
     },
     [document, provider],
@@ -198,7 +200,11 @@ function SyncedBlockNodeView(props: NodeViewProps) {
       `${protocol}//${window.location.host}/collab`,
       blockId,
       document,
-      { params: { ticket: session.ticket }, maxBackoffTime: 2_000 },
+      {
+        params: { ticket: session.ticket },
+        maxBackoffTime: 2_000,
+        WebSocketPolyfill: ChunkingWebSocket as unknown as typeof WebSocket,
+      },
     );
     provider.awareness.setLocalStateField('user', {
       id: identityId,

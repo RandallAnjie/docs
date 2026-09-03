@@ -36,4 +36,24 @@ describe('HTTP collaboration sync protocol', () => {
       'http_sync_trailing_bytes',
     );
   });
+
+  it('round trips a several-hundred-kilobyte document update', () => {
+    const clientUpdate = new Uint8Array(300 * 1024).map((_, index) => index % 251);
+    const encoded = encodeHttpSyncRequest({
+      clientStateVector: new Uint8Array([1, 2, 3]),
+      clientUpdate,
+      awarenessUpdate: new Uint8Array(),
+    });
+    expect(decodeHttpSyncRequest(encoded).clientUpdate).toEqual(clientUpdate);
+  });
+
+  it('rejects a field larger than the assembled update ceiling', () => {
+    expect(() =>
+      encodeHttpSyncRequest({
+        clientStateVector: new Uint8Array(),
+        clientUpdate: new Uint8Array(8 * 1024 * 1024 + 1),
+        awarenessUpdate: new Uint8Array(),
+      }),
+    ).toThrow('http_sync_field_too_large');
+  });
 });
