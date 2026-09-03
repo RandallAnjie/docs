@@ -487,10 +487,11 @@ export class DocumentRoom {
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
-    this.ready = state.blockConcurrencyWhile(async () => {
-      await this.initializeStorage();
-      await this.restoreDocument();
-    });
+    this.ready = state
+      .blockConcurrencyWhile(async () => {
+        await this.initializeStorage();
+      })
+      .then(() => this.restoreDocument());
     void this.ready.then(
       () => {
         if (!this.needsCompactAfterRestore) return;
@@ -629,6 +630,9 @@ export class DocumentRoom {
   }
 
   private async handleFetch(request: Request): Promise<Response> {
+    if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      return this.acceptCollaborationSocket(request);
+    }
     await this.ready;
     const url = new URL(request.url);
 
@@ -750,10 +754,10 @@ export class DocumentRoom {
       return task;
     }
 
-    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
-      return new Response('WebSocket upgrade required', { status: 426 });
-    }
+    return new Response('WebSocket upgrade required', { status: 426 });
+  }
 
+  private acceptCollaborationSocket(request: Request): Response {
     if (request.headers.get('x-rdocs-editing-enabled') !== '1') {
       return new Response('Collaboration is disabled', { status: 403 });
     }
@@ -783,7 +787,11 @@ export class DocumentRoom {
     this.attachments.set(server, attachment);
     server.addEventListener('message', (event) => {
       this.messageQueue = this.messageQueue
-        .then(() => this.webSocketMessage(server, event.data))
+        .then(async () => {
+          await this.ready;
+          if (!this.sockets.has(server)) return;
+          await this.webSocketMessage(server, event.data);
+        })
         .catch((reason) => {
           console.error(
             JSON.stringify({
@@ -802,14 +810,25 @@ export class DocumentRoom {
       this.webSocketError(server);
     });
 
-    this.sendSocket(server, syncMessage(SYNC_STEP_1, Y.encodeStateVector(this.document)));
-    const currentClients = [...this.awareness.getStates().keys()];
-    if (currentClients.length > 0) {
-      this.sendSocket(
-        server,
-        awarenessMessage(encodeAwarenessUpdate(this.awareness, currentClients)),
-      );
-    }
+    void this.ready.then(
+      () => {
+        if (!this.sockets.has(server)) return;
+        this.sendSocket(server, syncMessage(SYNC_STEP_1, Y.encodeStateVector(this.document)));
+        const currentClients = [...this.awareness.getStates().keys()];
+        if (currentClients.length === 0) return;
+        this.sendSocket(
+          server,
+          awarenessMessage(encodeAwarenessUpdate(this.awareness, currentClients)),
+        );
+      },
+      () => {
+        try {
+          server.close(1011, 'restore_failed');
+        } catch {
+          // Socket already closed.
+        }
+      },
+    );
 
     return new Response(null, { status: 101, webSocket: client });
   }
