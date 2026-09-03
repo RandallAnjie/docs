@@ -1,13 +1,14 @@
 import { Check, Clipboard, Link2, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import type { ShareLinkSummary } from '@rdocs/shared';
+import type { ShareLinkRole, ShareLinkSummary } from '@rdocs/shared';
 
 import { createShareLink, listShareLinks, revokeShareLink } from './api';
 
 export function ShareLinkSettings({ pageId }: { pageId: string }) {
   const [links, setLinks] = useState<ShareLinkSummary[]>([]);
   const [days, setDays] = useState('7');
+  const [role, setRole] = useState<ShareLinkRole>('viewer');
   const [newUrl, setNewUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -32,7 +33,7 @@ export function ShareLinkSettings({ pageId }: { pageId: string }) {
     setError(null);
     try {
       const result = await createShareLink(pageId, {
-        role: 'viewer',
+        role,
         expiresInDays: days === 'never' ? null : Number(days),
       });
       setLinks((current) => [result.link, ...current]);
@@ -71,14 +72,22 @@ export function ShareLinkSettings({ pageId }: { pageId: string }) {
         <div>
           <Link2 size={16} />
           <span>
-            <strong>外部查看链接</strong>
-            <small>无需登录，可随时撤销</small>
+            <strong>公开分享链接</strong>
+            <small>无需登录，可随时撤销；可编辑链接能改正文和标题</small>
           </span>
         </div>
         <b>{activeLinks.length}</b>
       </header>
       <div className="share-link-create">
-        <select value={days} onChange={(event) => setDays(event.target.value)}>
+        <select
+          value={role}
+          aria-label="分享权限"
+          onChange={(event) => setRole(event.target.value as ShareLinkRole)}
+        >
+          <option value="viewer">任何人可查看</option>
+          <option value="editor">任何人可编辑</option>
+        </select>
+        <select value={days} aria-label="有效期" onChange={(event) => setDays(event.target.value)}>
           <option value="7">7 天有效</option>
           <option value="30">30 天有效</option>
           <option value="90">90 天有效</option>
@@ -111,7 +120,7 @@ export function ShareLinkSettings({ pageId }: { pageId: string }) {
                 <Link2 size={14} />
               </span>
               <div>
-                <strong>只读链接</strong>
+                <strong>{link.role === 'editor' ? '可编辑链接' : '只读链接'}</strong>
                 <small>
                   {link.expiresAt
                     ? `${new Date(link.expiresAt).toLocaleString()} 过期`

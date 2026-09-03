@@ -849,12 +849,15 @@ function PublishedSite({ siteSlug, pageSlug }: { siteSlug: string; pageSlug: str
 }
 
 function SharedPage({ token }: { token: string }) {
-  const identity = useMemo(
-    () => ({ id: `share-${token.slice(0, 8)}`, name: '外部只读', color: '#6d7f73' }),
-    [token],
-  );
   const [shared, setShared] = useState<Awaited<ReturnType<typeof getPublicShare>> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const identity = useMemo(
+    () =>
+      shared?.share.role === 'editor'
+        ? { id: `share-${token.slice(0, 8)}`, name: '外部访客', color: '#3d6b8a' }
+        : { id: `share-${token.slice(0, 8)}`, name: '外部只读', color: '#6d7f73' },
+    [shared?.share.role, token],
+  );
 
   const renewTicket = useCallback(async () => (await getPublicShare(token)).ticket, [token]);
 
@@ -2164,9 +2167,12 @@ function DocumentWorkspace({
     () => pageBreadcrumbItems(headerPage.id, pages),
     [headerPage.id, pages],
   );
-  const canEditStructure = page.role === 'space_admin' || page.role === 'editor';
+  const isPublicShare = Boolean(publicShareToken);
+  const canEditStructure =
+    !isPublicShare && (page.role === 'space_admin' || page.role === 'editor');
   const canManagePage = page.role === 'space_admin';
-  const canEdit = canEditStructure && !page.isLocked && !isSwitching;
+  const canEdit =
+    (page.role === 'space_admin' || page.role === 'editor') && !page.isLocked && !isSwitching;
   const createSyncedBlockResource = useCallback(
     async (snapshot?: Uint8Array) => {
       const result = await createSyncedBlock(page.id, snapshot);
@@ -2517,7 +2523,9 @@ function DocumentWorkspace({
       while (normalizedPageTitle(latestTitle.current) !== savedTitle.current) {
         const candidate = normalizedPageTitle(latestTitle.current);
         try {
-          const { page: updated } = await updatePageTitle(page.id, candidate);
+          const { page: updated } = await updatePageTitle(page.id, candidate, {
+            shareToken: publicShareToken,
+          });
           savedTitle.current = updated.title;
           setPage(updated);
           setPages((current) =>
@@ -2534,7 +2542,7 @@ function DocumentWorkspace({
     } finally {
       titleSaveRunning.current = false;
     }
-  }, [page.id]);
+  }, [page.id, publicShareToken]);
 
   const queueTitleSave = (nextTitle: string) => {
     latestTitle.current = nextTitle;
@@ -2546,7 +2554,10 @@ function DocumentWorkspace({
     const persistBeforeExit = () => {
       const candidate = normalizedPageTitle(latestTitle.current);
       if (candidate !== savedTitle.current) {
-        void updatePageTitle(page.id, candidate, { keepalive: true });
+        void updatePageTitle(page.id, candidate, {
+          keepalive: true,
+          shareToken: publicShareToken,
+        });
       }
     };
 
@@ -2556,7 +2567,7 @@ function DocumentWorkspace({
       window.clearTimeout(titleTimer.current);
       persistBeforeExit();
     };
-  }, [page.id]);
+  }, [page.id, publicShareToken]);
 
   flushTitleRef.current = flushTitle;
   flushDocumentRef.current = flushDocument;
@@ -2817,12 +2828,17 @@ function DocumentWorkspace({
         }
         setPageUpload({ name: file.name, percent: 0 });
         try {
-          const result = await uploadAttachment(page.id, file, (uploaded, total) => {
-            setPageUpload({
-              name: file.name,
-              percent: total ? Math.round((uploaded / total) * 100) : 0,
-            });
-          });
+          const result = await uploadAttachment(
+            page.id,
+            file,
+            (uploaded, total) => {
+              setPageUpload({
+                name: file.name,
+                percent: total ? Math.round((uploaded / total) * 100) : 0,
+              });
+            },
+            { shareToken: publicShareToken },
+          );
           if (editor?.isEditable) insertAttachments(editor, [result.attachment]);
         } catch (reason) {
           showToast(reason instanceof Error ? reason.message : '附件上传失败');
@@ -2830,7 +2846,7 @@ function DocumentWorkspace({
       }
       setPageUpload(null);
     },
-    [page.id],
+    [page.id, publicShareToken],
   );
 
   return (
