@@ -5135,6 +5135,73 @@ button.page-icon-display:hover {
   background: #c85436;
   pointer-events: none;
 }
+.rdocs-table-toolbar {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid #e6e2da;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow:
+    0 10px 28px #24211c24,
+    0 1px 2px #24211c10;
+  white-space: nowrap;
+}
+.rdocs-table-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 8px;
+  color: #6f6b63;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rdocs-table-toolbar button:hover {
+  background: #f3f0ea;
+  color: #272621;
+}
+.rdocs-table-toolbar button.danger {
+  color: #9c4937;
+  padding: 0 7px;
+}
+.rdocs-table-toolbar button.danger:hover {
+  background: #f8eee9;
+  color: #c85436;
+}
+.rdocs-table-add-row,
+.rdocs-table-add-col {
+  position: fixed;
+  z-index: 69;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 1px dashed #d8d3ca;
+  border-radius: 8px;
+  background: #fff;
+  color: #8a857c;
+  cursor: pointer;
+}
+.rdocs-table-add-row {
+  height: 22px;
+}
+.rdocs-table-add-col {
+  width: 22px;
+}
+.rdocs-table-add-row:hover,
+.rdocs-table-add-col:hover {
+  border-color: #c85436;
+  background: #f8eee9;
+  color: #c85436;
+}
 .rdocs-editor p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
 }

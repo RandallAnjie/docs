@@ -27,6 +27,7 @@ import {
 import { attachmentEditorBlocks } from './AttachmentBlocks';
 import { confirmDialog, showToast } from './dialogs';
 import { ChunkingWebSocket } from './chunking-websocket';
+import { EditorTableControls } from './EditorTableControls';
 import { HttpCollaborationTransport } from './http-collaboration';
 import type { LocalIdentity } from './identity';
 import { contentForSyncedEditor, draggingNodeJson, filesFromDataTransfer } from './page-upload';
@@ -88,7 +89,7 @@ function SyncedBlockEditor({
         Image.configure({ allowBase64: false }),
         TaskList,
         TaskItem.configure({ nested: true }),
-        TableKit,
+        TableKit.configure({ table: { resizable: true } }),
         ...attachmentEditorBlocks,
         Collaboration.configure({ document }),
         CollaborationCaret.configure({
@@ -110,7 +111,12 @@ function SyncedBlockEditor({
     onReady(editor);
     return () => onReady(null);
   }, [editor, onReady]);
-  return editor ? <EditorContent editor={editor} /> : null;
+  return editor ? (
+    <>
+      <EditorContent editor={editor} />
+      {editable ? <EditorTableControls editor={editor} /> : null}
+    </>
+  ) : null;
 }
 
 function SyncedBlockNodeView(props: NodeViewProps) {
