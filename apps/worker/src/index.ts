@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import { webAssets, webHtml } from './generated-web-assets';
+import { documentContentSecurityPolicy } from './security-headers';
 
 import {
   ATTACHMENT_PART_BYTES,
@@ -4767,27 +4768,10 @@ function htmlResponse(
   html = webHtml,
   options: { embeddable?: boolean; analytics?: boolean } = {},
 ): Response {
-  const scriptSources = ["'self'", "'unsafe-inline'"];
-  const connectSources = ["'self'", 'ws:', 'wss:'];
-  if (options.analytics) {
-    scriptSources.push('https://www.googletagmanager.com');
-    connectSources.push('https://www.google-analytics.com', 'https://region1.google-analytics.com');
-  }
   const headers = new Headers({
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-cache',
-    'content-security-policy': [
-      "default-src 'self'",
-      `script-src ${scriptSources.join(' ')}`,
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-      "font-src 'self' data: https://fonts.gstatic.com",
-      "img-src 'self' data: blob: https://www.google-analytics.com",
-      `connect-src ${connectSources.join(' ')}`,
-      'frame-src https://www.youtube-nocookie.com https://www.figma.com https://www.loom.com https://codepen.io https://codesandbox.io',
-      "object-src 'none'",
-      "base-uri 'self'",
-      `frame-ancestors ${options.embeddable ? '*' : "'none'"}`,
-    ].join('; '),
+    'content-security-policy': documentContentSecurityPolicy(options),
     'referrer-policy': 'strict-origin-when-cross-origin',
     'x-content-type-options': 'nosniff',
     'permissions-policy': 'publickey-credentials-create=(self), publickey-credentials-get=(self)',
