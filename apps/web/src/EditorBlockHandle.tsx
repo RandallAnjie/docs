@@ -29,6 +29,47 @@ import { lastTableCellPos } from './EditorTableControls';
 import { moveTopLevelBlock, topLevelBlocks, type BlockDirection } from './editor-block-operations';
 
 const DRAG_POSITION = { placement: 'left-start', strategy: 'fixed' } as const;
+const HANDLE_KEEP_HIDE_MS = 160;
+const HANDLE_KEEP_PAD = 16;
+const HANDLE_NODE_EDGE = 48;
+
+export type HandleKeepBox = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+function boxContains(box: HandleKeepBox, x: number, y: number, pad = 0): boolean {
+  return x >= box.left - pad && x <= box.right + pad && y >= box.top - pad && y <= box.bottom + pad;
+}
+
+/** Keep the handle while the pointer travels the gutter between the block and the handle. */
+export function pointerInBlockHandleKeepZone(
+  x: number,
+  y: number,
+  handle: HandleKeepBox,
+  node: HandleKeepBox | null,
+  options?: { pad?: number; nodeEdge?: number },
+): boolean {
+  const pad = options?.pad ?? HANDLE_KEEP_PAD;
+  const nodeEdge = options?.nodeEdge ?? HANDLE_NODE_EDGE;
+  if (boxContains(handle, x, y, pad)) return true;
+  if (!node) return false;
+  const corridor: HandleKeepBox = {
+    left: Math.min(handle.left, node.left) - pad,
+    right: Math.max(handle.right, node.left + nodeEdge) + pad,
+    top: Math.min(handle.top, node.top) - pad,
+    bottom: Math.max(handle.bottom, node.bottom) + pad,
+  };
+  return boxContains(corridor, x, y);
+}
+
+function blockHandleNodeDom(editor: Editor, position: number): HTMLElement | null {
+  const dom = editor.view.nodeDOM(position);
+  if (!(dom instanceof HTMLElement)) return null;
+  return dom.closest('.tableWrapper') ?? dom;
+}
 
 type BlockTransform =
   | 'blockquote'
@@ -150,14 +191,28 @@ export function EditorBlockHandle({
   const [targetPosition, setTargetPosition] = useState(-1);
   const [targetNodeName, setTargetNodeName] = useState('');
   const [busy, setBusy] = useState(false);
+  const menuOpenRef = useRef(false);
+  const keepLockedRef = useRef(false);
+  menuOpenRef.current = menuOpen;
 
   const handleNodeChange = useCallback(
     ({ node, pos }: { node: ProseMirrorNode | null; pos: number }) => {
-      if (menuOpen) return;
+      if (menuOpenRef.current) return;
       setTargetPosition(node ? pos : -1);
       setTargetNodeName(node?.type.name ?? '');
     },
-    [menuOpen],
+    [],
+  );
+
+  const syncHandleLock = useCallback(
+    (keepLocked: boolean) => {
+      keepLockedRef.current = keepLocked;
+      if (editor.isDestroyed) return;
+      editor.view.dispatch(
+        editor.state.tr.setMeta('lockDragHandle', menuOpenRef.current || keepLocked),
+      );
+    },
+    [editor],
   );
 
   useEffect(() => {
@@ -177,8 +232,83 @@ export function EditorBlockHandle({
   }, [menuOpen]);
 
   useEffect(() => {
-    editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', menuOpen));
-  }, [editor, menuOpen]);
+    syncHandleLock(keepLockedRef.current);
+  }, [menuOpen, syncHandleLock]);
+
+  useEffect(() => {
+    if (targetPosition < 0) return;
+    const editorDom = editor.view.dom;
+    let hideTimer = 0;
+
+    const handleEl = () =>
+      (controls.current?.closest('.rdocs-drag-handle-portal') as HTMLElement | null) ??
+      controls.current;
+
+    const inKeepZone = (x: number, y: number) => {
+      const handle = handleEl();
+      if (!handle) return false;
+      const node = blockHandleNodeDom(editor, targetPosition);
+      return pointerInBlockHandleKeepZone(
+        x,
+        y,
+        handle.getBoundingClientRect(),
+        node?.getBoundingClientRect() ?? null,
+      );
+    };
+
+    const overNode = (x: number, y: number) => {
+      const node = blockHandleNodeDom(editor, targetPosition);
+      return node ? boxContains(node.getBoundingClientRect(), x, y, HANDLE_KEEP_PAD) : false;
+    };
+
+    const hideHandle = () => {
+      window.clearTimeout(hideTimer);
+      hideTimer = 0;
+      if (menuOpenRef.current) return;
+      syncHandleLock(false);
+      if (!editor.isDestroyed) {
+        editor.view.dispatch(editor.state.tr.setMeta('hideDragHandle', true));
+      }
+    };
+
+    const onMove = (event: PointerEvent) => {
+      if (menuOpenRef.current) return;
+      if (inKeepZone(event.clientX, event.clientY)) {
+        window.clearTimeout(hideTimer);
+        hideTimer = 0;
+        if (!keepLockedRef.current) syncHandleLock(true);
+        return;
+      }
+      if (overNode(event.clientX, event.clientY)) {
+        window.clearTimeout(hideTimer);
+        hideTimer = 0;
+        if (keepLockedRef.current) syncHandleLock(false);
+        return;
+      }
+      if (!keepLockedRef.current) return;
+      window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(hideHandle, HANDLE_KEEP_HIDE_MS);
+    };
+
+    const onEditorLeave = (event: MouseEvent) => {
+      if (menuOpenRef.current) return;
+      const handle = handleEl();
+      const related = event.relatedTarget;
+      if (handle && related instanceof Node && handle.contains(related)) {
+        syncHandleLock(true);
+        return;
+      }
+      if (inKeepZone(event.clientX, event.clientY)) syncHandleLock(true);
+    };
+
+    document.addEventListener('pointermove', onMove);
+    editorDom.addEventListener('mouseleave', onEditorLeave, true);
+    return () => {
+      window.clearTimeout(hideTimer);
+      document.removeEventListener('pointermove', onMove);
+      editorDom.removeEventListener('mouseleave', onEditorLeave, true);
+    };
+  }, [editor, syncHandleLock, targetPosition]);
 
   useEffect(() => {
     return () => {
@@ -198,6 +328,7 @@ export function EditorBlockHandle({
   const transformable = Boolean(targetNode && TRANSFORMABLE_BLOCKS.has(targetNode.type.name));
 
   const insertParagraph = (position: number) => {
+    syncHandleLock(false);
     editor
       .chain()
       .focus()
@@ -284,7 +415,14 @@ export function EditorBlockHandle({
       onNodeChange={handleNodeChange}
       onElementDragStart={() => setMenuOpen(false)}
     >
-      <div className="rdocs-block-controls" ref={controls}>
+      <div
+        className="rdocs-block-controls"
+        ref={controls}
+        onPointerEnter={() => syncHandleLock(true)}
+        onPointerLeave={() => {
+          if (!menuOpenRef.current) syncHandleLock(false);
+        }}
+      >
         {!movement.up ? (
           <button
             type="button"
@@ -293,6 +431,7 @@ export function EditorBlockHandle({
             aria-label="在上方插入内容块"
             disabled={targetPosition < 0}
             draggable={false}
+            onMouseDown={(event) => event.preventDefault()}
             onDragStart={(event) => event.preventDefault()}
             onClick={insertAbove}
           >
@@ -306,6 +445,7 @@ export function EditorBlockHandle({
           aria-label="在下方插入内容块"
           disabled={targetPosition < 0}
           draggable={false}
+          onMouseDown={(event) => event.preventDefault()}
           onDragStart={(event) => event.preventDefault()}
           onClick={insertBelow}
         >
@@ -323,8 +463,9 @@ export function EditorBlockHandle({
           draggable={false}
           onPointerDown={(event) => {
             event.stopPropagation();
-            editor.view.dispatch(editor.state.tr.setMeta('lockDragHandle', true));
+            syncHandleLock(true);
           }}
+          onMouseDown={(event) => event.preventDefault()}
           onDragStart={(event) => event.preventDefault()}
           onClick={() => setMenuOpen((current) => !current)}
         >

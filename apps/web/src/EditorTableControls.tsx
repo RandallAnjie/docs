@@ -4,7 +4,11 @@ import { BetweenHorizontalEnd, BetweenVerticalEnd, Plus, Trash2 } from 'lucide-r
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-const ADD_HOVER_HIDE_MS = 160;
+const ADD_HOVER_HIDE_MS = 200;
+const TABLE_CHROME_SELECTOR = '.rdocs-table-toolbar, .rdocs-table-add-row, .rdocs-table-add-col';
+
+export type TableToolbarCommand =
+  'addRowAfter' | 'addColumnAfter' | 'deleteRow' | 'deleteColumn' | 'deleteTable';
 
 export function tableWrapperElement(editor: Editor): HTMLElement | null {
   const { state, view } = editor;
@@ -53,27 +57,47 @@ function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
 }
 
+function runTableCommand(editor: Editor, command: TableToolbarCommand, pos?: number): void {
+  const chain =
+    pos === undefined ? editor.chain().focus() : editor.chain().focus().setTextSelection(pos);
+  switch (command) {
+    case 'addRowAfter':
+      chain.addRowAfter().run();
+      break;
+    case 'addColumnAfter':
+      chain.addColumnAfter().run();
+      break;
+    case 'deleteRow':
+      chain.deleteRow().run();
+      break;
+    case 'deleteColumn':
+      chain.deleteColumn().run();
+      break;
+    case 'deleteTable':
+      chain.deleteTable().run();
+      break;
+    default:
+      break;
+  }
+}
+
 function runAtLastTableCell(
   editor: Editor,
   table: { pos: number; node: ProseMirrorNode },
-  command: 'addRowAfter' | 'addColumnAfter',
+  command: TableToolbarCommand,
 ): void {
   const pos = lastTableCellPos(table.pos, table.node);
   if (pos === null) return;
-  const chain = editor.chain().focus().setTextSelection(pos);
-  if (command === 'addRowAfter') chain.addRowAfter().run();
-  else chain.addColumnAfter().run();
+  runTableCommand(editor, command, pos);
 }
 
-function isAddControl(target: EventTarget | null): boolean {
-  return (
-    target instanceof Element &&
-    Boolean(target.closest('.rdocs-table-add-row, .rdocs-table-add-col'))
-  );
+export function isTableChrome(target: EventTarget | null): boolean {
+  if (!target || typeof (target as Element).closest !== 'function') return false;
+  return Boolean((target as Element).closest(TABLE_CHROME_SELECTOR));
 }
 
 export function EditorTableControls({ editor }: { editor: Editor }) {
-  const [toolbarRect, setToolbarRect] = useState<DOMRect | null>(null);
+  const [focusedRect, setFocusedRect] = useState<DOMRect | null>(null);
   const [hoverWrapper, setHoverWrapper] = useState<HTMLElement | null>(null);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const hoverRef = useRef<HTMLElement | null>(null);
@@ -81,28 +105,28 @@ export function EditorTableControls({ editor }: { editor: Editor }) {
 
   useEffect(() => {
     let frame = 0;
-    const updateToolbar = () => {
+    const updateFocused = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         if (!editor.isEditable || editor.isDestroyed || !editor.isActive('table')) {
-          setToolbarRect((current) => (current ? null : current));
+          setFocusedRect((current) => (current ? null : current));
           return;
         }
         const next = tableWrapperElement(editor)?.getBoundingClientRect() ?? null;
-        setToolbarRect((current) => (sameRect(current, next) ? current : next));
+        setFocusedRect((current) => (sameRect(current, next) ? current : next));
       });
     };
-    updateToolbar();
-    editor.on('selectionUpdate', updateToolbar);
-    editor.on('transaction', updateToolbar);
-    window.addEventListener('scroll', updateToolbar, true);
-    window.addEventListener('resize', updateToolbar);
+    updateFocused();
+    editor.on('selectionUpdate', updateFocused);
+    editor.on('transaction', updateFocused);
+    window.addEventListener('scroll', updateFocused, true);
+    window.addEventListener('resize', updateFocused);
     return () => {
       cancelAnimationFrame(frame);
-      editor.off('selectionUpdate', updateToolbar);
-      editor.off('transaction', updateToolbar);
-      window.removeEventListener('scroll', updateToolbar, true);
-      window.removeEventListener('resize', updateToolbar);
+      editor.off('selectionUpdate', updateFocused);
+      editor.off('transaction', updateFocused);
+      window.removeEventListener('scroll', updateFocused, true);
+      window.removeEventListener('resize', updateFocused);
     };
   }, [editor]);
 
@@ -135,7 +159,7 @@ export function EditorTableControls({ editor }: { editor: Editor }) {
       if (wrapper instanceof HTMLElement && root.contains(wrapper)) showWrapper(wrapper);
     };
     const onOut = (event: PointerEvent) => {
-      if (isAddControl(event.relatedTarget)) return;
+      if (isTableChrome(event.relatedTarget)) return;
       const related = event.relatedTarget;
       if (related instanceof Element && related.closest('.tableWrapper') === hoverRef.current) {
         return;
@@ -157,24 +181,48 @@ export function EditorTableControls({ editor }: { editor: Editor }) {
       const next = hoverWrapper.getBoundingClientRect();
       setHoverRect((current) => (sameRect(current, next) ? current : next));
     };
+    update();
     hoverWrapper.addEventListener('scroll', update);
     window.addEventListener('scroll', update, true);
     window.addEventListener('resize', update);
+    editor.on('transaction', update);
     return () => {
       hoverWrapper.removeEventListener('scroll', update);
       window.removeEventListener('scroll', update, true);
       window.removeEventListener('resize', update);
+      editor.off('transaction', update);
     };
-  }, [hoverWrapper]);
+  }, [editor, hoverWrapper]);
 
   const coarsePointer = typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches;
-  const addRect = hoverRect ?? (coarsePointer ? toolbarRect : null);
-  const addWrapper = hoverWrapper ?? (coarsePointer ? tableWrapperElement(editor) : null);
+  const tableRect = hoverRect ?? (coarsePointer ? focusedRect : null);
+  const tableWrapper = hoverWrapper ?? (coarsePointer ? tableWrapperElement(editor) : null);
 
-  if ((!toolbarRect && !addRect) || typeof document === 'undefined') return null;
+  if (!tableRect || typeof document === 'undefined') return null;
+
+  const keepVisible = () => window.clearTimeout(hideTimer.current);
+  const leaveChrome = () => {
+    hideTimer.current = window.setTimeout(() => {
+      hoverRef.current = null;
+      setHoverWrapper(null);
+      setHoverRect(null);
+    }, ADD_HOVER_HIDE_MS);
+  };
+
+  const runOnTable = (command: TableToolbarCommand) => {
+    const wrapper = tableWrapper;
+    if (!wrapper) return;
+    const selected = tableWrapperElement(editor);
+    if (selected === wrapper && editor.isActive('table')) {
+      runTableCommand(editor, command);
+      return;
+    }
+    const table = tableFromWrapper(editor, wrapper);
+    if (table) runAtLastTableCell(editor, table, command);
+  };
 
   const addAtEdge = (command: 'addRowAfter' | 'addColumnAfter') => {
-    const wrapper = addWrapper;
+    const wrapper = tableWrapper;
     if (!wrapper) return;
     const table = tableFromWrapper(editor, wrapper);
     if (table) runAtLastTableCell(editor, table, command);
@@ -182,103 +230,83 @@ export function EditorTableControls({ editor }: { editor: Editor }) {
 
   return createPortal(
     <>
-      {toolbarRect ? (
-        <div
-          className="rdocs-table-toolbar"
-          role="toolbar"
-          aria-label="表格"
-          style={{ left: Math.max(8, toolbarRect.left), top: Math.max(8, toolbarRect.top - 44) }}
-          onMouseDown={(event) => event.preventDefault()}
+      <div
+        className="rdocs-table-toolbar"
+        role="toolbar"
+        aria-label="表格"
+        style={{ left: Math.max(8, tableRect.left), top: Math.max(8, tableRect.top - 44) }}
+        onMouseDown={(event) => event.preventDefault()}
+        onPointerEnter={keepVisible}
+        onPointerLeave={leaveChrome}
+      >
+        <button
+          type="button"
+          title="在下方插入行"
+          aria-label="在下方插入行"
+          onClick={() => runOnTable('addRowAfter')}
         >
-          <button
-            type="button"
-            title="在下方插入行"
-            aria-label="在下方插入行"
-            onClick={() => editor.chain().focus().addRowAfter().run()}
-          >
-            <BetweenHorizontalEnd size={14} /> 插入行
-          </button>
-          <button
-            type="button"
-            title="在右侧插入列"
-            aria-label="在右侧插入列"
-            onClick={() => editor.chain().focus().addColumnAfter().run()}
-          >
-            <BetweenVerticalEnd size={14} /> 插入列
-          </button>
-          <button
-            type="button"
-            title="删除当前行"
-            aria-label="删除当前行"
-            onClick={() => editor.chain().focus().deleteRow().run()}
-          >
-            删除行
-          </button>
-          <button
-            type="button"
-            title="删除当前列"
-            aria-label="删除当前列"
-            onClick={() => editor.chain().focus().deleteColumn().run()}
-          >
-            删除列
-          </button>
-          <button
-            type="button"
-            className="danger"
-            title="删除整张表格"
-            aria-label="删除整张表格"
-            onClick={() => editor.chain().focus().deleteTable().run()}
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
-      ) : null}
-      {addRect ? (
-        <>
-          <button
-            type="button"
-            className="rdocs-table-add-col"
-            style={{ left: addRect.right + 6, top: addRect.top, height: addRect.height }}
-            title="在表尾插入列"
-            aria-label="在表尾插入列"
-            onMouseDown={(event) => event.preventDefault()}
-            onPointerEnter={() => {
-              window.clearTimeout(hideTimer.current);
-            }}
-            onPointerLeave={() => {
-              hideTimer.current = window.setTimeout(() => {
-                hoverRef.current = null;
-                setHoverWrapper(null);
-                setHoverRect(null);
-              }, ADD_HOVER_HIDE_MS);
-            }}
-            onClick={() => addAtEdge('addColumnAfter')}
-          >
-            <Plus size={14} />
-          </button>
-          <button
-            type="button"
-            className="rdocs-table-add-row"
-            style={{ left: addRect.left, top: addRect.bottom + 6, width: addRect.width }}
-            title="在表尾插入行"
-            aria-label="在表尾插入行"
-            onMouseDown={(event) => event.preventDefault()}
-            onPointerEnter={() => {
-              window.clearTimeout(hideTimer.current);
-            }}
-            onPointerLeave={() => {
-              hideTimer.current = window.setTimeout(() => {
-                hoverRef.current = null;
-                setHoverWrapper(null);
-                setHoverRect(null);
-              }, ADD_HOVER_HIDE_MS);
-            }}
-            onClick={() => addAtEdge('addRowAfter')}
-          >
-            <Plus size={14} />
-          </button>
-        </>
-      ) : null}
+          <BetweenHorizontalEnd size={14} /> 插入行
+        </button>
+        <button
+          type="button"
+          title="在右侧插入列"
+          aria-label="在右侧插入列"
+          onClick={() => runOnTable('addColumnAfter')}
+        >
+          <BetweenVerticalEnd size={14} /> 插入列
+        </button>
+        <button
+          type="button"
+          title="删除当前行"
+          aria-label="删除当前行"
+          onClick={() => runOnTable('deleteRow')}
+        >
+          删除行
+        </button>
+        <button
+          type="button"
+          title="删除当前列"
+          aria-label="删除当前列"
+          onClick={() => runOnTable('deleteColumn')}
+        >
+          删除列
+        </button>
+        <button
+          type="button"
+          className="danger"
+          title="删除整张表格"
+          aria-label="删除整张表格"
+          onClick={() => runOnTable('deleteTable')}
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+      <button
+        type="button"
+        className="rdocs-table-add-col"
+        style={{ left: tableRect.right + 6, top: tableRect.top, height: tableRect.height }}
+        title="在表尾插入列"
+        aria-label="在表尾插入列"
+        onMouseDown={(event) => event.preventDefault()}
+        onPointerEnter={keepVisible}
+        onPointerLeave={leaveChrome}
+        onClick={() => addAtEdge('addColumnAfter')}
+      >
+        <Plus size={14} />
+      </button>
+      <button
+        type="button"
+        className="rdocs-table-add-row"
+        style={{ left: tableRect.left, top: tableRect.bottom + 6, width: tableRect.width }}
+        title="在表尾插入行"
+        aria-label="在表尾插入行"
+        onMouseDown={(event) => event.preventDefault()}
+        onPointerEnter={keepVisible}
+        onPointerLeave={leaveChrome}
+        onClick={() => addAtEdge('addRowAfter')}
+      >
+        <Plus size={14} />
+      </button>
     </>,
     document.body,
   );

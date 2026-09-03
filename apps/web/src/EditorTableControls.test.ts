@@ -3,7 +3,12 @@ import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
 import { describe, expect, it } from 'vitest';
 
-import { lastTableCellPos, tableFromWrapper, tableWrapperElement } from './EditorTableControls';
+import {
+  isTableChrome,
+  lastTableCellPos,
+  tableFromWrapper,
+  tableWrapperElement,
+} from './EditorTableControls';
 
 const schema = getSchema([StarterKit, TableKit]);
 
@@ -80,6 +85,26 @@ describe('tableFromWrapper', () => {
       },
     };
     expect(tableFromWrapper(editor as never, { querySelector: () => null } as never)).toBeNull();
+  });
+});
+
+describe('isTableChrome', () => {
+  it('treats the hover toolbar and plus bars as table chrome', () => {
+    const chrome = (className: string) =>
+      ({
+        closest: (selector: string) =>
+          selector
+            .split(',')
+            .map((part) => part.trim())
+            .includes(`.${className}`)
+            ? {}
+            : null,
+      }) as unknown as EventTarget;
+    expect(isTableChrome(chrome('rdocs-table-toolbar'))).toBe(true);
+    expect(isTableChrome(chrome('rdocs-table-add-row'))).toBe(true);
+    expect(isTableChrome(chrome('rdocs-table-add-col'))).toBe(true);
+    expect(isTableChrome(chrome('rdocs-editor'))).toBe(false);
+    expect(isTableChrome(null)).toBe(false);
   });
 });
 
