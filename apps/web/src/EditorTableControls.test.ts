@@ -3,7 +3,7 @@ import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
 import { describe, expect, it } from 'vitest';
 
-import { lastTableCellPos, tableWrapperElement } from './EditorTableControls';
+import { lastTableCellPos, tableFromWrapper, tableWrapperElement } from './EditorTableControls';
 
 const schema = getSchema([StarterKit, TableKit]);
 
@@ -62,6 +62,24 @@ describe('tableWrapperElement', () => {
       view: { nodeDOM: () => null },
     };
     expect(tableWrapperElement(editor as never)).toBeNull();
+  });
+});
+
+describe('tableFromWrapper', () => {
+  it('returns null when the wrapper is not a table', () => {
+    const editor = {
+      view: { posAtDOM: () => 0 },
+      state: {
+        doc: {
+          resolve: () => ({
+            depth: 1,
+            node: () => ({ type: { name: 'paragraph' } }),
+            before: () => 0,
+          }),
+        },
+      },
+    };
+    expect(tableFromWrapper(editor as never, { querySelector: () => null } as never)).toBeNull();
   });
 });
 

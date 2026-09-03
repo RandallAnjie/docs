@@ -3440,8 +3440,10 @@ button {
 }
 .document-sheet {
   width: min(720px, calc(100% - 132px));
+  min-width: 0;
   margin: 0 auto;
   padding: 62px 0 120px;
+  overflow-x: hidden;
 }
 .document-sheet.page-full-width {
   width: calc(100% - 96px);
@@ -3908,6 +3910,7 @@ button.page-icon-display:hover {
 }
 .editor-frame {
   position: relative;
+  min-width: 0;
   margin-top: 8px;
 }
 .slash-menu {
@@ -4137,7 +4140,9 @@ button.page-icon-display:hover {
   font-size: 15px;
 }
 .rdocs-editor {
+  min-width: 0;
   min-height: 55vh;
+  overflow-x: hidden;
   outline: none;
   color: #3e3c37;
   font-family: 'DM Sans', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', sans-serif;
@@ -4828,7 +4833,9 @@ button.page-icon-display:hover {
   opacity: 1;
 }
 .rdocs-synced-block-editor {
+  min-width: 0;
   min-height: 48px;
+  overflow-x: hidden;
   padding: 9px 12px 10px;
   color: #37352f;
   outline: none;
@@ -4843,11 +4850,14 @@ button.page-icon-display:hover {
   margin-bottom: 0;
 }
 .rdocs-synced-block-editor table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
   border-collapse: collapse;
 }
 .rdocs-synced-block-editor th,
 .rdocs-synced-block-editor td {
+  min-width: 90px;
   border: 1px solid #dedbd4;
   padding: 5px 7px;
 }
@@ -4996,13 +5006,26 @@ button.page-icon-display:hover {
   color: #9a968e;
   font-size: 10px;
 }
-.rdocs-editor .tiptap-mathematics-render[data-type='block-math'] {
+.rdocs-editor .tiptap-mathematics-render[data-type='block-math'],
+.rdocs-synced-block-editor .tiptap-mathematics-render[data-type='block-math'] {
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   margin: 1em 0;
   border-radius: 7px;
   background: #faf9f7;
   padding: 14px 18px;
   text-align: center;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
+}
+.rdocs-editor .tiptap-mathematics-render[data-type='block-math'] .block-math-inner,
+.rdocs-editor .tiptap-mathematics-render[data-type='block-math'] .katex,
+.rdocs-synced-block-editor .tiptap-mathematics-render[data-type='block-math'] .block-math-inner,
+.rdocs-synced-block-editor .tiptap-mathematics-render[data-type='block-math'] .katex {
+  display: inline-block;
+  max-width: none;
+  white-space: nowrap;
 }
 .rdocs-editor .tiptap-mathematics-render--editable {
   cursor: pointer;
@@ -5029,12 +5052,19 @@ button.page-icon-display:hover {
   padding: 0.2em 0 0.2em 18px;
   color: #706b63;
 }
-.rdocs-editor pre {
+.rdocs-editor pre,
+.rdocs-synced-block-editor pre {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-wrap: normal;
+  overscroll-behavior-x: contain;
   background: #292824;
   color: #f5f1e8;
   border-radius: 9px;
   padding: 17px;
-  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
+  -webkit-overflow-scrolling: touch;
 }
 .rdocs-editor code {
   background: #eeeae3;
@@ -5093,14 +5123,19 @@ button.page-icon-display:hover {
   flex: none;
   accent-color: var(--accent);
 }
-.rdocs-editor .tableWrapper {
+.rdocs-editor .tableWrapper,
+.rdocs-synced-block-editor .tableWrapper {
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   margin: 1.5em 0;
+  -webkit-overflow-scrolling: touch;
 }
 .rdocs-editor table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
 }
 .rdocs-editor th,
 .rdocs-editor td {
