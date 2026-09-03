@@ -4167,6 +4167,9 @@ button.page-icon-display:hover {
 .rdocs-editor > h3:first-child {
   margin-top: 0;
 }
+.rdocs-editor:has(> :first-child:not(p):not(h1):not(h2):not(h3)) {
+  padding-top: 14px;
+}
 .rdocs-editor p {
   margin: 1px 0;
   padding: 3px 2px;
