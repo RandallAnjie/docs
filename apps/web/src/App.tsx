@@ -172,6 +172,7 @@ import {
   showToast,
 } from './dialogs';
 import { ChunkingWebSocket } from './chunking-websocket';
+import { EditorTableControls } from './EditorTableControls';
 import { HttpCollaborationTransport } from './http-collaboration';
 import { SpaceIcon } from './space-icon';
 import { AttachmentPanel, type AttachmentPanelHandle } from './AttachmentPanel';
@@ -4910,15 +4911,17 @@ function CollaborativeEditor({
       },
       active: editor.isActive('link'),
     },
-    {
-      label: editor.isActive('table') ? '删除表格' : '插入表格',
-      icon: <Table2 size={16} />,
-      action: () => {
-        if (editor.isActive('table')) editor.chain().focus().deleteTable().run();
-        else editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
-      },
-      active: editor.isActive('table'),
-    },
+    ...(editor.isActive('table')
+      ? []
+      : [
+          {
+            label: '插入表格',
+            icon: <Table2 size={16} />,
+            action: () =>
+              editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
+            active: false,
+          },
+        ]),
   ];
 
   return (
@@ -4931,6 +4934,7 @@ function CollaborativeEditor({
         />
       ) : null}
       <EditorContent editor={editor} />
+      {editable ? <EditorTableControls editor={editor} /> : null}
       {aiToolbar ? (
         <div
           className="editor-selection-toolbar"

@@ -24,7 +24,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { showToast } from './dialogs';
-
+import { lastTableCellPos } from './EditorTableControls';
 import { moveTopLevelBlock, topLevelBlocks, type BlockDirection } from './editor-block-operations';
 
 const DRAG_POSITION = { placement: 'left-start', strategy: 'fixed' } as const;
@@ -336,6 +336,41 @@ export function EditorBlockHandle({
                     </button>
                   ))}
                 </div>
+              </>
+            ) : null}
+            {targetNodeName === 'table' ? (
+              <>
+                <label>表格</label>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const cellPos = targetNode
+                      ? lastTableCellPos(targetPosition, targetNode)
+                      : null;
+                    if (cellPos !== null) {
+                      editor.chain().focus().setTextSelection(cellPos).addRowAfter().run();
+                    }
+                    setMenuOpen(false);
+                  }}
+                >
+                  <Plus size={14} /> 下方插入行
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const cellPos = targetNode
+                      ? lastTableCellPos(targetPosition, targetNode)
+                      : null;
+                    if (cellPos !== null) {
+                      editor.chain().focus().setTextSelection(cellPos).addColumnAfter().run();
+                    }
+                    setMenuOpen(false);
+                  }}
+                >
+                  <Plus size={14} /> 右侧插入列
+                </button>
               </>
             ) : null}
             <label>操作</label>
