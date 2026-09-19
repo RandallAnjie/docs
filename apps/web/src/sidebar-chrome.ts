@@ -62,6 +62,7 @@ export function appShellClassName(input: {
   sidebarCollapsed?: boolean;
   sidebarPeek?: boolean;
   contextPanelOpen?: boolean;
+  focusMode?: boolean;
 }): string {
   return [
     'app-shell',
@@ -70,6 +71,7 @@ export function appShellClassName(input: {
     input.sidebarCollapsed ? 'sidebar-collapsed' : '',
     input.sidebarCollapsed && input.sidebarPeek ? 'sidebar-peek' : '',
     input.contextPanelOpen ? 'context-panel-open' : '',
+    input.focusMode ? 'focus-mode' : '',
   ]
     .filter(Boolean)
     .join(' ');
