@@ -32,6 +32,8 @@ export function WorkspaceSwitcher({
   onJoined,
   onOpenSettings,
   onLogout,
+  requestedAction = null,
+  onRequestedActionConsumed,
 }: {
   organizations: OrganizationSummary[];
   activeOrganizationId: string | null;
@@ -42,6 +44,8 @@ export function WorkspaceSwitcher({
   onJoined: (organization: OrganizationSummary) => void;
   onOpenSettings?: () => void;
   onLogout?: () => Promise<void>;
+  requestedAction?: 'create' | 'join' | null;
+  onRequestedActionConsumed?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialog, setDialog] = useState<'create' | 'join' | null>(null);
@@ -75,6 +79,12 @@ export function WorkspaceSwitcher({
     setError(null);
     setDialog(nextDialog);
   };
+
+  useEffect(() => {
+    if (!requestedAction) return;
+    openDialog(requestedAction);
+    onRequestedActionConsumed?.();
+  }, [onRequestedActionConsumed, requestedAction]);
 
   const submitOrganization = async (event: FormEvent) => {
     event.preventDefault();

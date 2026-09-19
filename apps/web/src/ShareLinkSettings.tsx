@@ -73,7 +73,7 @@ export function ShareLinkSettings({ pageId }: { pageId: string }) {
           <Link2 size={16} />
           <span>
             <strong>公开分享链接</strong>
-            <small>无需登录，可随时撤销；可编辑链接能改正文和标题</small>
+            <small>发给组织外的人。无需登录，可随时撤销；可编辑链接能改正文和标题。</small>
           </span>
         </div>
         <b>{activeLinks.length}</b>

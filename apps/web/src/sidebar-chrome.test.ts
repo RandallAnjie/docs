@@ -100,6 +100,7 @@ describe('sidebar chrome helpers', () => {
       'app-shell public-share public-site theme-light sidebar-collapsed sidebar-peek context-panel-open',
     );
     expect(appShellClassName({ sidebarCollapsed: false, sidebarPeek: true })).toBe('app-shell');
+    expect(appShellClassName({ focusMode: true })).toBe('app-shell focus-mode');
   });
 
   it('does not keep a cramped icon rail that stacks the avatar and expand control', () => {

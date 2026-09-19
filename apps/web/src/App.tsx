@@ -57,6 +57,7 @@ import {
   ListOrdered,
   LockKeyhole,
   LogOut,
+  Maximize2,
   MessageSquare,
   Minus,
   MoreHorizontal,
@@ -741,7 +742,7 @@ export function App() {
     return sessionError ? (
       <AuthLoadFailure message={sessionError} onRetry={refreshSession} />
     ) : (
-      <LoadingScreen message="正在检查设备密钥…" />
+      <LoadingScreen message="正在打开 Rdocs…" />
     );
   }
   if (!session.authenticated || !session.user) {
@@ -985,7 +986,9 @@ function PasskeyGate({
     <main className="auth-shell">
       <nav className="auth-nav">
         <Brand />
-        <span>Passkey</span>
+        <a className="quiet-link" href="/">
+          返回首页
+        </a>
       </nav>
       <section className="auth-card">
         <div className="auth-key-mark">
@@ -1053,9 +1056,6 @@ function PasskeyGate({
             {registering ? '已有可用设备密钥？返回登录' : '还没有可用设备密钥？用同一邮箱重新登记'}
           </a>
         ) : null}
-        <a className="auth-switch" href="/" style={{ marginTop: 10 }}>
-          返回首页
-        </a>
         <small className="auth-footnote">私钥不会离开设备 · 用户验证必需 · 会话可随时撤销</small>
       </section>
     </main>
@@ -1137,6 +1137,7 @@ function TenantHome({
     () => new URLSearchParams(window.location.search).get('settings') === '1',
   );
   const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab | null>(null);
+  const [workspaceAction, setWorkspaceAction] = useState<'create' | 'join' | null>(null);
   const [creatingPage, setCreatingPage] = useState<
     { spaceId: string; parentId: string | null } | undefined
   >(undefined);
@@ -1401,6 +1402,8 @@ function TenantHome({
           }}
           onOpenSettings={() => setSettingsOpen(true)}
           onLogout={onLogout}
+          requestedAction={workspaceAction}
+          onRequestedActionConsumed={() => setWorkspaceAction(null)}
         />
         <div className="notion-primary-navigation">
           <button
@@ -1504,7 +1507,19 @@ function TenantHome({
                     onCreateChild={(parentId) => void createAndOpenPage(space, parentId)}
                     canCreate={canCreate}
                   />
-                  {!spacePages.length ? <p className="notion-empty-pages">尚无页面</p> : null}
+                  {!spacePages.length ? (
+                    canCreate ? (
+                      <button
+                        className="notion-empty-pages notion-empty-pages-action"
+                        type="button"
+                        onClick={() => void createAndOpenPage(space, null)}
+                      >
+                        尚无页面，点此创建
+                      </button>
+                    ) : (
+                      <p className="notion-empty-pages">尚无页面</p>
+                    )
+                  ) : null}
                 </section>
               );
             })
@@ -1543,15 +1558,38 @@ function TenantHome({
           <h1>你好，{user.displayName}</h1>
           <p className="notion-home-subtitle">继续处理你的文档，或从一个新页面开始。</p>
           {loading ? (
-            <div className="notion-home-loading">
-              <div className="loading-mark" />
-              正在打开工作区…
+            <div className="notion-home-skeleton" aria-busy="true" aria-live="polite">
+              <span className="skeleton-line wide" />
+              <span className="skeleton-line" />
+              <div className="skeleton-card-row">
+                <span className="skeleton-card" />
+                <span className="skeleton-card" />
+                <span className="skeleton-card" />
+                <span className="skeleton-card" />
+              </div>
+              <span className="visually-hidden">正在打开工作区…</span>
             </div>
           ) : !selectedOrganization ? (
             <div className="notion-home-empty">
               <span>{firstCharacter(identity.name)}</span>
               <h2>创建你的第一个工作区</h2>
-              <p>从左上角的菜单创建工作区，或者通过邀请链接加入其他团队。</p>
+              <p>工作区用来集中管理团队、页面和权限。也可以用邀请链接加入其他团队。</p>
+              <div className="empty-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => setWorkspaceAction('create')}
+                >
+                  创建工作区
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => setWorkspaceAction('join')}
+                >
+                  加入工作区
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -1575,7 +1613,25 @@ function TenantHome({
                     ))}
                   </div>
                 ) : (
-                  <div className="notion-inline-empty">这里会显示最近编辑过的页面。</div>
+                  <div className="notion-inline-empty">
+                    <p>还没有最近访问的页面。从团队空间打开一篇，或先写一篇新的。</p>
+                    {activeSpaces.some(
+                      (space) => space.role === 'space_admin' || space.role === 'editor',
+                    ) ? (
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => {
+                          const writable = activeSpaces.find(
+                            (space) => space.role === 'space_admin' || space.role === 'editor',
+                          );
+                          if (writable) void openNewPage(writable);
+                        }}
+                      >
+                        新建页面
+                      </button>
+                    ) : null}
+                  </div>
                 )}
               </section>
               <section className="notion-home-section">
@@ -1586,6 +1642,18 @@ function TenantHome({
                   </button>
                 </div>
                 <div className="notion-teamspace-list">
+                  {!activeSpaces.length ? (
+                    <div className="notion-inline-empty notion-inline-empty-flush">
+                      <p>还没有团队空间。先建一个空间，再开始写页面。</p>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => setSpaceDialogOpen(true)}
+                      >
+                        新建空间
+                      </button>
+                    </div>
+                  ) : null}
                   {activeSpaces.map((space) => (
                     <article key={space.id}>
                       <button
@@ -2137,6 +2205,7 @@ function DocumentWorkspace({
     readSidebarCollapsed(window.localStorage),
   );
   const [sidebarPeek, setSidebarPeek] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const [desktopSidebar, setDesktopSidebar] = useState(() =>
     matchesMediaQuery(DESKTOP_SIDEBAR_QUERY),
   );
@@ -2319,6 +2388,17 @@ function DocumentWorkspace({
     setSidebarPeek(false);
     setSidebarCollapsed((current) => !current);
   }, []);
+
+  useEffect(() => {
+    if (!focusMode) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (shareOpen || pageMenuOpen || accessDialogOpen || discoveryTab) return;
+      setFocusMode(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [accessDialogOpen, discoveryTab, focusMode, pageMenuOpen, shareOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2871,6 +2951,7 @@ function DocumentWorkspace({
         sidebarCollapsed: sidebarHidden,
         sidebarPeek: sidebarPeeking,
         contextPanelOpen,
+        focusMode,
       })}
     >
       {sidebarHidden ? (
@@ -2992,7 +3073,18 @@ function DocumentWorkspace({
               });
             }}
           />
-          {pageTree.length === 0 && <div className="page-tree-empty">还没有页面</div>}
+          {pageTree.length === 0 &&
+            (canEditStructure ? (
+              <button
+                className="page-tree-empty page-tree-empty-action"
+                type="button"
+                onClick={() => void createAndOpenPage(null)}
+              >
+                还没有页面，点此创建
+              </button>
+            ) : (
+              <div className="page-tree-empty">还没有页面</div>
+            ))}
           {treeError && <div className="page-tree-error">{treeError}</div>}
           <div className="sidebar-shortcuts">
             <button type="button" onClick={() => setDiscoveryTab('library')}>
@@ -3100,7 +3192,27 @@ function DocumentWorkspace({
                 <MessageSquare size={17} />
               </button>
             ) : null}
-            <button className="header-button" type="button" onClick={() => setShareOpen(true)}>
+            <button
+              className={`icon-button subtle${focusMode ? ' focus-mode-toggle-on' : ''}`}
+              type="button"
+              aria-pressed={focusMode}
+              aria-label={focusMode ? '退出专注写作' : '专注写作'}
+              title={focusMode ? '退出专注写作' : '专注写作'}
+              onClick={() => {
+                setFocusMode((current) => {
+                  const next = !current;
+                  if (next) setContextPanelOpen(false);
+                  return next;
+                });
+              }}
+            >
+              <Maximize2 size={16} />
+            </button>
+            <button
+              className="header-button share-button"
+              type="button"
+              onClick={() => setShareOpen(true)}
+            >
               <Share2 size={16} />
               分享
             </button>
@@ -3592,22 +3704,19 @@ function DocumentWorkspace({
       {shareOpen ? (
         <div className="dialog-backdrop" role="presentation" onClick={() => setShareOpen(false)}>
           <section
-            className="rdocs-dialog"
+            className="rdocs-dialog share-dialog"
             role="dialog"
             aria-modal="true"
-            aria-label="分享"
+            aria-label="分享此页面"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2>分享</h2>
-            <p>复制链接发给协作者，或创建可撤销的只读外链。</p>
+            <h2>分享此页面</h2>
+            <p>
+              工作区内的协作者用页面链接即可打开。发给组织外的人时，再创建一条可随时撤销的公开链接。
+            </p>
             <div className="dialog-actions">
-              <button
-                type="button"
-                onClick={() => {
-                  void share();
-                }}
-              >
-                {copied ? '已复制页面链接' : '复制页面链接'}
+              <button type="button" onClick={() => setShareOpen(false)}>
+                关闭
               </button>
               {page.role === 'space_admin' && !renewTicket ? (
                 <button
@@ -3620,8 +3729,14 @@ function DocumentWorkspace({
                   管理权限
                 </button>
               ) : null}
-              <button type="button" onClick={() => setShareOpen(false)}>
-                关闭
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  void share();
+                }}
+              >
+                {copied ? '已复制页面链接' : '复制页面链接'}
               </button>
             </div>
             {!renewTicket ? <ShareLinkSettings pageId={page.id} /> : null}
@@ -5310,9 +5425,11 @@ function WorkspaceOpeningShell({ identity }: { identity: LocalIdentity }) {
         <header className="document-header" />
         <div className="document-scroll">
           <article className="document-sheet">
-            <div className="editor-loading" aria-live="polite">
-              <div className="loading-mark" />
-              <span>正在打开页面…</span>
+            <div className="editor-loading editor-loading-skeleton" aria-live="polite">
+              <span className="skeleton-line wide" />
+              <span className="skeleton-line" />
+              <span className="skeleton-line" />
+              <span className="visually-hidden">正在打开页面…</span>
             </div>
           </article>
         </div>
