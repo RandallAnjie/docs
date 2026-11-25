@@ -57,6 +57,7 @@ import {
   MoreHorizontal,
   Music2,
   PanelLeftClose,
+  Menu,
   PanelLeftOpen,
   Paperclip,
   Plus,
@@ -75,6 +76,7 @@ import {
   Upload,
   Video,
   Zap,
+  X,
 } from 'lucide-react';
 import {
   useCallback,
@@ -1002,8 +1004,22 @@ function TenantHome({
   const [accessSpace, setAccessSpace] = useState<SpaceSummary | null>(null);
   const [markdownSpaceId, setMarkdownSpaceId] = useState<string | null>(null);
   const [templateSpace, setTemplateSpace] = useState<SpaceSummary | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const markdownInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [discoveryTab, templateSpace, trashSpace, spaceDialogOpen, settingsOpen]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     document.title = 'Rdocs';
@@ -1228,7 +1244,7 @@ function TenantHome({
   };
 
   return (
-    <main className="notion-home-shell">
+    <main className={`notion-home-shell${mobileNavOpen ? ' mobile-nav-open' : ''}`}>
       <input
         ref={markdownInput}
         type="file"
@@ -1237,6 +1253,15 @@ function TenantHome({
         onChange={(event) => void importMarkdownFile(event.target.files?.[0])}
       />
       <aside className="notion-home-sidebar">
+        <button
+          className="icon-button subtle mobile-nav-toggle"
+          type="button"
+          aria-label={mobileNavOpen ? '关闭导航' : '打开导航'}
+          aria-expanded={mobileNavOpen}
+          onClick={() => setMobileNavOpen((open) => !open)}
+        >
+          {mobileNavOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
         <WorkspaceSwitcher
           organizations={organizations}
           activeOrganizationId={selectedOrganizationId}
@@ -1394,6 +1419,13 @@ function TenantHome({
           ) : null}
         </div>
       </aside>
+      {mobileNavOpen ? (
+        <div
+          className="mobile-nav-backdrop"
+          role="presentation"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
 
       <section className="notion-home-main">
         <header className="notion-home-header">
@@ -1640,7 +1672,7 @@ function TenantHome({
               aria-label="关闭设置"
               onClick={() => setSettingsOpen(false)}
             >
-              ×
+              <X size={17} />
             </button>
             <OrganizationSettings
               organization={selectedOrganization}
@@ -2048,6 +2080,9 @@ function DocumentWorkspace({
   const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   const transcribeInput = useRef<HTMLInputElement>(null);
   const [appearanceDialogOpen, setAppearanceDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
@@ -2175,6 +2210,23 @@ function DocumentWorkspace({
   const activeSpace = organizationSpaces.find((space) => space.id === page.spaceId);
   const sidebarHidden = desktopSidebar && sidebarCollapsed;
   const sidebarPeeking = sidebarHidden && sidebarPeek;
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [requestedPageId, discoveryTab]);
+
+  useEffect(() => {
+    if (desktopSidebar) setMobileNavOpen(false);
+  }, [desktopSidebar]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     writeSidebarCollapsed(sidebarCollapsed, window.localStorage);
@@ -2808,6 +2860,7 @@ function DocumentWorkspace({
         sidebarPeek: sidebarPeeking,
         contextPanelOpen,
         focusMode,
+        mobileNavOpen,
       })}
     >
       {sidebarHidden ? (
@@ -2857,33 +2910,50 @@ function DocumentWorkspace({
             {sidebarHidden ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
         </div>
-        <div className="sidebar-actions">
-          {!renewTicket ? (
+        {!renewTicket ? (
+          <div className="sidebar-actions">
             <button type="button" onClick={() => setDiscoveryTab('search')}>
               <Search size={16} />
               搜索 <kbd>{searchShortcutLabel()}</kbd>
             </button>
-          ) : null}
-          {!renewTicket ? (
             <a href="/">
               <FileText size={16} />
               主页
             </a>
-          ) : null}
-          {canEditStructure ? (
-            <button
-              onClick={() => void createAndOpenPage(null)}
-              disabled={creatingUnder !== undefined}
-            >
-              <FilePlus2 size={16} />
-              {creatingUnder === null ? '正在创建…' : '新建页面'}
+            <button type="button" onClick={() => setDiscoveryTab('library')}>
+              <LibraryBig size={16} />
+              资料库
             </button>
-          ) : null}
-        </div>
+            <button type="button" onClick={() => setDiscoveryTab('recent')}>
+              <Clock3 size={16} />
+              最近访问
+            </button>
+            <button type="button" onClick={() => setDiscoveryTab('updates')}>
+              <Activity size={16} />
+              所有更新
+            </button>
+            <button type="button" onClick={() => setDiscoveryTab('favorites')}>
+              <Star size={16} />
+              收藏
+            </button>
+          </div>
+        ) : null}
         <nav className="sidebar-nav" ref={sidebarNavigation}>
           <div className="sidebar-section-heading">
-            <p>{activeSpace?.name ?? '团队空间'}</p>
-            <span>{pages.length}</span>
+            <p>{activeSpace?.name ?? (renewTicket ? '页面' : '团队空间')}</p>
+            {canEditStructure ? (
+              <button
+                type="button"
+                aria-label={`在${activeSpace?.name ?? '当前空间'}中新建页面`}
+                title="新建页面"
+                onClick={() => void createAndOpenPage(null)}
+                disabled={creatingUnder !== undefined}
+              >
+                <Plus size={14} />
+              </button>
+            ) : (
+              <span>{pages.length}</span>
+            )}
           </div>
           <PageTree
             nodes={pageTree}
@@ -2942,26 +3012,27 @@ function DocumentWorkspace({
               <div className="page-tree-empty">还没有页面</div>
             ))}
           {treeError && <div className="page-tree-error">{treeError}</div>}
-          <div className="sidebar-shortcuts">
-            <button type="button" onClick={() => setDiscoveryTab('library')}>
-              <LibraryBig size={16} />
-              <span>资料库</span>
-            </button>
-            <button type="button" onClick={() => setDiscoveryTab('favorites')}>
-              <Star size={16} />
-              <span>收藏</span>
-            </button>
-            <button type="button" onClick={() => setDiscoveryTab('recent')}>
-              <Clock3 size={16} />
-              <span>最近访问</span>
-            </button>
-            <button type="button" onClick={() => setDiscoveryTab('updates')}>
-              <Activity size={16} />
-              <span>所有更新</span>
+        </nav>
+        {!renewTicket && activeSpace ? (
+          <div className="sidebar-bottom">
+            {canEditStructure ? (
+              <button type="button" onClick={() => setTemplateDialogOpen(true)}>
+                <Sparkles size={16} /> 模板
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setTrashDialogOpen(true)}>
+              <Trash2 size={16} /> 回收站
             </button>
           </div>
-        </nav>
+        ) : null}
       </aside>
+      {mobileNavOpen ? (
+        <div
+          className="mobile-nav-backdrop"
+          role="presentation"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
 
       <main className="document-area" aria-busy={isSwitching}>
         <input
@@ -2991,6 +3062,15 @@ function DocumentWorkspace({
                 <PanelLeftOpen size={16} />
               </button>
             ) : null}
+            <button
+              className="icon-button subtle mobile-nav-toggle"
+              type="button"
+              aria-label="打开导航"
+              aria-expanded={mobileNavOpen}
+              onClick={() => setMobileNavOpen(true)}
+            >
+              <Menu size={18} />
+            </button>
             <div className="breadcrumbs">
               <a href="/">{activeOrganization?.name ?? 'Rdocs'}</a>
               {breadcrumbItems.map((item, index) => (
@@ -3007,12 +3087,11 @@ function DocumentWorkspace({
             </div>
           </div>
           <div className="header-actions">
-            {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
             <ConnectionPill state={connection} offlineReady={offlineReady} />
             <CollaboratorStack collaborators={collaborators} />
             {onLogout && !renewTicket ? (
               <button
-                className={`icon-button subtle ${favorited ? 'active' : ''}`}
+                className={`icon-button subtle header-optional ${favorited ? 'active' : ''}`}
                 type="button"
                 aria-pressed={favorited}
                 aria-label={favorited ? '取消收藏' : '收藏页面'}
@@ -3049,7 +3128,7 @@ function DocumentWorkspace({
               </button>
             ) : null}
             <button
-              className={`icon-button subtle${focusMode ? ' focus-mode-toggle-on' : ''}`}
+              className={`icon-button subtle header-optional${focusMode ? ' focus-mode-toggle-on' : ''}`}
               type="button"
               aria-pressed={focusMode}
               aria-label={focusMode ? '退出专注写作' : '专注写作'}
@@ -3264,6 +3343,11 @@ function DocumentWorkspace({
                   <Trash2 size={15} /> 移入回收站
                 </button>
               </div>
+            ) : null}
+            {onLogout && !renewTicket ? (
+              <span className="header-global-actions">
+                <NotificationBell organizationId={page.organizationId} />
+              </span>
             ) : null}
             <HeaderAccount
               identity={identity}
@@ -3601,6 +3685,12 @@ function DocumentWorkspace({
       ) : null}
       {accessDialogOpen ? (
         <PageAccessDialog page={page} onClose={() => setAccessDialogOpen(false)} />
+      ) : null}
+      {templateDialogOpen && activeSpace ? (
+        <TemplateDialog space={activeSpace} onClose={() => setTemplateDialogOpen(false)} />
+      ) : null}
+      {trashDialogOpen && activeSpace ? (
+        <SpaceTrashDialog space={activeSpace} onClose={() => setTrashDialogOpen(false)} />
       ) : null}
       {discoveryTab ? (
         <Suspense fallback={null}>

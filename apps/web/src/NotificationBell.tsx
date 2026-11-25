@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Circle,
   Clock3,
+  Inbox,
   MessageSquare,
   Pencil,
   Send,
@@ -197,13 +198,14 @@ export function NotificationBell({ organizationId }: { organizationId: string })
         className="icon-button"
         type="button"
         aria-label="收件箱"
+        title="收件箱"
         aria-expanded={open}
         onClick={() => {
           setOpen((value) => !value);
           setError(null);
         }}
       >
-        <Bell size={17} />
+        <Inbox size={17} />
         {unreadCount ? <b>{unreadCount > 99 ? '99+' : unreadCount}</b> : null}
       </button>
       {open ? (

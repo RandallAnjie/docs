@@ -139,7 +139,7 @@ export function PlatformSettings({
 
       {tab === 'tokens' ? (
         <>
-          <form className="member-invite-form" onSubmit={(event) => void createToken(event)}>
+          <form className="settings-form" onSubmit={(event) => void createToken(event)}>
             <label>
               <span>名称</span>
               <input
@@ -148,9 +148,10 @@ export function PlatformSettings({
                 maxLength={80}
               />
             </label>
-            <div className="dialog-actions" style={{ flexWrap: 'wrap' }}>
+            <fieldset className="settings-checkbox-group">
+              <legend>权限</legend>
               {SCOPES.map((scope) => (
-                <label key={scope.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <label key={scope.id}>
                   <input
                     type="checkbox"
                     checked={scopes.includes(scope.id)}
@@ -165,7 +166,7 @@ export function PlatformSettings({
                   {scope.label}
                 </label>
               ))}
-            </div>
+            </fieldset>
             <button className="primary-button" type="submit" disabled={busy}>
               <KeyRound size={16} /> 创建令牌
             </button>
@@ -206,7 +207,14 @@ export function PlatformSettings({
                   .map((token) => (
                     <tr key={token.id}>
                       <td>{token.name}</td>
-                      <td>{token.scopes.join(', ')}</td>
+                      <td>
+                        {token.scopes
+                          .map(
+                            (scope) =>
+                              SCOPES.find((candidate) => candidate.id === scope)?.label ?? scope,
+                          )
+                          .join('、')}
+                      </td>
                       <td>
                         <code>{token.tokenPrefix}…</code>
                       </td>
@@ -269,7 +277,7 @@ export function PlatformSettings({
 
       {tab === 'enterprise' && enterprise ? (
         <form
-          className="member-invite-form"
+          className="settings-form"
           onSubmit={(event) => {
             event.preventDefault();
             setBusy(true);
@@ -331,7 +339,7 @@ export function PlatformSettings({
       {tab === 'calendar' ? (
         <div>
           <form
-            className="member-invite-form"
+            className="settings-form"
             onSubmit={(event) => {
               event.preventDefault();
               setBusy(true);

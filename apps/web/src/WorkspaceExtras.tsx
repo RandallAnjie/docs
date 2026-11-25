@@ -23,6 +23,13 @@ import {
 import { copyPage } from './api';
 import { navigateToPage } from './navigation';
 
+const ROLE_LABELS: Record<string, string> = {
+  owner: '所有者',
+  admin: '管理员',
+  member: '成员',
+  guest: '外部只读',
+};
+
 function fail(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
@@ -78,7 +85,7 @@ export function WorkspaceExtras({
     <section className="tenant-panel organization-settings">
       <div className="tenant-panel-heading">
         <div>
-          <span>账户、通讯录、模板与技能</span>
+          <span>通知与扩展</span>
           <small>邮件偏好、通讯录、组织模板和 Agent 技能</small>
         </div>
       </div>
@@ -133,8 +140,11 @@ export function WorkspaceExtras({
 
       <h3>通讯录</h3>
       <input
+        className="settings-search"
+        type="search"
         value={query}
         placeholder="搜索姓名或邮箱"
+        aria-label="搜索通讯录"
         onChange={(event) => setQuery(event.target.value)}
       />
       {people.map((person) => (
@@ -142,13 +152,14 @@ export function WorkspaceExtras({
           <div>
             <strong>{person.displayName}</strong>
             <small>
-              {person.email} · {person.role}
+              {person.email} · {ROLE_LABELS[person.role] ?? person.role}
             </small>
           </div>
         </div>
       ))}
 
       <h3>组织模板</h3>
+      {!templates.length ? <p className="tenant-panel-note">还没有组织模板。</p> : null}
       {templates.map((template) => (
         <div key={template.id} className="member-row">
           <div>
@@ -176,7 +187,7 @@ export function WorkspaceExtras({
 
       <h3>Agent 技能</h3>
       <form
-        className="member-invite-form"
+        className="settings-form"
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
           setBusy(true);
@@ -199,6 +210,7 @@ export function WorkspaceExtras({
         <textarea
           value={skillPrompt}
           required
+          rows={4}
           placeholder="系统提示词"
           onChange={(event) => setSkillPrompt(event.target.value)}
         />
@@ -232,7 +244,7 @@ export function WorkspaceExtras({
         <>
           <h3>OAuth 应用</h3>
           <form
-            className="member-invite-form"
+            className="settings-form"
             onSubmit={(event: FormEvent) => {
               event.preventDefault();
               setBusy(true);
