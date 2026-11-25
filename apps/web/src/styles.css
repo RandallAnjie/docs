@@ -12183,3 +12183,68 @@ button.page-icon-display:hover {
     padding: 6px;
   }
 }
+
+/* ── Collaborator carets and the selection toolbar ─────────────────────── */
+
+/* Wide blocks scroll inside themselves, so the page column does not need to
+   clip. Clipping there cut collaborator name bubbles in half at line starts
+   and on the first line; the full-width scroller still stops sideways
+   scrolling of the page. */
+.document-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.document-sheet,
+.rdocs-editor {
+  overflow-x: visible;
+}
+.rdocs-editor img,
+.rdocs-editor video,
+.rdocs-editor iframe {
+  max-width: 100%;
+}
+
+.collaboration-carets__caret {
+  z-index: 20;
+}
+.collaboration-carets__label {
+  z-index: 20;
+  width: 22px;
+  height: 22px;
+  bottom: calc(100% + 4px);
+  font-size: 9px;
+}
+/* Tables and code blocks clip their own overflow: keep the marker inside the line. */
+.rdocs-editor .tableWrapper .collaboration-carets__label,
+.rdocs-editor pre .collaboration-carets__label,
+.rdocs-synced-block-editor .collaboration-carets__label {
+  bottom: auto;
+  top: -3px;
+  left: 3px;
+  width: 15px;
+  height: 15px;
+  border-width: 1px;
+  font-size: 7px;
+  transform: none;
+  box-shadow: 0 1px 4px #29282430;
+}
+.rdocs-editor .tableWrapper .collaboration-carets__label::after,
+.rdocs-editor pre .collaboration-carets__label::after,
+.rdocs-synced-block-editor .collaboration-carets__label::after {
+  display: none;
+}
+
+/* One row of tools; narrow screens scroll it sideways instead of wrapping
+   into a taller box that would cover the selection. */
+.editor-selection-toolbar {
+  flex-wrap: nowrap;
+  max-width: min(760px, calc(100vw - 16px));
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.editor-selection-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.editor-selection-toolbar > button {
+  flex: 0 0 auto;
+}
