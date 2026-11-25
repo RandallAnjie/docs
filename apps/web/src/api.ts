@@ -10,6 +10,7 @@ import type {
   DatabasePropertyGrantSummary,
   DatabasePropertySummary,
   DatabaseFormLinkSummary,
+  AutomationDefinition,
   DatabaseAutomationAction,
   DatabaseAutomationRunSummary,
   DatabaseAutomationSummary,
@@ -687,13 +688,15 @@ export function listDatabaseAutomations(databaseId: string): Promise<{
 
 export function createDatabaseAutomation(
   databaseId: string,
-  input: {
-    name: string;
-    triggerType: DatabaseAutomationTrigger;
-    triggerConfig: Record<string, JsonValue>;
-    actionType: DatabaseAutomationAction;
-    actionConfig: Record<string, JsonValue>;
-  },
+  input:
+    | { name: string; definition: AutomationDefinition }
+    | {
+        name: string;
+        triggerType: DatabaseAutomationTrigger;
+        triggerConfig: Record<string, JsonValue>;
+        actionType: DatabaseAutomationAction;
+        actionConfig: Record<string, JsonValue>;
+      },
 ): Promise<{ automation: DatabaseAutomationSummary }> {
   return request(`/api/databases/${encodeURIComponent(databaseId)}/automations`, {
     method: 'POST',
@@ -704,7 +707,7 @@ export function createDatabaseAutomation(
 export function updateDatabaseAutomation(
   databaseId: string,
   automationId: string,
-  input: { name?: string; enabled?: boolean },
+  input: { name?: string; enabled?: boolean; definition?: AutomationDefinition },
 ): Promise<{ automation: DatabaseAutomationSummary }> {
   return request(
     `/api/databases/${encodeURIComponent(databaseId)}/automations/${encodeURIComponent(automationId)}`,
@@ -725,11 +728,11 @@ export function deleteDatabaseAutomation(
 export function runDatabaseAutomation(
   databaseId: string,
   automationId: string,
-  rowId: string,
-): Promise<{ run: DatabaseAutomationRunSummary }> {
+  rowId?: string,
+): Promise<{ run: DatabaseAutomationRunSummary | null; count?: number }> {
   return request(
     `/api/databases/${encodeURIComponent(databaseId)}/automations/${encodeURIComponent(automationId)}/run`,
-    { method: 'POST', body: JSON.stringify({ rowId }) },
+    { method: 'POST', body: JSON.stringify(rowId ? { rowId } : {}) },
   );
 }
 

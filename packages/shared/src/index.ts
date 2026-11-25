@@ -1,3 +1,9 @@
+import type {
+  AutomationActionType,
+  AutomationDefinition,
+  AutomationTriggerType,
+} from './automation';
+
 export const PRODUCT_NAME = 'Rdocs';
 export const EDITOR_SCHEMA_VERSION = 11;
 
@@ -208,11 +214,9 @@ export interface ProjectWorkspaceSummary {
   sprintsDatabaseId: string;
 }
 
-export type DatabaseAutomationTrigger =
-  'row_created' | 'row_updated' | 'property_changed' | 'form_submitted' | 'manual';
+export type DatabaseAutomationTrigger = AutomationTriggerType;
 
-export type DatabaseAutomationAction =
-  'set_property' | 'toggle_checkbox' | 'increment_number' | 'archive_row' | 'webhook';
+export type DatabaseAutomationAction = AutomationActionType;
 
 export interface DatabaseAutomationSummary {
   id: string;
@@ -223,6 +227,10 @@ export interface DatabaseAutomationSummary {
   triggerConfig: Record<string, JsonValue>;
   actionType: DatabaseAutomationAction;
   actionConfig: Record<string, JsonValue>;
+  /** Normalized trigger → conditions → actions, also for records saved before definitions. */
+  definition: AutomationDefinition;
+  /** Next scheduled run for schedule triggers. */
+  nextRunAt: number | null;
   createdBy: string;
   updatedBy: string;
   createdAt: number;
@@ -820,6 +828,7 @@ export function isPageId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+export * from './automation';
 export * from './collab-chunk';
 export * from './html-flow';
 export * from './http-sync';

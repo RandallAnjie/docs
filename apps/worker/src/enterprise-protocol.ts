@@ -143,7 +143,9 @@ export async function processDueScheduledJobs(env: Env): Promise<number> {
         .bind(Date.now(), job.id)
         .run();
       completed += 1;
-      const cron = typeof payload.cron === 'string' ? payload.cron : '';
+      // Automations reschedule themselves from their definition (also after a failure).
+      const cron =
+        job.kind !== 'automation' && typeof payload.cron === 'string' ? payload.cron : '';
       const next = cron ? parseSimpleCron(cron, now) : null;
       if (next) {
         await enqueueScheduledJob(env, {

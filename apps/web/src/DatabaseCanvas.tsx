@@ -67,10 +67,6 @@ import { createPortal } from 'react-dom';
 import type {
   AttachmentSummary,
   DatabaseFormLinkSummary,
-  DatabaseAutomationAction,
-  DatabaseAutomationRunSummary,
-  DatabaseAutomationSummary,
-  DatabaseAutomationTrigger,
   DatabasePropertySummary,
   DatabasePropertyType,
   DatabaseRowSummary,
@@ -84,14 +80,12 @@ import type {
 
 import {
   createDatabaseProperty,
-  createDatabaseAutomation,
   createDatabaseFormLink,
   createDatabaseRow,
   createDatabaseRowFromTemplate,
   createDatabaseTemplate,
   createDatabaseView,
   deleteDatabaseProperty,
-  deleteDatabaseAutomation,
   deleteDatabaseRow,
   deleteDatabaseTemplate,
   deleteDatabaseView,
@@ -100,7 +94,6 @@ import {
   getArchivedDatabaseRows,
   getDatabase,
   listAttachments,
-  listDatabaseAutomations,
   listDatabaseFormLinks,
   listDatabasePropertyGrants,
   listGroups,
@@ -108,13 +101,11 @@ import {
   listOrganizationMembers,
   putDatabasePropertyGrant,
   updateDatabase,
-  updateDatabaseAutomation,
   updateDatabaseProperty,
   updateDatabaseRow,
   updateDatabaseTemplate,
   updateDatabaseView,
   uploadAttachment,
-  runDatabaseAutomation,
   revokeDatabaseFormLink,
   importDatabaseCsv,
 } from './api';
@@ -139,6 +130,7 @@ import {
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
+import { DatabaseAutomationDialog } from './AutomationBuilder';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
 import { autofillDatabaseProperty } from './api';
 import { datePart, fromDateParts, parseDateCell } from './date-value';
@@ -232,22 +224,6 @@ const VIEW_META: Record<
   form: { label: '表单', icon: ListPlus },
   feed: { label: 'Feed', icon: Rss },
   map: { label: '地图', icon: MapPinned },
-};
-
-const AUTOMATION_TRIGGER_LABELS: Record<DatabaseAutomationTrigger, string> = {
-  row_created: '新增记录时',
-  row_updated: '记录更新时',
-  property_changed: '指定属性变化时',
-  form_submitted: '表单提交时',
-  manual: '手动运行',
-};
-
-const AUTOMATION_ACTION_LABELS: Record<DatabaseAutomationAction, string> = {
-  set_property: '设置属性',
-  toggle_checkbox: '切换复选框',
-  increment_number: '增加数字',
-  archive_row: '归档记录',
-  webhook: '发送 Webhook',
 };
 
 const EDITABLE_PROPERTY_TYPES = new Set<DatabasePropertyType>([
@@ -5042,416 +5018,6 @@ function ViewDialog({
           </button>
         </div>
       </form>
-    </div>
-  );
-}
-
-function DatabaseAutomationDialog({
-  snapshot,
-  onChanged,
-  onClose,
-}: {
-  snapshot: DatabaseSnapshot;
-  onChanged: () => Promise<void>;
-  onClose: () => void;
-}) {
-  const [automations, setAutomations] = useState<DatabaseAutomationSummary[]>([]);
-  const [runs, setRuns] = useState<DatabaseAutomationRunSummary[]>([]);
-  const [name, setName] = useState('新自动化');
-  const [triggerType, setTriggerType] = useState<DatabaseAutomationTrigger>('property_changed');
-  const [triggerPropertyId, setTriggerPropertyId] = useState(snapshot.properties[0]?.id ?? '');
-  const [actionType, setActionType] = useState<DatabaseAutomationAction>('set_property');
-  const [targetPropertyId, setTargetPropertyId] = useState(snapshot.properties[0]?.id ?? '');
-  const [actionValue, setActionValue] = useState('');
-  const [increment, setIncrement] = useState('1');
-  const [webhookUrl, setWebhookUrl] = useState('https://');
-  const [webhookSecret, setWebhookSecret] = useState('');
-  const [conditionPropertyId, setConditionPropertyId] = useState('');
-  const [conditionOp, setConditionOp] = useState('eq');
-  const [conditionValue, setConditionValue] = useState('');
-  const [cron, setCron] = useState('');
-  const [manualRowId, setManualRowId] = useState(snapshot.rows[0]?.id ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    const result = await listDatabaseAutomations(snapshot.database.id);
-    setAutomations(result.automations);
-    setRuns(result.runs);
-  }, [snapshot.database.id]);
-
-  useEffect(() => {
-    let active = true;
-    void load().catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : '无法读取自动化');
-    });
-    return () => {
-      active = false;
-    };
-  }, [load]);
-
-  const create = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    const triggerConfig: Record<string, JsonValue> =
-      triggerType === 'property_changed' ? { propertyId: triggerPropertyId } : {};
-    if (conditionPropertyId) {
-      triggerConfig.condition = {
-        propertyId: conditionPropertyId,
-        op: conditionOp,
-        value: conditionValue,
-      };
-    }
-    if (cron.trim()) triggerConfig.cron = cron.trim();
-    const targetProperty = snapshot.properties.find((property) => property.id === targetPropertyId);
-    let actionConfig: Record<string, JsonValue> = {};
-    if (actionType === 'webhook') {
-      actionConfig = {
-        url: webhookUrl,
-        ...(webhookSecret ? { secret: webhookSecret } : {}),
-      };
-    } else if (actionType !== 'archive_row') {
-      actionConfig.targetPropertyId = targetPropertyId;
-      if (actionType === 'increment_number') actionConfig.increment = Number(increment) || 1;
-      if (actionType === 'set_property') {
-        actionConfig.value =
-          targetProperty?.type === 'number'
-            ? Number(actionValue)
-            : targetProperty?.type === 'checkbox'
-              ? actionValue === 'true'
-              : targetProperty?.type === 'multi_select'
-                ? actionValue
-                    .split(',')
-                    .map((item) => item.trim())
-                    .filter(Boolean)
-                : actionValue;
-      }
-    }
-    try {
-      await createDatabaseAutomation(snapshot.database.id, {
-        name,
-        triggerType,
-        triggerConfig,
-        actionType,
-        actionConfig,
-      });
-      await load();
-      setName('新自动化');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法创建自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggle = async (automation: DatabaseAutomationSummary) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await updateDatabaseAutomation(snapshot.database.id, automation.id, {
-        enabled: !automation.enabled,
-      });
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法更新自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (automation: DatabaseAutomationSummary) => {
-    if (busy) return;
-    if (
-      !(await confirmDialog({
-        title: '删除自动化',
-        message: `删除自动化“${automation.name}”及其运行记录？`,
-        confirmLabel: '删除',
-        danger: true,
-      }))
-    )
-      return;
-    setBusy(true);
-    try {
-      await deleteDatabaseAutomation(snapshot.database.id, automation.id);
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法删除自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runManual = async (automation: DatabaseAutomationSummary) => {
-    if (busy || !manualRowId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await runDatabaseAutomation(snapshot.database.id, automation.id, manualRowId);
-      setRuns((current) => [result.run, ...current]);
-      await onChanged();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法运行自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const targetCandidates = snapshot.properties.filter((property) => {
-    if (actionType === 'toggle_checkbox') return property.type === 'checkbox';
-    if (actionType === 'increment_number') return property.type === 'number';
-    return FORM_PROPERTY_TYPES.has(property.type);
-  });
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <section className="rdocs-dialog database-automation-dialog" role="dialog" aria-modal="true">
-        <header>
-          <div>
-            <h2>自动化</h2>
-            <p>触发器和动作在服务端运行，每次执行都有幂等记录与结果。</p>
-          </div>
-          <button type="button" aria-label="关闭" onClick={onClose}>
-            ×
-          </button>
-        </header>
-        <div className="database-automation-list">
-          {automations.map((automation) => (
-            <article key={automation.id}>
-              <span className={automation.enabled ? 'enabled' : ''}>
-                <Zap size={14} />
-              </span>
-              <div>
-                <strong>{automation.name}</strong>
-                <small>
-                  {AUTOMATION_TRIGGER_LABELS[automation.triggerType]} →{' '}
-                  {AUTOMATION_ACTION_LABELS[automation.actionType]}
-                </small>
-              </div>
-              {automation.triggerType === 'manual' ? (
-                <button
-                  type="button"
-                  disabled={busy || !manualRowId}
-                  onClick={() => void runManual(automation)}
-                >
-                  运行
-                </button>
-              ) : null}
-              <button type="button" disabled={busy} onClick={() => void toggle(automation)}>
-                {automation.enabled ? '暂停' : '启用'}
-              </button>
-              <button
-                className="danger"
-                type="button"
-                aria-label={`删除自动化${automation.name}`}
-                disabled={busy}
-                onClick={() => void remove(automation)}
-              >
-                <Trash2 size={14} />
-              </button>
-            </article>
-          ))}
-          {!automations.length ? <p>还没有自动化。</p> : null}
-        </div>
-        <form onSubmit={(event) => void create(event)}>
-          <h3>新建自动化</h3>
-          <div className="database-automation-grid">
-            <label>
-              名称
-              <input
-                value={name}
-                required
-                maxLength={100}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <label>
-              触发器
-              <select
-                value={triggerType}
-                onChange={(event) =>
-                  setTriggerType(event.target.value as DatabaseAutomationTrigger)
-                }
-              >
-                {Object.entries(AUTOMATION_TRIGGER_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              仅当属性
-              <select
-                value={conditionPropertyId}
-                onChange={(event) => setConditionPropertyId(event.target.value)}
-              >
-                <option value="">不限制</option>
-                {snapshot.properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {conditionPropertyId ? (
-              <>
-                <label>
-                  条件
-                  <select
-                    value={conditionOp}
-                    onChange={(event) => setConditionOp(event.target.value)}
-                  >
-                    <option value="eq">等于</option>
-                    <option value="neq">不等于</option>
-                    <option value="contains">包含</option>
-                    <option value="is_empty">为空</option>
-                    <option value="not_empty">不为空</option>
-                  </select>
-                </label>
-                <label>
-                  值
-                  <input
-                    value={conditionValue}
-                    onChange={(event) => setConditionValue(event.target.value)}
-                  />
-                </label>
-              </>
-            ) : null}
-            <label>
-              定时（UTC cron，可选）
-              <input
-                value={cron}
-                placeholder="0 9 * * *"
-                onChange={(event) => setCron(event.target.value)}
-              />
-            </label>
-            {triggerType === 'property_changed' ? (
-              <label>
-                触发属性
-                <select
-                  value={triggerPropertyId}
-                  onChange={(event) => setTriggerPropertyId(event.target.value)}
-                >
-                  {snapshot.properties.map((property) => (
-                    <option key={property.id} value={property.id}>
-                      {property.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            <label>
-              动作
-              <select
-                value={actionType}
-                onChange={(event) => setActionType(event.target.value as DatabaseAutomationAction)}
-              >
-                {Object.entries(AUTOMATION_ACTION_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {!['archive_row', 'webhook'].includes(actionType) ? (
-              <label>
-                目标属性
-                <select
-                  value={targetPropertyId}
-                  onChange={(event) => setTargetPropertyId(event.target.value)}
-                >
-                  <option value="">请选择</option>
-                  {targetCandidates.map((property) => (
-                    <option key={property.id} value={property.id}>
-                      {property.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {actionType === 'set_property' ? (
-              <label>
-                设置为
-                <input
-                  value={actionValue}
-                  onChange={(event) => setActionValue(event.target.value)}
-                />
-              </label>
-            ) : null}
-            {actionType === 'increment_number' ? (
-              <label>
-                增加
-                <input
-                  type="number"
-                  value={increment}
-                  onChange={(event) => setIncrement(event.target.value)}
-                />
-              </label>
-            ) : null}
-            {actionType === 'webhook' ? (
-              <>
-                <label>
-                  HTTPS Webhook
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(event) => setWebhookUrl(event.target.value)}
-                  />
-                </label>
-                <label>
-                  签名密钥（可选）
-                  <input
-                    type="password"
-                    value={webhookSecret}
-                    minLength={16}
-                    onChange={(event) => setWebhookSecret(event.target.value)}
-                  />
-                </label>
-              </>
-            ) : null}
-            {triggerType === 'manual' ? (
-              <label>
-                手动运行记录
-                <select
-                  value={manualRowId}
-                  onChange={(event) => setManualRowId(event.target.value)}
-                >
-                  <option value="">请选择</option>
-                  {snapshot.rows.map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {rowTitle(row, snapshot.properties)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-          </div>
-          {error ? <p className="dialog-error">{error}</p> : null}
-          <div className="dialog-actions">
-            <button type="button" disabled={busy} onClick={onClose}>
-              完成
-            </button>
-            <button className="primary-button" type="submit" disabled={busy}>
-              {busy ? '保存中…' : '创建自动化'}
-            </button>
-          </div>
-        </form>
-        <details className="database-automation-runs">
-          <summary>
-            <Activity size={14} /> 最近运行 · {runs.length}
-          </summary>
-          {runs.slice(0, 20).map((run) => (
-            <div key={run.id}>
-              <span className={run.status}>{run.status}</span>
-              <time>{new Date(run.startedAt).toLocaleString()}</time>
-              <small>
-                {run.errorMessage || (run.responseCode ? `HTTP ${run.responseCode}` : '完成')}
-              </small>
-            </div>
-          ))}
-        </details>
-      </section>
     </div>
   );
 }
