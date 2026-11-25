@@ -1,5 +1,7 @@
 import type { DatabasePropertySummary, DatabaseRowSummary, JsonValue } from '@rdocs/shared';
 
+import { isoHasTime } from './date-value';
+
 export type DatabaseFilterOperator =
   | 'equals'
   | 'not_equals'
@@ -24,6 +26,7 @@ export interface DatabaseViewSort {
 }
 
 export type DatabaseAggregation =
+  | 'none'
   | 'count_all'
   | 'count_values'
   | 'count_unique'
@@ -47,6 +50,7 @@ export const FILTER_OPERATOR_LABELS: Record<DatabaseFilterOperator, string> = {
 };
 
 export const AGGREGATION_LABELS: Record<DatabaseAggregation, string> = {
+  none: '计算',
   count_all: '计数',
   count_values: '已填',
   count_unique: '唯一值',
@@ -57,23 +61,123 @@ export const AGGREGATION_LABELS: Record<DatabaseAggregation, string> = {
   percent_checked: '完成率',
 };
 
-const OPTION_SWATCHES = [
-  { background: '#eeebe4', color: '#5c5850' },
-  { background: '#e4eee6', color: '#3d5c42' },
-  { background: '#e4ebf4', color: '#3d5270' },
-  { background: '#f3e6e1', color: '#8a4b38' },
-  { background: '#f3ead8', color: '#7a5c24' },
-  { background: '#ece6f2', color: '#5a4570' },
-  { background: '#e6f0ef', color: '#2f5c58' },
-  { background: '#f0e6ea', color: '#704050' },
-] as const;
+export interface OptionSwatch {
+  background: string;
+  color: string;
+}
 
-export function optionSwatch(name: string): { background: string; color: string } {
-  let hash = 0;
-  for (let index = 0; index < name.length; index += 1) {
-    hash = (hash * 31 + name.charCodeAt(index)) >>> 0;
+/** Distinct, readable tag colors: blue, green, yellow, orange, purple, pink, red, brown, gray. */
+const OPTION_PALETTE: readonly OptionSwatch[] = [
+  { background: '#e1ecf8', color: '#1d5a91' },
+  { background: '#dff0e5', color: '#2b6a40' },
+  { background: '#f9eec9', color: '#775807' },
+  { background: '#fce4d3', color: '#974a14' },
+  { background: '#ebe3f7', color: '#5d3e98' },
+  { background: '#f8e0eb', color: '#913a63' },
+  { background: '#fbe1dd', color: '#a1362a' },
+  { background: '#f0e5dc', color: '#714a2c' },
+  { background: '#ebeae7', color: '#55534e' },
+];
+
+const BLUE = 0;
+const GREEN = 1;
+const YELLOW = 2;
+const ORANGE = 3;
+const RED = 6;
+const GRAY = 8;
+
+/** Common status and priority words get the color people expect. */
+const SEMANTIC_TONES: ReadonlyArray<readonly [RegExp, number]> = [
+  [/(已|完)成|^完结$|^done$|^completed?$|已关闭|已上线|已通过|已验收/i, GREEN],
+  [/受阻|阻塞|blocked|失败|逾期|^紧急$|^urgent$|^p0$/i, RED],
+  [/进行中|处理中|开发中|测试中|审核中|in.?progress|doing/i, BLUE],
+  [/暂停|搁置|on.?hold|待确认/i, YELLOW],
+  [/未开始|待办|^todo$|not.?started|^规划中$|草稿|^backlog$/i, GRAY],
+  [/^高$|^high$|^p1$/i, ORANGE],
+  [/^中$|^medium$|^p2$/i, YELLOW],
+  [/^低$|^low$|^p3$/i, GRAY],
+];
+
+export function optionSwatch(name: string, options?: readonly string[]): OptionSwatch {
+  for (const [pattern, tone] of SEMANTIC_TONES) {
+    if (pattern.test(name.trim())) return OPTION_PALETTE[tone]!;
   }
-  return OPTION_SWATCHES[hash % OPTION_SWATCHES.length] ?? OPTION_SWATCHES[0];
+  const index = options ? options.indexOf(name) : -1;
+  if (index >= 0) return OPTION_PALETTE[index % OPTION_PALETTE.length]!;
+  let hash = 0;
+  for (let position = 0; position < name.length; position += 1) {
+    hash = (hash * 31 + name.charCodeAt(position)) >>> 0;
+  }
+  return OPTION_PALETTE[hash % OPTION_PALETTE.length]!;
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function formatOneDate(value: string, includeTime: boolean): string {
+  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!includeTime && day) {
+    // Date-only values are UTC midnight; read the calendar day as stored.
+    return `${Number(day[1])}年${Number(day[2])}月${Number(day[3])}日`;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const text = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  return includeTime ? `${text} ${pad(date.getHours())}:${pad(date.getMinutes())}` : text;
+}
+
+/** "2026年11月20日", with time when the value carries one, and "A → B" for ranges. */
+export function formatDatabaseDate(value: JsonValue | undefined): string {
+  if (typeof value === 'string') return value ? formatOneDate(value, isoHasTime(value)) : '';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const start = typeof value.start === 'string' ? value.start : '';
+  if (!start) return '';
+  const includeTime =
+    typeof value.includeTime === 'boolean' ? value.includeTime : isoHasTime(start);
+  const end = typeof value.end === 'string' && value.end ? value.end : '';
+  const from = formatOneDate(start, includeTime);
+  return end ? `${from} → ${formatOneDate(end, includeTime)}` : from;
+}
+
+export function formatDatabaseNumber(value: JsonValue | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  return value.toLocaleString('zh-CN', { maximumFractionDigits: 6 });
+}
+
+/** URL without the scheme and trailing slash, for compact display. */
+export function compactUrl(value: string): string {
+  return value.replace(/^https?:\/\//i, '').replace(/\/$/, '');
+}
+
+/** Default table column width for a field type, before the user resizes it. */
+export function defaultColumnWidth(type: string): number {
+  switch (type) {
+    case 'title':
+      return 280;
+    case 'checkbox':
+      return 92;
+    case 'number':
+    case 'unique_id':
+      return 112;
+    case 'select':
+    case 'status':
+      return 132;
+    case 'date':
+    case 'created_time':
+    case 'last_edited_time':
+      return 156;
+    case 'multi_select':
+    case 'person':
+    case 'relation':
+      return 196;
+    case 'text':
+    case 'formula':
+    case 'rollup':
+      return 220;
+    default:
+      return 176;
+  }
 }
 
 export interface DatabaseRowGroup {
@@ -278,6 +382,7 @@ export function databaseAggregationValue(
   propertyId: string,
   aggregation: DatabaseAggregation,
 ): string {
+  if (aggregation === 'none') return '';
   const values = rows.map((row) => row.values[propertyId]);
   if (aggregation === 'count_all') return String(rows.length);
   const present = values.filter((value) => !isEmpty(value));
