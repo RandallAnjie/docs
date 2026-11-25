@@ -49,6 +49,7 @@ import {
   Type,
   User,
   Zap,
+  X,
 } from 'lucide-react';
 import {
   Fragment,
@@ -131,6 +132,10 @@ import {
   orderedVisibleDatabaseProperties,
   resizeDatabaseDate,
   optionSwatch,
+  compactUrl,
+  defaultColumnWidth,
+  formatDatabaseDate,
+  formatDatabaseNumber,
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
@@ -889,16 +894,156 @@ function PlaceCell({
   );
 }
 
-function OptionChip({ name }: { name: string }) {
-  const swatch = optionSwatch(name);
+function OptionChip({
+  name,
+  options,
+  status,
+}: {
+  name: string;
+  options?: readonly string[];
+  status?: boolean;
+}) {
+  const swatch = optionSwatch(name, options);
   return (
     <span
-      className="database-option-chip"
+      className={`database-option-chip${status ? ' is-status' : ''}`}
       style={{ background: swatch.background, color: swatch.color }}
     >
+      {status ? <i aria-hidden="true" /> : null}
       {name}
     </span>
   );
+}
+
+/** Values that read clearly without their field name next to them (tags, dates, people). */
+const SELF_DESCRIBING_TYPES = new Set<DatabasePropertyType>([
+  'select',
+  'status',
+  'multi_select',
+  'date',
+  'person',
+  'relation',
+  'files',
+  'url',
+  'email',
+]);
+
+function stringValues(value: JsonValue | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  }
+  return typeof value === 'string' && value ? [value] : [];
+}
+
+/** Read-only rendering of a cell value, shared by table, list, gallery and board cards. */
+function DatabaseValueDisplay({
+  property,
+  value,
+  organizationId,
+}: {
+  property: DatabasePropertySummary;
+  value: JsonValue | undefined;
+  organizationId?: string;
+}) {
+  const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
+  switch (property.type) {
+    case 'select':
+    case 'status': {
+      const name = typeof value === 'string' ? value : '';
+      return name ? (
+        <OptionChip
+          name={name}
+          options={optionNames(property)}
+          status={property.type === 'status'}
+        />
+      ) : null;
+    }
+    case 'multi_select': {
+      const names = stringValues(value);
+      const options = optionNames(property);
+      return names.length ? (
+        <span className="database-chip-list">
+          {names.map((name) => (
+            <OptionChip key={name} name={name} options={options} />
+          ))}
+        </span>
+      ) : null;
+    }
+    case 'date': {
+      const text = formatDatabaseDate(value);
+      return text ? <span className="database-display-date">{text}</span> : null;
+    }
+    case 'created_time':
+    case 'last_edited_time': {
+      const text = formatDateTime(value);
+      return text ? <span className="database-display-date">{text}</span> : null;
+    }
+    case 'number':
+      return <span className="database-display-number">{formatDatabaseNumber(value)}</span>;
+    case 'checkbox':
+      return value === true ? (
+        <Check className="database-display-check" size={15} aria-label="是" />
+      ) : null;
+    case 'url': {
+      const url = typeof value === 'string' ? value : '';
+      return url ? (
+        <a
+          className="database-display-link"
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={stop}
+        >
+          {compactUrl(url)}
+        </a>
+      ) : null;
+    }
+    case 'email':
+    case 'phone': {
+      const text = typeof value === 'string' ? value : '';
+      return text ? (
+        <a
+          className="database-display-link"
+          href={`${property.type === 'email' ? 'mailto' : 'tel'}:${text}`}
+          onClick={stop}
+        >
+          {text}
+        </a>
+      ) : null;
+    }
+    case 'person':
+    case 'created_by':
+    case 'last_edited_by': {
+      const ids = stringValues(value);
+      if (!ids.length) return null;
+      return organizationId ? (
+        <PersonCell
+          disabled
+          organizationId={organizationId}
+          value={ids}
+          onSave={async () => undefined}
+        />
+      ) : (
+        <span>{ids.length} 人</span>
+      );
+    }
+    case 'relation':
+      return stringValues(value).length ? (
+        <RelationCell property={property} value={value} disabled onSave={async () => undefined} />
+      ) : null;
+    case 'files': {
+      const count = stringValues(value).length;
+      return count ? (
+        <span className="database-display-files">
+          <Paperclip size={13} /> {count} 个文件
+        </span>
+      ) : null;
+    }
+    default: {
+      const text = valueText(value);
+      return text ? <span className="database-display-text">{text}</span> : null;
+    }
+  }
 }
 
 function OptionChipSelect({
@@ -919,7 +1064,7 @@ function OptionChipSelect({
   return (
     <div className="database-chip-select">
       {value ? (
-        <OptionChip name={value} />
+        <OptionChip name={value} options={options} />
       ) : (
         <span className="database-chip-empty">{emptyLabel}</span>
       )}
@@ -957,7 +1102,7 @@ function MultiSelectChips({
     <div className="database-multi-chips">
       <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)}>
         {value.length ? (
-          value.map((item) => <OptionChip key={item} name={item} />)
+          value.map((item) => <OptionChip key={item} name={item} options={options} />)
         ) : (
           <span>添加</span>
         )}
@@ -975,7 +1120,7 @@ function MultiSelectChips({
                     onChange(checked ? value.filter((item) => item !== option) : [...value, option])
                   }
                 />
-                <OptionChip name={option} />
+                <OptionChip name={option} options={options} />
               </label>
             );
           })}
@@ -1236,6 +1381,7 @@ function DatabaseCell({
         autoFocus={autoFocus}
         disabled={disabled}
         inputMode={property.type === 'number' ? 'decimal' : undefined}
+        placeholder="空"
         onFocus={(event) => {
           if (autoFocus) event.currentTarget.select();
         }}
@@ -1465,6 +1611,10 @@ function TableFieldHeader({
   );
 }
 
+const TABLE_LEADING_WIDTH = 72;
+const TABLE_ADD_COLUMN_WIDTH = 40;
+const TABLE_ACTIONS_WIDTH = 92;
+
 function TableDatabaseView({
   organizationId,
   actorId,
@@ -1511,10 +1661,21 @@ function TableDatabaseView({
   const selected = selectedRowIds ?? new Set<string>();
   const allSelected = Boolean(rows.length && rows.every((row) => selected.has(row.id)));
   const extraColumns = 2 + (canEdit ? 1 : 0) + (onAddProperty ? 1 : 0);
+  const columnWidths = properties.map((property) =>
+    typeof propertyWidths[property.id] === 'number'
+      ? Number(propertyWidths[property.id])
+      : defaultColumnWidth(property.type),
+  );
+  // Fixed layout spreads spare width over every column, so size the table to its columns.
+  const tableWidth =
+    TABLE_LEADING_WIDTH +
+    columnWidths.reduce((total, width) => total + width, 0) +
+    (onAddProperty && canEdit ? TABLE_ADD_COLUMN_WIDTH : 0) +
+    (canEdit ? TABLE_ACTIONS_WIDTH : 0);
   const resizeColumn = (propertyId: string, width: number) => {
     void updateViewConfig({
       ...view.config,
-      propertyWidths: { ...propertyWidths, [propertyId]: Math.min(480, Math.max(96, width)) },
+      propertyWidths: { ...propertyWidths, [propertyId]: Math.min(480, Math.max(72, width)) },
     });
   };
   const wrap = useRef<HTMLDivElement>(null);
@@ -1655,7 +1816,7 @@ function TableDatabaseView({
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       onKeyDown={onGridKeyDown}
     >
-      <table className="database-table database-table-grid">
+      <table className="database-table database-table-grid" style={{ width: tableWidth }}>
         <thead>
           <tr>
             <th className="database-col-check">
@@ -1669,16 +1830,11 @@ function TableDatabaseView({
             </th>
             <th className="database-col-index">#</th>
             {properties.map((property, index) => {
-              const width =
-                typeof propertyWidths[property.id] === 'number'
-                  ? Number(propertyWidths[property.id])
-                  : index === 0
-                    ? 240
-                    : 168;
+              const width = columnWidths[index] ?? defaultColumnWidth(property.type);
               return (
                 <th
                   key={property.id}
-                  className={`${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}`}
+                  className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}`}
                   style={{ width }}
                 >
                   <TableFieldHeader
@@ -1724,15 +1880,17 @@ function TableDatabaseView({
                     onMouseDown={(event) => {
                       event.preventDefault();
                       const header = (event.currentTarget as HTMLElement).parentElement;
+                      const table = header?.closest('table');
                       const startX = event.clientX;
                       const startWidth = width;
                       let latest = startWidth;
                       const move = (moveEvent: MouseEvent) => {
                         latest = Math.min(
                           480,
-                          Math.max(96, startWidth + moveEvent.clientX - startX),
+                          Math.max(72, startWidth + moveEvent.clientX - startX),
                         );
                         if (header) header.style.width = `${latest}px`;
+                        if (table) table.style.width = `${tableWidth - startWidth + latest}px`;
                       };
                       const up = () => {
                         window.removeEventListener('mousemove', move);
@@ -1817,7 +1975,7 @@ function TableDatabaseView({
                       return (
                         <td
                           key={property.id}
-                          className={`${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
+                          className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
                           onClick={() => {
                             setFocus({ rowId: row.id, propertyId: property.id });
                             setSelectedColumnId(property.id);
@@ -1855,10 +2013,15 @@ function TableDatabaseView({
                             <span
                               className={`database-cell-display ${property.type === 'title' ? 'is-title' : ''}`}
                             >
-                              <span>
-                                {valueText(row.values[property.id]) ||
-                                  (property.type === 'title' ? '无标题' : ' ')}
-                              </span>
+                              {property.type === 'title' ? (
+                                <span>{valueText(row.values[property.id]) || '无标题'}</span>
+                              ) : (
+                                <DatabaseValueDisplay
+                                  property={property}
+                                  value={row.values[property.id]}
+                                  organizationId={organizationId}
+                                />
+                              )}
                               {property.type === 'title' && row.pageId ? (
                                 <a
                                   className="database-title-open-link"
@@ -1915,9 +2078,12 @@ function TableDatabaseView({
                         ? (aggregations[property.id] as DatabaseAggregation)
                         : property.type === 'number'
                           ? 'sum'
-                          : 'count_all';
+                          : 'none';
                     return (
-                      <td key={property.id}>
+                      <td
+                        key={property.id}
+                        className={`database-col-type-${property.type}${aggregation === 'none' ? ' is-unset' : ''}`}
+                      >
                         <label>
                           <select
                             aria-label={`${property.name}统计`}
@@ -1963,7 +2129,12 @@ function TableDatabaseView({
         ) : null}
       </table>
       {canEdit ? (
-        <button className="database-new-row" type="button" onClick={addRow}>
+        <button
+          className="database-new-row"
+          type="button"
+          style={{ width: tableWidth }}
+          onClick={addRow}
+        >
           <Plus size={14} /> 新建记录
         </button>
       ) : !rows.length ? (
@@ -2259,16 +2430,19 @@ function RecordDrawer({
       <div className="database-record-drawer" role="dialog" aria-modal="true" aria-label="记录详情">
         <header>
           <strong>{rowTitle(row, properties)}</strong>
-          <a href={`/p/${encodeURIComponent(row.pageId)}`}>打开页面</a>
-          <button type="button" onClick={onClose} aria-label="关闭记录">
-            ×
+          <a href={`/p/${encodeURIComponent(row.pageId)}`}>
+            <ExternalLink size={13} /> 打开为页面
+          </a>
+          <button type="button" onClick={onClose} aria-label="关闭记录" title="关闭">
+            <X size={16} />
           </button>
         </header>
         <div>
           {properties.map((property) => (
             <div key={property.id} className="database-record-field">
-              <span>
-                {PROPERTY_LABELS[property.type]} · {property.name}
+              <span title={PROPERTY_LABELS[property.type]}>
+                {propertyTypeIcon(property.type, 13)}
+                {property.name}
               </span>
               <DatabaseCell
                 actorId={actorId}
@@ -2388,7 +2562,15 @@ function BoardDatabaseView(props: DatabaseViewProps) {
             }}
           >
             <header>
-              <span>{name}</span>
+              {name === '未分组' ? (
+                <span>{name}</span>
+              ) : (
+                <OptionChip
+                  name={name}
+                  options={optionNames(groupProperty)}
+                  status={groupProperty.type === 'status'}
+                />
+              )}
               <small>{group.rows.length}</small>
             </header>
             {group.rows.map((row) => (
@@ -2403,23 +2585,30 @@ function BoardDatabaseView(props: DatabaseViewProps) {
                 <button type="button" onClick={() => props.onExpandRow?.(row)}>
                   {rowTitle(row, props.properties)}
                 </button>
-                {props.properties
-                  .filter((property) => property.id !== titleProperty(props.properties)?.id)
-                  .slice(0, 3)
-                  .map((property) => (
-                    <div key={property.id}>
-                      <small>{property.name}</small>
-                      <DatabaseCell
-                        property={property}
-                        value={row.values[property.id]}
-                        disabled={!props.canEdit}
-                        organizationId={props.organizationId}
-                        rowPageId={row.pageId}
-                        onSave={(value) => props.saveCell(row, property, value)}
-                        onButton={() => props.executeButton(row, property)}
-                      />
-                    </div>
-                  ))}
+                <div className="database-card-values">
+                  {props.properties
+                    .filter(
+                      (property) =>
+                        property.id !== titleProperty(props.properties)?.id &&
+                        property.id !== groupProperty.id &&
+                        property.type !== 'button' &&
+                        row.values[property.id] !== false &&
+                        valueText(row.values[property.id]) !== '',
+                    )
+                    .slice(0, 4)
+                    .map((property) => (
+                      <div key={property.id} title={property.name}>
+                        {SELF_DESCRIBING_TYPES.has(property.type) ? null : (
+                          <small>{property.name}</small>
+                        )}
+                        <DatabaseValueDisplay
+                          property={property}
+                          value={row.values[property.id]}
+                          organizationId={props.organizationId}
+                        />
+                      </div>
+                    ))}
+                </div>
               </article>
             ))}
             {props.canEdit ? (
@@ -2614,9 +2803,18 @@ function ListDatabaseView(props: DatabaseViewProps) {
         <button key={row.id} type="button" onClick={() => props.onExpandRow?.(row)}>
           <FileText size={17} />
           <strong>{rowTitle(row, props.properties)}</strong>
-          {props.properties.slice(1, 4).map((property) => (
-            <span key={property.id}>{valueText(row.values[property.id]) || '—'}</span>
-          ))}
+          {props.properties
+            .filter((property) => property.id !== titleProperty(props.properties)?.id)
+            .slice(0, 3)
+            .map((property) => (
+              <span key={property.id} title={property.name}>
+                <DatabaseValueDisplay
+                  property={property}
+                  value={row.values[property.id]}
+                  organizationId={props.organizationId}
+                />
+              </span>
+            ))}
           <ExternalLink size={14} />
         </button>
       ))}
@@ -2637,11 +2835,19 @@ function GalleryDatabaseView(props: DatabaseViewProps) {
           <button type="button" onClick={() => props.onExpandRow?.(row)}>
             {rowTitle(row, props.properties)}
           </button>
-          {props.properties.slice(1, 4).map((property) => (
-            <p key={property.id}>
-              <small>{property.name}</small> {valueText(row.values[property.id]) || '—'}
-            </p>
-          ))}
+          {props.properties
+            .filter((property) => property.id !== titleProperty(props.properties)?.id)
+            .slice(0, 4)
+            .map((property) => (
+              <p key={property.id}>
+                <small>{property.name}</small>
+                <DatabaseValueDisplay
+                  property={property}
+                  value={row.values[property.id]}
+                  organizationId={props.organizationId}
+                />
+              </p>
+            ))}
         </article>
       ))}
     </div>
@@ -4435,7 +4641,7 @@ function PropertyDialog({
               <span>选项</span>
               <div className="database-field-option-list">
                 {optionItems.map((item) => {
-                  const swatch = optionSwatch(item);
+                  const swatch = optionSwatch(item, optionItems);
                   return (
                     <span
                       key={item}
@@ -6046,18 +6252,29 @@ export function DatabaseCanvas({
             </div>
           ) : null}
           {editable ? (
-            <button type="button" title="已归档记录" onClick={() => void openTrash()}>
+            <button
+              type="button"
+              title="已归档记录"
+              aria-label="已归档记录"
+              onClick={() => void openTrash()}
+            >
               <Archive size={14} />
             </button>
           ) : null}
           {editable ? (
-            <button type="button" title="自动化" onClick={() => setAutomationDialogOpen(true)}>
+            <button
+              type="button"
+              title="自动化"
+              aria-label="自动化"
+              onClick={() => setAutomationDialogOpen(true)}
+            >
               <Zap size={14} />
             </button>
           ) : null}
           <button
             type="button"
             aria-label="视图设置"
+            title="视图设置"
             onClick={() => setViewMenuOpen((open) => !open)}
           >
             <Settings2 size={15} />

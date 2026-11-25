@@ -129,3 +129,47 @@ describe('applyDatabaseView', () => {
     });
   });
 });
+
+describe('database value display helpers', () => {
+  it('colors common status and priority words semantically', async () => {
+    const { optionSwatch } = await import('./database-view');
+    expect(optionSwatch('已完成')).toEqual(optionSwatch('完成'));
+    expect(optionSwatch('进行中').color).not.toBe(optionSwatch('已完成').color);
+    expect(optionSwatch('受阻')).toEqual(optionSwatch('紧急'));
+    expect(optionSwatch('未开始')).toEqual(optionSwatch('低'));
+  });
+
+  it('gives other options distinct colors by their position', async () => {
+    const { optionSwatch } = await import('./database-view');
+    const options = ['前端', '后端', '设计'];
+    const colors = options.map((option) => optionSwatch(option, options).background);
+    expect(new Set(colors).size).toBe(3);
+  });
+
+  it('formats dates, ranges and numbers for reading', async () => {
+    const { formatDatabaseDate, formatDatabaseNumber, compactUrl } =
+      await import('./database-view');
+    expect(formatDatabaseDate({ start: '2026-11-20' })).toBe('2026年11月20日');
+    expect(formatDatabaseDate({ start: '2026-11-20', end: '2026-11-22' })).toBe(
+      '2026年11月20日 → 2026年11月22日',
+    );
+    expect(formatDatabaseDate(undefined)).toBe('');
+    expect(formatDatabaseNumber(1234.5)).toBe('1,234.5');
+    expect(formatDatabaseNumber(null)).toBe('');
+    expect(compactUrl('https://docs.bigrandall.io/')).toBe('docs.bigrandall.io');
+  });
+
+  it('shows nothing for an unset aggregation', async () => {
+    const { databaseAggregationValue } = await import('./database-view');
+    expect(databaseAggregationValue([], 'p', 'none')).toBe('');
+  });
+});
+
+describe('date-only display', () => {
+  it('shows the stored calendar day regardless of the viewer time zone', async () => {
+    const { formatDatabaseDate } = await import('./database-view');
+    expect(
+      formatDatabaseDate({ start: '2026-11-24T00:00:00.000Z', end: null, includeTime: false }),
+    ).toBe('2026年11月24日');
+  });
+});

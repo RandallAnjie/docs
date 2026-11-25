@@ -11773,3 +11773,413 @@ button.page-icon-display:hover {
   padding: 0 14px;
   font-size: 14px;
 }
+
+/* ── Database table redesign ───────────────────────────────────────────── */
+.database-table.database-table-grid {
+  min-width: 0;
+  color: #37352f;
+  font-size: 14px;
+}
+.database-table.database-table-grid th,
+.database-table.database-table-grid td {
+  height: 34px;
+  border-color: #ededeb;
+}
+.database-table.database-table-grid thead th {
+  background: #fff;
+  color: #787774;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom-color: #e3e2df;
+}
+.database-table.database-table-grid thead th.database-col-picked {
+  background: #eef4fd;
+  color: #1d5a91;
+}
+.database-table.database-table-grid .database-col-check,
+.database-table.database-table-grid .database-col-index,
+.database-table.database-table-grid .database-col-title {
+  background: #fff;
+}
+.database-table.database-table-grid .database-col-title {
+  box-shadow: inset -1px 0 0 #e3e2df;
+}
+.database-table.database-table-grid .database-col-index {
+  color: #b4b2ad;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* Row checkboxes stay out of the way until a row is hovered or picked. */
+.database-table.database-table-grid tbody .database-col-check input {
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.database-table.database-table-grid tbody tr:hover .database-col-check input,
+.database-table.database-table-grid tbody tr.selected .database-col-check input,
+.database-table.database-table-grid tbody .database-col-check input:focus-visible {
+  opacity: 1;
+}
+.database-table.database-table-grid tbody tr:hover td,
+.database-table.database-table-grid tbody tr:hover .database-col-check,
+.database-table.database-table-grid tbody tr:hover .database-col-index,
+.database-table.database-table-grid tbody tr:hover .database-col-title {
+  background: #f9f9f8;
+}
+.database-table.database-table-grid tr.selected td,
+.database-table.database-table-grid tr.selected .database-col-check,
+.database-table.database-table-grid tr.selected .database-col-index,
+.database-table.database-table-grid tr.selected .database-col-title {
+  background: #eef4fd;
+}
+.database-table.database-table-grid td.database-cell-selected {
+  box-shadow: inset 0 0 0 2px #2383e2;
+}
+.database-table.database-table-grid .database-cell-display {
+  min-height: 33px;
+  padding: 4px 8px;
+}
+.database-table.database-table-grid .database-cell-display.is-title {
+  font-weight: 500;
+}
+.database-table.database-table-grid .database-col-type-number,
+.database-table.database-table-grid .database-col-type-unique_id {
+  text-align: right;
+}
+.database-table.database-table-grid td.database-col-type-number .database-cell-display,
+.database-table.database-table-grid td.database-col-type-unique_id .database-cell-display {
+  justify-content: flex-end;
+}
+.database-table.database-table-grid td.database-col-type-number input {
+  text-align: right;
+}
+.database-table.database-table-grid .database-row-actions-heading,
+.database-table.database-table-grid .database-row-actions {
+  width: 92px !important;
+  background: transparent;
+}
+.database-table.database-table-grid .database-row-actions button {
+  border-radius: 4px;
+}
+.database-table.database-table-grid .database-row-actions button:hover {
+  background: #ebebea;
+  color: #37352f;
+}
+.database-table.database-table-grid .database-col-add {
+  background: #fff;
+}
+
+/* Footer calculations: quiet until hovered, and only shown when set. */
+.database-table.database-table-grid .database-table-aggregations td {
+  height: 30px;
+  background: #fff;
+  border-bottom: 0;
+  border-right-color: transparent;
+}
+.database-table.database-table-grid .database-table-aggregations label {
+  justify-content: flex-end;
+  padding: 0 8px;
+}
+.database-table.database-table-grid .database-table-aggregations b {
+  color: #55534e;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.database-table.database-table-grid .database-table-aggregations select {
+  max-width: 64px;
+  color: #9b9a97;
+  font-size: 11px;
+  text-align: right;
+  cursor: pointer;
+}
+.database-table.database-table-grid .database-table-aggregations td.is-unset select {
+  opacity: 0;
+}
+.database-table.database-table-grid .database-table-aggregations:hover td.is-unset select,
+.database-table.database-table-grid .database-table-aggregations td.is-unset select:focus {
+  opacity: 1;
+}
+.database-new-row {
+  max-width: 100%;
+  min-width: 260px;
+}
+
+/* Read-only values. */
+.database-option-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-option-chip.is-status {
+  border-radius: 999px;
+  padding: 1px 9px 1px 7px;
+}
+.database-option-chip.is-status > i {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.database-chip-list {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.database-display-number {
+  font-variant-numeric: tabular-nums;
+}
+.database-display-date {
+  color: #37352f;
+  white-space: nowrap;
+}
+.database-display-link {
+  overflow: hidden;
+  color: #37352f;
+  text-decoration: underline;
+  text-decoration-color: rgb(55 53 47 / 25%);
+  text-underline-offset: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-display-link:hover {
+  color: #1d5a91;
+  text-decoration-color: currentColor;
+}
+.database-display-files {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #787774;
+}
+.database-display-check {
+  color: #2383e2;
+}
+.database-display-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-cell-display .database-relation-cell button:disabled {
+  cursor: inherit;
+  opacity: 1;
+}
+
+/* Board cards: title plus a few values, no inline editors. */
+.database-card-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.database-card-values > div {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  color: #5f5e5a;
+}
+
+/* List and gallery values. */
+.database-list-view button > span {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.database-gallery-view article p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.database-gallery-view article p small {
+  flex: 0 0 auto;
+}
+
+/* Values keep their natural width inside a cell. */
+.database-table.database-table-grid .database-cell-display > :not(:first-child) {
+  flex: 0 0 auto;
+}
+.database-table.database-table-grid .database-cell-display > .database-option-chip,
+.database-table.database-table-grid .database-cell-display > .database-chip-list,
+.database-table.database-table-grid .database-cell-display > .database-display-date,
+.database-table.database-table-grid .database-cell-display > .database-display-number,
+.database-table.database-table-grid .database-cell-display > .database-display-link,
+.database-table.database-table-grid .database-cell-display > .database-display-files {
+  flex: 0 1 auto;
+}
+.database-table.database-table-grid .database-cell-display > .database-relation-cell {
+  flex: 1 1 auto;
+}
+.database-table.database-table-grid td.database-col-type-number .database-cell-display,
+.database-table.database-table-grid td.database-col-type-unique_id .database-cell-display {
+  justify-content: flex-end;
+  text-align: right;
+}
+.database-table.database-table-grid .database-checkbox-cell > span {
+  display: none;
+}
+
+/* Board. */
+.database-board > section > header {
+  font-weight: 500;
+}
+.database-board > section > header > .database-option-chip {
+  font-size: 13px;
+}
+.database-board article {
+  padding: 9px 10px 10px;
+  transition:
+    box-shadow 120ms ease,
+    border-color 120ms ease;
+}
+.database-board article:hover {
+  border-color: #d9d8d4;
+  box-shadow: 0 2px 6px rgb(15 15 15 / 7%);
+}
+.database-board article > button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #37352f;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+.database-board article > button:hover {
+  color: #1d5a91;
+}
+.database-board article > .database-card-values {
+  margin-top: 7px;
+}
+.database-card-values > div {
+  gap: 4px;
+}
+.database-card-values > div > small {
+  display: inline;
+  color: #9b9a97;
+  font-size: 12px;
+}
+.database-board > section > button {
+  font: inherit;
+  font-size: 13px;
+  border-radius: 6px;
+}
+.database-board > section > button:hover {
+  background: #f1f1ef;
+  color: #5f5e5a;
+}
+
+/* Record drawer: Notion-style label/value rows on white. */
+.database-record-drawer {
+  width: min(520px, 94vw);
+  background: #fff;
+}
+.database-record-drawer header {
+  gap: 6px;
+  padding: 12px 14px 12px 20px;
+  background: #fff;
+}
+.database-record-drawer header strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+.database-record-drawer header a,
+.database-record-drawer header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: #787774;
+  font-size: 13px;
+  text-decoration: none;
+}
+.database-record-drawer header a:hover,
+.database-record-drawer header button:hover {
+  background: #f1f1ef;
+  color: #37352f;
+}
+.database-record-drawer > div {
+  gap: 2px;
+  padding: 12px 14px 32px;
+}
+.database-record-field {
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.database-record-field:hover {
+  background: #f9f9f8;
+}
+.database-record-field > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: #787774;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-record-field > span > svg {
+  flex: 0 0 auto;
+  opacity: 0.8;
+}
+.database-record-field .database-input-cell input,
+.database-record-field .database-input-cell textarea {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #37352f;
+  font: inherit;
+  font-size: 14px;
+}
+.database-record-field .database-input-cell input:hover {
+  background: #f1f1ef;
+}
+.database-record-field .database-input-cell input:focus {
+  border-color: #9fb6d8;
+  background: #fff;
+  outline: 2px solid rgb(35 131 226 / 15%);
+}
+.database-record-field .database-input-cell input::placeholder,
+.database-table .database-input-cell input::placeholder {
+  color: #b4b2ad;
+}
+.database-record-field .database-input-cell.date-range {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+@media (max-width: 760px) {
+  .database-record-field {
+    grid-template-columns: 1fr;
+    gap: 2px;
+    padding: 6px;
+  }
+}

@@ -7,12 +7,20 @@ export type DateCellValue = {
   timezone: string | null;
 };
 
+/**
+ * Date-only values are stored as UTC midnight ISO strings, so a "T" alone does
+ * not mean the value has a time of day.
+ */
+export function isoHasTime(value: string): boolean {
+  return value.includes('T') && !/T00:00(?::00(?:\.0+)?)?Z$/.test(value);
+}
+
 export function parseDateCell(value: JsonValue | undefined): DateCellValue | null {
   if (typeof value === 'string') {
     const start = new Date(value);
     return Number.isNaN(start.getTime())
       ? null
-      : { start: start.toISOString(), end: null, includeTime: value.includes('T'), timezone: null };
+      : { start: start.toISOString(), end: null, includeTime: isoHasTime(value), timezone: null };
   }
   if (!value || Array.isArray(value) || typeof value !== 'object') return null;
   if (typeof value.start !== 'string') return null;
@@ -25,7 +33,8 @@ export function parseDateCell(value: JsonValue | undefined): DateCellValue | nul
   return {
     start: start.toISOString(),
     end,
-    includeTime: value.includeTime === true || value.start.includes('T'),
+    includeTime:
+      typeof value.includeTime === 'boolean' ? value.includeTime : isoHasTime(value.start),
     timezone: typeof value.timezone === 'string' ? value.timezone : null,
   };
 }
