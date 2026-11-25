@@ -225,6 +225,7 @@ import {
 } from './navigation';
 import { LandingPage } from './LandingPage';
 import { randallFlareLoginUrl, randallFlareLogoutUrl } from './randallflare-auth';
+import { placeSelectionToolbar, selectionRect } from './selection-toolbar';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 import {
   appShellClassName,
@@ -4032,6 +4033,72 @@ function CollaborativeEditor({
     to: number;
     text: string;
   } | null>(null);
+  const selectionToolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarPlacement, setToolbarPlacement] = useState<{
+    left: number;
+    top: number;
+    hidden: boolean;
+  } | null>(null);
+
+  const placeToolbar = useCallback(() => {
+    const currentEditor = editorInstance.current;
+    const node = selectionToolbarRef.current;
+    if (!aiToolbar || !currentEditor || !node) {
+      setToolbarPlacement(null);
+      return;
+    }
+    try {
+      const rect = selectionRect(
+        currentEditor.view.coordsAtPos(aiToolbar.from),
+        currentEditor.view.coordsAtPos(aiToolbar.to),
+      );
+      const header = currentEditor.view.dom
+        .closest('.document-area')
+        ?.querySelector<HTMLElement>('.document-header');
+      const topInset = header ? Math.max(0, header.getBoundingClientRect().bottom) : 0;
+      const box = node.getBoundingClientRect();
+      const placed = placeSelectionToolbar({
+        selection: rect,
+        width: box.width,
+        height: box.height,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        topInset,
+      });
+      // Hide while the selection is scrolled out of the visible document.
+      const hidden = rect.bottom < topInset || rect.top > window.innerHeight;
+      setToolbarPlacement((current) =>
+        current &&
+        current.left === placed.left &&
+        current.top === placed.top &&
+        current.hidden === hidden
+          ? current
+          : { left: placed.left, top: placed.top, hidden },
+      );
+    } catch {
+      setToolbarPlacement(null);
+    }
+  }, [aiToolbar]);
+
+  useLayoutEffect(() => {
+    placeToolbar();
+  }, [placeToolbar]);
+
+  useEffect(() => {
+    if (!aiToolbar) return;
+    let frame = 0;
+    const schedule = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(placeToolbar);
+    };
+    document.addEventListener('scroll', schedule, true);
+    window.addEventListener('resize', schedule);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('scroll', schedule, true);
+      window.removeEventListener('resize', schedule);
+    };
+  }, [aiToolbar, placeToolbar]);
 
   const updateSlashMenu = useCallback((currentEditor: Editor) => {
     const context = slashContext(currentEditor);
@@ -5014,8 +5081,13 @@ function CollaborativeEditor({
       {editable ? <EditorTableControls editor={editor} /> : null}
       {aiToolbar ? (
         <div
+          ref={selectionToolbarRef}
           className="editor-selection-toolbar"
-          style={{ left: aiToolbar.left, top: aiToolbar.top }}
+          style={{
+            left: toolbarPlacement?.left ?? aiToolbar.left,
+            top: toolbarPlacement?.top ?? aiToolbar.top,
+            visibility: toolbarPlacement && !toolbarPlacement.hidden ? 'visible' : 'hidden',
+          }}
           onMouseDown={(event) => event.preventDefault()}
         >
           {tools.map((tool) => (
