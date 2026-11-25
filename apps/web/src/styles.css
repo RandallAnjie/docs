@@ -12754,3 +12754,145 @@ button.page-icon-display:hover {
     margin: 0;
   }
 }
+
+/* Frozen columns and wrapped cells. */
+.database-table.database-table-grid .database-col-frozen {
+  background: #fff;
+}
+.database-table.database-table-grid tbody tr:hover .database-col-frozen {
+  background: #f9f9f8;
+}
+.database-table.database-table-grid tr.selected .database-col-frozen {
+  background: #eef4fd;
+}
+.database-table.database-table-grid .database-col-frozen-edge {
+  box-shadow:
+    inset -1px 0 0 #e3e2df,
+    6px 0 8px -6px rgb(15 15 15 / 18%);
+}
+.database-table.database-table-grid td.database-cell-wrap {
+  height: auto;
+  vertical-align: top;
+}
+.database-table.database-table-grid td.database-cell-wrap .database-cell-display {
+  align-items: flex-start;
+}
+.database-table.database-table-grid td.database-cell-wrap .database-cell-display > span,
+.database-table.database-table-grid td.database-cell-wrap .database-display-text {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.database-table.database-table-grid td.database-cell-wrap .database-chip-list {
+  flex-wrap: wrap;
+}
+.database-field-menu-pop hr {
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid #efeeeb;
+}
+
+/* Filter and sort panels. */
+.database-view-popover.database-filter-panel {
+  display: grid;
+  gap: 6px;
+  min-width: min(560px, calc(100vw - 32px));
+  padding: 10px;
+}
+.database-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.database-filter-join {
+  display: inline-flex;
+  justify-content: flex-end;
+  width: 44px;
+  color: #787774;
+  font-size: 13px;
+}
+.database-filter-panel select,
+.database-filter-panel input {
+  min-height: 30px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #dcd9d2;
+  border-radius: 6px;
+  background: #fff;
+  color: #37352f;
+  font: inherit;
+  font-size: 13px;
+}
+.database-filter-join select {
+  width: 44px;
+  padding: 4px;
+}
+.database-filter-remove,
+.database-sort-tools button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #787774;
+  cursor: pointer;
+}
+.database-filter-remove:hover,
+.database-sort-tools button:hover:not(:disabled) {
+  background: #ebebea;
+  color: #37352f;
+}
+.database-sort-tools {
+  display: inline-flex;
+  margin-left: auto;
+}
+.database-sort-tools button:disabled {
+  opacity: 0.35;
+}
+.database-filter-add {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #787774;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.database-filter-add:hover {
+  background: #f1f1ef;
+  color: #37352f;
+}
+.database-filter-empty {
+  margin: 2px 0 0;
+  color: #9b9a97;
+  font-size: 12px;
+}
+.database-view-chips .database-chip-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.database-view-popover.database-filter-panel {
+  max-width: min(680px, calc(100vw - 32px));
+}
+.database-view-popover.database-filter-panel select,
+.database-view-popover.database-filter-panel input {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.database-view-popover.database-filter-panel input[type='text'],
+.database-view-popover.database-filter-panel input:not([type]) {
+  width: 150px;
+}

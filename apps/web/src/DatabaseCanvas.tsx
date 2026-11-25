@@ -50,6 +50,10 @@ import {
   User,
   Zap,
   X,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  Pin,
+  WrapText,
 } from 'lucide-react';
 import {
   Fragment,
@@ -113,7 +117,8 @@ import {
   AGGREGATION_LABELS,
   applyDatabaseView,
   databaseAggregationValue,
-  FILTER_OPERATOR_LABELS,
+  filterOperatorLabel,
+  filterValueLabel,
   databaseCalendarDays,
   databaseDateRange,
   databaseViewFilters,
@@ -123,14 +128,18 @@ import {
   orderedVisibleDatabaseProperties,
   resizeDatabaseDate,
   optionSwatch,
+  cellCopyText,
   compactUrl,
   defaultColumnWidth,
+  parseCellText,
+  parseClipboardGrid,
   formatDatabaseDate,
   formatDatabaseNumber,
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
 import { DatabaseAutomationDialog } from './AutomationBuilder';
+import { DatabaseFilterPanel, DatabaseSortPanel } from './DatabaseViewControls';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
 import { autofillDatabaseProperty } from './api';
 import { datePart, fromDateParts, parseDateCell } from './date-value';
@@ -225,6 +234,13 @@ const VIEW_META: Record<
   feed: { label: 'Feed', icon: Rss },
   map: { label: '地图', icon: MapPinned },
 };
+
+function emptyCellValue(property: DatabasePropertySummary): JsonValue {
+  if (property.type === 'checkbox') return false;
+  if (property.type === 'title' || property.type === 'text') return '';
+  if (['multi_select', 'person', 'relation', 'files'].includes(property.type)) return [];
+  return null;
+}
 
 const EDITABLE_PROPERTY_TYPES = new Set<DatabasePropertyType>([
   'title',
@@ -1487,6 +1503,12 @@ function TableFieldHeader({
   onSort,
   onHide,
   onDelete,
+  onInsert,
+  onDuplicate,
+  frozen,
+  onFreeze,
+  wrapped,
+  onToggleWrap,
 }: {
   property: DatabasePropertySummary;
   selected: boolean;
@@ -1502,6 +1524,12 @@ function TableFieldHeader({
   onSort: (direction: 'ascending' | 'descending') => void;
   onHide: () => void;
   onDelete: () => void;
+  onInsert?: (side: 'left' | 'right') => void;
+  onDuplicate?: () => void;
+  frozen: boolean;
+  onFreeze: () => void;
+  wrapped: boolean;
+  onToggleWrap: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -1569,6 +1597,29 @@ function TableFieldHeader({
               <button type="button" role="menuitem" onClick={onConfigure}>
                 <Settings2 size={14} /> 字段配置
               </button>
+              {onInsert ? (
+                <>
+                  <button type="button" role="menuitem" onClick={() => onInsert('left')}>
+                    <ArrowLeftToLine size={14} /> 在左侧插入字段
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => onInsert('right')}>
+                    <ArrowRightToLine size={14} /> 在右侧插入字段
+                  </button>
+                </>
+              ) : null}
+              {onDuplicate && property.type !== 'title' ? (
+                <button type="button" role="menuitem" onClick={onDuplicate}>
+                  <Copy size={14} /> 复制字段
+                </button>
+              ) : null}
+              <hr />
+              <button type="button" role="menuitem" aria-pressed={frozen} onClick={onFreeze}>
+                <Pin size={14} /> {frozen ? '取消冻结' : '冻结到此列'}
+              </button>
+              <button type="button" role="menuitem" aria-pressed={wrapped} onClick={onToggleWrap}>
+                <WrapText size={14} /> {wrapped ? '取消自动换行' : '自动换行'}
+              </button>
+              <hr />
               {property.type !== 'title' ? (
                 <button type="button" role="menuitem" onClick={onHide}>
                   <EyeOff size={14} /> 隐藏字段
@@ -1612,6 +1663,8 @@ function TableDatabaseView({
   onAddProperty,
   renameProperty,
   deleteProperty,
+  createRow,
+  createProperty,
 }: DatabaseViewProps & { openProperty: (property: DatabasePropertySummary) => void }) {
   const groupPropertyId =
     typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : null;
@@ -1648,6 +1701,30 @@ function TableDatabaseView({
     columnWidths.reduce((total, width) => total + width, 0) +
     (onAddProperty && canEdit ? TABLE_ADD_COLUMN_WIDTH : 0) +
     (canEdit ? TABLE_ACTIONS_WIDTH : 0);
+  const frozenPropertyId =
+    typeof view.config.frozenPropertyId === 'string' ? view.config.frozenPropertyId : null;
+  const frozenIndex = frozenPropertyId
+    ? properties.findIndex((property) => property.id === frozenPropertyId)
+    : -1;
+  const stickyStyle = (index: number): React.CSSProperties | undefined =>
+    index <= frozenIndex
+      ? {
+          position: 'sticky',
+          left:
+            TABLE_LEADING_WIDTH +
+            columnWidths.slice(0, index).reduce((total, width) => total + width, 0),
+          zIndex: 3,
+        }
+      : undefined;
+  const frozenClass = (index: number) =>
+    index <= frozenIndex
+      ? ` database-col-frozen${index === frozenIndex ? ' database-col-frozen-edge' : ''}`
+      : '';
+  const wrappedIds = new Set(
+    Array.isArray(view.config.wrappedPropertyIds)
+      ? view.config.wrappedPropertyIds.filter((id): id is string => typeof id === 'string')
+      : [],
+  );
   const resizeColumn = (propertyId: string, width: number) => {
     void updateViewConfig({
       ...view.config,
@@ -1724,6 +1801,65 @@ function TableDatabaseView({
     });
     setFieldMenuId(null);
   };
+  const insertProperty = async (
+    anchor: DatabasePropertySummary,
+    side: 'left' | 'right',
+    input: { name: string; type: DatabasePropertyType; config: Record<string, JsonValue> },
+  ) => {
+    const created = await createProperty?.(input);
+    if (!created) return;
+    const order = properties.map((property) => property.id);
+    order.splice(order.indexOf(anchor.id) + (side === 'right' ? 1 : 0), 0, created.id);
+    const visible = Array.isArray(view.config.visiblePropertyIds)
+      ? [
+          ...view.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string'),
+          created.id,
+        ]
+      : null;
+    await updateViewConfig({
+      ...view.config,
+      propertyOrder: order,
+      ...(visible ? { visiblePropertyIds: visible } : {}),
+    });
+    if (input.type === 'text') {
+      setSelectedColumnId(created.id);
+      setRenamingId(created.id);
+    }
+  };
+  /** Text to copy: the focused cell, or the checked rows as tab-separated lines. */
+  const copyText = (): string | null => {
+    if (focus) {
+      const row = flatRows.find((candidate) => candidate.id === focus.rowId);
+      return row ? cellCopyText(row.values[focus.propertyId]) : null;
+    }
+    const chosen = flatRows.filter((row) => selected.has(row.id));
+    if (!chosen.length) return null;
+    return chosen
+      .map((row) => properties.map((property) => cellCopyText(row.values[property.id])).join('\t'))
+      .join('\n');
+  };
+  const pasteGrid = async (text: string) => {
+    if (!focus || !canEdit) return;
+    const grid = parseClipboardGrid(text);
+    const startRow = flatRows.findIndex((row) => row.id === focus.rowId);
+    const startColumn = properties.findIndex((property) => property.id === focus.propertyId);
+    if (startRow < 0 || startColumn < 0) return;
+    const created: Array<Record<string, JsonValue>> = [];
+    for (const [rowOffset, cells] of grid.entries()) {
+      const row = flatRows[startRow + rowOffset];
+      const values: Record<string, JsonValue> = {};
+      for (const [columnOffset, cellText] of cells.entries()) {
+        const property = properties[startColumn + columnOffset];
+        if (!property || !EDITABLE_PROPERTY_TYPES.has(property.type)) continue;
+        const value = parseCellText(property, cellText);
+        if (value === undefined) continue;
+        if (row) await saveCell(row, property, value);
+        else values[property.id] = value;
+      }
+      if (!row && Object.keys(values).length) created.push(values);
+    }
+    for (const values of created.slice(0, 100)) await createRow(values);
+  };
   const onGridKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (renamingId) return;
     if (editing) {
@@ -1759,7 +1895,24 @@ function TableDatabaseView({
       }
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
+      const text = copyText();
+      if (text !== null) {
+        event.preventDefault();
+        void navigator.clipboard?.writeText(text).catch(() => undefined);
+      }
+      return;
+    }
     if (!focus) return;
+    if ((event.key === 'Delete' || event.key === 'Backspace') && canEdit) {
+      const row = flatRows.find((candidate) => candidate.id === focus.rowId);
+      const property = properties.find((candidate) => candidate.id === focus.propertyId);
+      if (row && property && EDITABLE_PROPERTY_TYPES.has(property.type)) {
+        event.preventDefault();
+        void saveCell(row, property, emptyCellValue(property));
+      }
+      return;
+    }
     if (event.key === 'Enter' || event.key === 'F2') {
       event.preventDefault();
       setEditing(true);
@@ -1791,6 +1944,13 @@ function TableDatabaseView({
       tabIndex={0}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       onKeyDown={onGridKeyDown}
+      onPaste={(event) => {
+        if (!focus || editing || !canEdit) return;
+        const text = event.clipboardData.getData('text/plain');
+        if (!text) return;
+        event.preventDefault();
+        void pasteGrid(text);
+      }}
     >
       <table className="database-table database-table-grid" style={{ width: tableWidth }}>
         <thead>
@@ -1810,8 +1970,8 @@ function TableDatabaseView({
               return (
                 <th
                   key={property.id}
-                  className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}`}
-                  style={{ width }}
+                  className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}${frozenClass(index)}`}
+                  style={{ width, ...stickyStyle(index) }}
                 >
                   <TableFieldHeader
                     property={property}
@@ -1846,6 +2006,46 @@ function TableDatabaseView({
                     onDelete={() => {
                       setFieldMenuId(null);
                       void deleteProperty?.(property);
+                    }}
+                    onInsert={
+                      createProperty
+                        ? (side) => {
+                            setFieldMenuId(null);
+                            void insertProperty(property, side, {
+                              name: '新字段',
+                              type: 'text',
+                              config: {},
+                            });
+                          }
+                        : undefined
+                    }
+                    onDuplicate={
+                      createProperty
+                        ? () => {
+                            setFieldMenuId(null);
+                            void insertProperty(property, 'right', {
+                              name: `${property.name} 副本`,
+                              type: property.type,
+                              config: property.config,
+                            });
+                          }
+                        : undefined
+                    }
+                    frozen={index === frozenIndex}
+                    onFreeze={() => {
+                      setFieldMenuId(null);
+                      void updateViewConfig({
+                        ...view.config,
+                        frozenPropertyId: index === frozenIndex ? null : property.id,
+                      });
+                    }}
+                    wrapped={wrappedIds.has(property.id)}
+                    onToggleWrap={() => {
+                      setFieldMenuId(null);
+                      const next = new Set(wrappedIds);
+                      if (next.has(property.id)) next.delete(property.id);
+                      else next.add(property.id);
+                      void updateViewConfig({ ...view.config, wrappedPropertyIds: [...next] });
                     }}
                   />
                   <i
@@ -1940,7 +2140,7 @@ function TableDatabaseView({
                     <td className="database-col-index">
                       {(virtualize ? windowed.start : 0) + rowIndex + 1}
                     </td>
-                    {properties.map((property) => {
+                    {properties.map((property, index) => {
                       const selectedCell =
                         focus?.rowId === row.id && focus.propertyId === property.id;
                       const columnPicked = selectedColumnId === property.id;
@@ -1951,7 +2151,8 @@ function TableDatabaseView({
                       return (
                         <td
                           key={property.id}
-                          className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
+                          className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}${frozenClass(index)}${wrappedIds.has(property.id) ? ' database-cell-wrap' : ''}`}
+                          style={stickyStyle(index)}
                           onClick={() => {
                             setFocus({ rowId: row.id, propertyId: property.id });
                             setSelectedColumnId(property.id);
@@ -2146,24 +2347,29 @@ interface DatabaseViewProps {
   onAddProperty?: () => void;
   renameProperty?: (property: DatabasePropertySummary, name: string) => Promise<void>;
   deleteProperty?: (property: DatabasePropertySummary) => Promise<void>;
+  createProperty?: (input: {
+    name: string;
+    type: DatabasePropertyType;
+    config: Record<string, JsonValue>;
+  }) => Promise<DatabasePropertySummary | null>;
 }
 
 function DatabaseViewBar({
   view,
   properties,
+  organizationId,
   canEdit,
   onUpdate,
 }: {
   view: DatabaseViewSummary;
   properties: DatabasePropertySummary[];
+  organizationId: string;
   canEdit: boolean;
   onUpdate: (config: Record<string, JsonValue>) => Promise<void>;
 }) {
   const [panel, setPanel] = useState<'fields' | 'filter' | 'group' | 'sort' | null>(null);
-  const [filterPropertyId, setFilterPropertyId] = useState(properties[0]?.id ?? '');
-  const [filterOperator, setFilterOperator] = useState<DatabaseFilterOperator>('equals');
-  const [filterValue, setFilterValue] = useState('');
   const filters = databaseViewFilters(view.config);
+  const filterMode = view.config.filterMode === 'or' ? 'or' : 'and';
   const sorts = databaseViewSorts(view.config);
   const groupPropertyId =
     typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : '';
@@ -2205,121 +2411,77 @@ function DatabaseViewBar({
         <Eye size={14} /> 字段
       </button>
       <div className="database-view-chips">
-        {filters.map((filter, index) => (
-          <span key={`${filter.propertyId}:${index}`}>
-            {properties.find((property) => property.id === filter.propertyId)?.name ?? '字段'}{' '}
-            {FILTER_OPERATOR_LABELS[filter.operator]}
-            {filter.value !== null && filter.value !== '' ? ` ${valueText(filter.value)}` : ''}
-            {canEdit ? (
+        {filters.map((filter, index) => {
+          const property = properties.find((candidate) => candidate.id === filter.propertyId);
+          return (
+            <span key={`${filter.propertyId}:${index}`}>
               <button
                 type="button"
-                aria-label="移除筛选"
-                onClick={() =>
-                  void onUpdate({
-                    ...view.config,
-                    filters: filters
-                      .filter((_, candidate) => candidate !== index)
-                      .map(({ propertyId, operator, value }) => ({ propertyId, operator, value })),
-                  })
-                }
+                className="database-chip-open"
+                onClick={() => setPanel('filter')}
               >
-                ×
+                {property?.name ?? '字段'}{' '}
+                {filterOperatorLabel(filter.operator, property?.type ?? 'text')}
+                {filter.value !== null && filter.value !== ''
+                  ? ` ${filterValueLabel(filter.value)}`
+                  : ''}
               </button>
-            ) : null}
-          </span>
-        ))}
-      </div>
-      {panel === 'filter' ? (
-        <div className="database-view-popover">
-          <select
-            value={filterPropertyId}
-            onChange={(event) => setFilterPropertyId(event.target.value)}
-          >
-            {properties.map((property) => (
-              <option key={property.id} value={property.id}>
-                {property.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={filterOperator}
-            onChange={(event) => setFilterOperator(event.target.value as DatabaseFilterOperator)}
-          >
-            {Object.entries(FILTER_OPERATOR_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          {filterOperator !== 'is_empty' && filterOperator !== 'is_not_empty' ? (
-            <input
-              value={filterValue}
-              onChange={(event) => setFilterValue(event.target.value)}
-              placeholder="值"
-            />
-          ) : null}
-          <button
-            type="button"
-            disabled={!canEdit || !filterPropertyId}
-            onClick={() => {
-              void onUpdate({
-                ...view.config,
-                filters: [
-                  ...filters.map(({ propertyId, operator, value }) => ({
-                    propertyId,
-                    operator,
-                    value,
-                  })),
-                  {
-                    propertyId: filterPropertyId,
-                    operator: filterOperator,
-                    value:
-                      filterOperator === 'is_empty' || filterOperator === 'is_not_empty'
-                        ? null
-                        : filterValue,
-                  },
-                ],
-              });
-              setFilterValue('');
-            }}
-          >
-            添加
-          </button>
-        </div>
-      ) : null}
-      {panel === 'sort' ? (
-        <div className="database-view-popover">
-          {properties.map((property) => {
-            const current = sorts.find((sort) => sort.propertyId === property.id);
-            return (
-              <label key={property.id}>
-                {property.name}
-                <select
-                  disabled={!canEdit}
-                  value={current?.direction ?? ''}
-                  onChange={(event) => {
-                    const direction = event.target.value;
-                    const next = sorts.filter((sort) => sort.propertyId !== property.id);
-                    if (direction === 'ascending' || direction === 'descending') {
-                      next.push({ propertyId: property.id, direction });
-                    }
+              {canEdit ? (
+                <button
+                  type="button"
+                  aria-label="移除筛选"
+                  onClick={() =>
                     void onUpdate({
                       ...view.config,
-                      sorts: next.map(({ propertyId, direction: value }) => ({
-                        propertyId,
-                        direction: value,
-                      })),
-                    });
-                  }}
+                      filters: filters
+                        .filter((_, candidate) => candidate !== index)
+                        .map(({ propertyId, operator, value }) => ({
+                          propertyId,
+                          operator,
+                          value,
+                        })),
+                    })
+                  }
                 >
-                  <option value="">不排序</option>
-                  <option value="ascending">升序</option>
-                  <option value="descending">降序</option>
-                </select>
-              </label>
-            );
-          })}
-        </div>
+                  ×
+                </button>
+              ) : null}
+            </span>
+          );
+        })}
+      </div>
+      {panel === 'filter' ? (
+        <DatabaseFilterPanel
+          filters={filters}
+          mode={filterMode}
+          properties={properties}
+          organizationId={organizationId}
+          canEdit={canEdit}
+          onChange={(next, mode) =>
+            void onUpdate({
+              ...view.config,
+              filterMode: mode,
+              filters: next.map(({ propertyId, operator, value }) => ({
+                propertyId,
+                operator,
+                value,
+              })),
+            })
+          }
+        />
+      ) : null}
+      {panel === 'sort' ? (
+        <DatabaseSortPanel
+          sorts={sorts}
+          properties={properties}
+          canEdit={canEdit}
+          onChange={(next) =>
+            void onUpdate({
+              ...view.config,
+              sorts: next.map(({ propertyId, direction }) => ({ propertyId, direction })),
+            })
+          }
+        />
       ) : null}
       {panel === 'group' ? (
         <div className="database-view-popover">
@@ -5344,7 +5506,9 @@ export function DatabaseCanvas({
   }, [refresh]);
 
   const filteredRows = useMemo(() => {
-    const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {});
+    const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {}, {
+      userId: actorId,
+    });
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return viewed;
     return viewed.filter((row) =>
@@ -5352,7 +5516,7 @@ export function DatabaseCanvas({
         valueText(row.values[property.id]).toLocaleLowerCase().includes(normalized),
       ),
     );
-  }, [activeView?.config, query, snapshot.properties, snapshot.rows]);
+  }, [activeView?.config, actorId, query, snapshot.properties, snapshot.rows]);
 
   useEffect(() => {
     setSelectedRowIds((current) => {
@@ -5649,6 +5813,18 @@ export function DatabaseCanvas({
     },
     onExpandRow: (row) => setExpandedRowId(row.id),
     onAddProperty: editable ? () => setPropertyDialog('new') : undefined,
+    createProperty: editable
+      ? async (input) => {
+          try {
+            const result = await createDatabaseProperty(snapshot.database.id, input);
+            await refresh();
+            return result.property;
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : '无法新建字段');
+            return null;
+          }
+        }
+      : undefined,
     renameProperty: editable
       ? async (property, name) => {
           try {
@@ -5864,6 +6040,7 @@ export function DatabaseCanvas({
       </div>
       {activeView ? (
         <DatabaseViewBar
+          organizationId={snapshot.database.organizationId}
           canEdit={editable}
           properties={snapshot.properties}
           view={activeView}

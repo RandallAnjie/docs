@@ -173,3 +173,107 @@ describe('date-only display', () => {
     ).toBe('2026年11月24日');
   });
 });
+
+describe('database filters with context', () => {
+  const row = (values: Record<string, unknown>) =>
+    ({ id: 'r', pageId: 'p', databaseId: 'd', values }) as never;
+  const now = new Date(2026, 10, 25, 15, 0).getTime(); // Wednesday 2026-11-25 local
+
+  it('matches "me" in person fields', async () => {
+    const { applyDatabaseView } = await import('./database-view');
+    const rows = [row({ owner: ['u1'] }), row({ owner: ['u2'] })];
+    const filtered = applyDatabaseView(
+      rows,
+      [{ id: 'owner', type: 'person' } as never],
+      { filters: [{ propertyId: 'owner', operator: 'contains', value: { $me: true } }] },
+      { userId: 'u1' },
+    );
+    expect(filtered).toHaveLength(1);
+  });
+
+  it('resolves relative date ranges with Monday-start weeks', async () => {
+    const { relativeDateRange } = await import('./database-view');
+    expect(relativeDateRange('today', now)).toEqual(['2026-11-25', '2026-11-25']);
+    expect(relativeDateRange('this_week', now)).toEqual(['2026-11-23', '2026-11-29']);
+    expect(relativeDateRange('next_7_days', now)).toEqual(['2026-11-25', '2026-12-01']);
+    expect(relativeDateRange('this_month', now)).toEqual(['2026-11-01', '2026-11-30']);
+  });
+
+  it('filters overdue and this-week dates', async () => {
+    const { applyDatabaseView } = await import('./database-view');
+    const date = (day: string) => ({ start: `${day}T00:00:00.000Z`, includeTime: false });
+    const rows = [
+      row({ due: date('2026-11-20') }),
+      row({ due: date('2026-11-27') }),
+      row({ due: date('2026-12-10') }),
+      row({}),
+    ];
+    const properties = [{ id: 'due', type: 'date' } as never];
+    const overdue = applyDatabaseView(
+      rows,
+      properties,
+      { filters: [{ propertyId: 'due', operator: 'less_than', value: { $relative: 'today' } }] },
+      { now },
+    );
+    expect(overdue).toHaveLength(1);
+    const thisWeek = applyDatabaseView(
+      rows,
+      properties,
+      { filters: [{ propertyId: 'due', operator: 'equals', value: { $relative: 'this_week' } }] },
+      { now },
+    );
+    expect(thisWeek).toHaveLength(1);
+  });
+
+  it('matches multi-select values by option', async () => {
+    const { applyDatabaseView } = await import('./database-view');
+    const rows = [row({ tags: ['前端', '设计'] }), row({ tags: ['后端'] })];
+    const filtered = applyDatabaseView(rows, [{ id: 'tags', type: 'multi_select' } as never], {
+      filters: [{ propertyId: 'tags', operator: 'contains', value: '设计' }],
+    });
+    expect(filtered).toHaveLength(1);
+  });
+});
+
+describe('database clipboard', () => {
+  it('parses tab-separated grids with quoted multi-line cells', async () => {
+    const { parseClipboardGrid } = await import('./database-view');
+    expect(parseClipboardGrid('a\tb\r\nc\t"d\nline"\r\n')).toEqual([
+      ['a', 'b'],
+      ['c', 'd\nline'],
+    ]);
+    expect(parseClipboardGrid('single')).toEqual([['single']]);
+  });
+
+  it('parses pasted text by field type', async () => {
+    const { parseCellText } = await import('./database-view');
+    const status = { type: 'status', config: { options: ['未开始', '进行中'] } } as never;
+    expect(parseCellText(status, ' 进行中 ')).toBe('进行中');
+    expect(parseCellText({ type: 'number', config: {} } as never, '¥1,234.5')).toBe(1234.5);
+    expect(parseCellText({ type: 'number', config: {} } as never, '12%')).toBe(0.12);
+    expect(parseCellText({ type: 'number', config: {} } as never, 'abc')).toBeUndefined();
+    expect(parseCellText({ type: 'checkbox', config: {} } as never, '是')).toBe(true);
+    expect(
+      parseCellText({ type: 'multi_select', config: { options: ['前端'] } } as never, '前端，设计'),
+    ).toEqual(['前端', '设计']);
+    expect(parseCellText({ type: 'date', config: {} } as never, '2026年11月20日')).toEqual({
+      start: '2026-11-20T00:00:00.000Z',
+      end: null,
+      includeTime: false,
+    });
+    expect(
+      parseCellText({ type: 'date', config: {} } as never, '2026/11/20 → 2026/11/22'),
+    ).toMatchObject({
+      end: '2026-11-22T00:00:00.000Z',
+    });
+    expect(parseCellText({ type: 'person', config: {} } as never, 'Ada')).toBeUndefined();
+  });
+
+  it('copies dates in a form that pastes back', async () => {
+    const { cellCopyText, parseCellText } = await import('./database-view');
+    const value = { start: '2026-11-20T00:00:00.000Z', end: null, includeTime: false };
+    const text = cellCopyText(value);
+    expect(text).toBe('2026-11-20');
+    expect(parseCellText({ type: 'date', config: {} } as never, text)).toEqual(value);
+  });
+});
