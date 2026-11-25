@@ -66,12 +66,6 @@ import type {
 } from '@rdocs/shared';
 import { ATTACHMENT_DIRECT_UPLOAD_BYTES, ATTACHMENT_PART_BYTES } from '@rdocs/shared';
 import { cachedRequest, clearCachedRequest } from './request-cache';
-import type {
-  AuthenticationResponseJSON,
-  PublicKeyCredentialCreationOptionsJSON,
-  PublicKeyCredentialRequestOptionsJSON,
-  RegistrationResponseJSON,
-} from '@simplewebauthn/browser';
 
 interface RequestPolicy {
   retryTransientGet?: boolean;
@@ -124,10 +118,17 @@ async function request<T>(path: string, init?: RequestInit, policy?: RequestPoli
   if (!response) throw new Error('请求失败');
 
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith('/api/auth/')) {
+    const body = (await response.json().catch(() => null)) as {
+      error?: string;
+      code?: string;
+    } | null;
+    if (
+      !path.startsWith('/api/auth/') &&
+      (response.status === 401 || (response.status === 403 && body?.code === 'access_denied'))
+    ) {
+      // Signed out of RandallFlare, or taken off the member list: re-check the session.
       window.dispatchEvent(new Event('rdocs:auth-required'));
     }
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `请求失败（${response.status}）`);
   }
 
@@ -1310,49 +1311,6 @@ export function getAuthSession(): Promise<AuthSessionResponse> {
   return request('/api/auth/session');
 }
 
-export function beginPasskeyRegistration(input: {
-  email: string;
-  displayName: string;
-  enrollmentSecret?: string;
-  invitationToken?: string;
-}): Promise<{ challengeId: string; options: PublicKeyCredentialCreationOptionsJSON }> {
-  return request('/api/auth/passkey/registration/options', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
-}
-
-export function finishPasskeyRegistration(
-  challengeId: string,
-  response: RegistrationResponseJSON,
-): Promise<{ verified: true }> {
-  return request('/api/auth/passkey/registration/verify', {
-    method: 'POST',
-    body: JSON.stringify({ challengeId, response }),
-  });
-}
-
-export function beginPasskeyAuthentication(): Promise<{
-  challengeId: string;
-  options: PublicKeyCredentialRequestOptionsJSON;
-}> {
-  return request('/api/auth/passkey/authentication/options', { method: 'POST' });
-}
-
-export function finishPasskeyAuthentication(
-  challengeId: string,
-  response: AuthenticationResponseJSON,
-): Promise<{ verified: true }> {
-  return request('/api/auth/passkey/authentication/verify', {
-    method: 'POST',
-    body: JSON.stringify({ challengeId, response }),
-  });
-}
-
-export function logout(): Promise<{ ok: true }> {
-  return request('/api/auth/logout', { method: 'POST' });
-}
-
 export function listOrganizations(): Promise<{ organizations: OrganizationSummary[] }> {
   return request('/api/organizations');
 }
@@ -1744,26 +1702,6 @@ export async function runPageAi(
   if (body?.job) return { job: body.job };
   if (response.status === 401) window.dispatchEvent(new Event('rdocs:auth-required'));
   throw new Error(body?.error ?? `AI 请求失败（${response.status}）`);
-}
-
-export function listSessions() {
-  return request<{ sessions: import('@rdocs/shared').SessionSummary[] }>('/api/me/sessions');
-}
-
-export function revokeSession(sessionId: string) {
-  return request<{ ok: true }>(`/api/me/sessions/${encodeURIComponent(sessionId)}`, {
-    method: 'DELETE',
-  });
-}
-
-export function listDevices() {
-  return request<{ devices: import('@rdocs/shared').DeviceSummary[] }>('/api/me/devices');
-}
-
-export function revokeDevice(credentialId: string) {
-  return request<{ ok: true }>(`/api/me/devices/${encodeURIComponent(credentialId)}`, {
-    method: 'DELETE',
-  });
 }
 
 export function listWorkspaceTemplates(organizationId: string) {

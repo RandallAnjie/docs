@@ -1,4 +1,4 @@
-import { FileText, KeyRound, LockKeyhole, Table2, Users } from 'lucide-react';
+import { FileText, LockKeyhole, LogIn, ShieldCheck, Table2, Users } from 'lucide-react';
 
 function Brand() {
   return (
@@ -13,44 +13,38 @@ function Brand() {
   );
 }
 
-export function LandingPage() {
+export function LandingPage({ loginHref }: { loginHref: string }) {
   return (
     <main className="welcome-shell landing-shell">
       <nav className="welcome-nav">
         <Brand />
         <div className="landing-nav-actions">
-          <a className="quiet-link" href="/login">
+          <a className="primary-button compact-button" href={loginHref}>
+            <LogIn size={16} />
             登录
-          </a>
-          <a className="primary-button compact-button" href="/register">
-            <KeyRound size={16} />
-            注册
           </a>
         </div>
       </nav>
       <span className="welcome-orbit orbit-one" aria-hidden="true" />
       <span className="welcome-orbit orbit-two" aria-hidden="true" />
       <section className="welcome-content">
-        <span className="eyebrow">设备密钥 · 实时协作 · 自托管</span>
+        <span className="eyebrow">RandallFlare 登录 · 实时协作 · 自托管</span>
         <h1>团队知识，写在同一页上。</h1>
         <p>
-          Rdocs
-          是设备密钥优先的协作文档空间。登录和注册都不需要密码，私钥留在你的设备上；页面、数据库和权限在同一个工作区里完成。
+          Rdocs 是运行在 RandallFlare 上的协作文档空间。用你的 RandallFlare
+          账户登录即可进入，页面、数据库和权限在同一个工作区里完成。
         </p>
         <div className="welcome-actions">
-          <a className="primary-button" href="/register">
-            <KeyRound size={17} />
-            用设备密钥注册
-          </a>
-          <a className="secondary-button" href="/login">
-            已有账号？登录
+          <a className="primary-button" href={loginHref}>
+            <LogIn size={17} />
+            使用 RandallFlare 登录
           </a>
         </div>
         <div className="landing-feature-grid">
           <article>
-            <KeyRound size={18} aria-hidden="true" />
-            <strong>设备密钥登录</strong>
-            <p>生物识别、系统 PIN 或安全密钥。没有密码库，也没有 GitHub OAuth。</p>
+            <ShieldCheck size={18} aria-hidden="true" />
+            <strong>统一账户</strong>
+            <p>由 RandallFlare 网关完成登录和成员校验，Rdocs 不保存任何密码或密钥。</p>
           </article>
           <article>
             <Users size={18} aria-hidden="true" />
@@ -71,8 +65,8 @@ export function LandingPage() {
         <div className="preview-note">
           <FileText size={16} aria-hidden="true" />
           <span>
-            <strong>注册即创建工作区。</strong>
-            设备只把公钥交给 Rdocs，生物识别数据不会离开本机。
+            <strong>首次登录即创建工作区。</strong>
+            只有 Rdocs 成员名单里的 RandallFlare 账户可以进入；分享链接和发布站点仍可公开访问。
           </span>
         </div>
       </section>

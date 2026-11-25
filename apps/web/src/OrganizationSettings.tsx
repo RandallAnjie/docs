@@ -192,8 +192,10 @@ export function OrganizationSettings({
     <section className="tenant-panel organization-settings">
       <div className="tenant-panel-heading">
         <div>
-          <span>成员与设备密钥邀请</span>
-          <small>正式成员从邀请链接登记设备密钥；匿名用户不能进入文档空间</small>
+          <span>成员与邀请</span>
+          <small>
+            被邀请人用 RandallFlare 账户打开邀请链接即可加入；账户还需在 Rdocs 成员名单内
+          </small>
         </div>
         <b>
           <Users size={14} /> {members.length} 人

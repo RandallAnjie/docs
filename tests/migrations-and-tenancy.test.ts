@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AuthUserSummary } from '@rdocs/shared';
 
+import { authenticateRequest } from '../apps/worker/src/auth';
 import type { Env } from '../apps/worker/src/env';
 import {
   requirePageAction,
@@ -114,6 +115,7 @@ const MIGRATIONS = [
   '0031_rf_email_inbound.sql',
   '0032_workspace_extras.sql',
   '0033_share_link_editor.sql',
+  '0034_randallflare_sign_in.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -180,12 +182,20 @@ function testContext(): ExecutionContext {
 }
 
 describe('database migrations', () => {
-  it('applies the full chain and binds passkey registration to invitations', () => {
+  it('applies the full chain and links users to RandallFlare accounts', () => {
     const database = migratedDatabase();
-    const columns = database.prepare(`PRAGMA table_info('auth_challenges')`).all() as Array<{
+    const columns = database.prepare(`PRAGMA table_info('users')`).all() as Array<{
       name: string;
     }>;
-    expect(columns.map((column) => column.name)).toContain('invitation_id');
+    expect(columns.map((column) => column.name)).toContain('external_id');
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS total FROM sqlite_master
+            WHERE type = 'table' AND name IN ('sessions', 'auth_challenges', 'passkey_credentials')`,
+        )
+        .get(),
+    ).toEqual({ total: 0 });
     const notificationColumns = database
       .prepare(`PRAGMA table_info('notifications')`)
       .all() as Array<{
@@ -2806,7 +2816,64 @@ describe('Notion parity platform', () => {
     database.close();
   });
 
-  it('provisions a personal workspace for a new passkey user', async () => {
+  it('creates a RandallFlare member once and keeps their profile current', async () => {
+    const database = migratedDatabase();
+    const env = testEnv(database);
+    const request = (headers: Record<string, string>) =>
+      new Request('https://docs.test/api/auth/session', { headers });
+    const member = {
+      'RF-User-Id': 'cmrfaccount1',
+      'RF-User-Email': 'ada@rdocs.test',
+      'RF-User-Name': encodeURIComponent('Ada'),
+      'RF-User-Member': '1',
+    };
+    const first = await authenticateRequest(request(member), env);
+    expect(first.status).toBe('active');
+    const again = await authenticateRequest(
+      request({ ...member, 'RF-User-Name': encodeURIComponent('Ada L') }),
+      env,
+    );
+    expect(again.user?.id).toBe(first.user?.id);
+    expect(again.user?.displayName).toBe('Ada L');
+    expect(
+      database
+        .prepare('SELECT COUNT(*) AS total FROM users WHERE external_id = ?')
+        .get('cmrfaccount1'),
+    ).toEqual({ total: 1 });
+    expect(
+      database
+        .prepare(`SELECT role FROM organization_members WHERE user_id = ? AND status = 'active'`)
+        .get(first.user!.id),
+    ).toMatchObject({ role: 'owner' });
+
+    const outsider = await authenticateRequest(request({ 'RF-User-Id': 'cmoutsider' }), env);
+    expect(outsider.status).toBe('forbidden');
+    expect(
+      database
+        .prepare('SELECT COUNT(*) AS total FROM users WHERE external_id = ?')
+        .get('cmoutsider'),
+    ).toEqual({ total: 0 });
+    expect((await authenticateRequest(request({}), env)).status).toBe('anonymous');
+
+    database.prepare(`UPDATE users SET status = 'disabled' WHERE id = ?`).run(first.user!.id);
+    expect((await authenticateRequest(request(member), env)).status).toBe('forbidden');
+    database.close();
+  });
+
+  it('links a pre-provisioned user by email on first RandallFlare sign-in', async () => {
+    const database = migratedDatabase();
+    const existing = seedTenant(database, 'scim');
+    const result = await authenticateRequest(
+      new Request('https://docs.test/', {
+        headers: { 'RF-User-Id': 'cmscim', 'RF-User-Email': existing.email, 'RF-User-Owner': '1' },
+      }),
+      testEnv(database),
+    );
+    expect(result.user?.id).toBe(existing.id);
+    database.close();
+  });
+
+  it('provisions a personal workspace for a new user', async () => {
     const database = migratedDatabase();
     const now = Date.now();
     const user: AuthUserSummary = {

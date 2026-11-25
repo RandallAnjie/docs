@@ -274,9 +274,6 @@ export function PlatformSettings({
             event.preventDefault();
             setBusy(true);
             void updateEnterpriseSettings(organizationId, {
-              samlEnabled: enterprise.samlEnabled,
-              samlEntityId: enterprise.samlEntityId ?? undefined,
-              samlSsoUrl: enterprise.samlSsoUrl ?? undefined,
               scimEnabled: enterprise.scimEnabled,
               legalHold: enterprise.legalHold,
               sessionMaxAgeHours: enterprise.sessionMaxAgeHours,
@@ -286,34 +283,9 @@ export function PlatformSettings({
               .finally(() => setBusy(false));
           }}
         >
-          <label>
-            <span>SAML Entity ID</span>
-            <input
-              value={enterprise.samlEntityId ?? ''}
-              onChange={(event) =>
-                setEnterprise({ ...enterprise, samlEntityId: event.target.value || null })
-              }
-            />
-          </label>
-          <label>
-            <span>SAML SSO URL</span>
-            <input
-              value={enterprise.samlSsoUrl ?? ''}
-              onChange={(event) =>
-                setEnterprise({ ...enterprise, samlSsoUrl: event.target.value || null })
-              }
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={enterprise.samlEnabled}
-              onChange={(event) =>
-                setEnterprise({ ...enterprise, samlEnabled: event.target.checked })
-              }
-            />
-            启用 SAML（保存元数据后作为企业入口，不替代设备密钥）
-          </label>
+          <p className="tenant-panel-note">
+            登录统一由 RandallFlare 账户完成；SCIM 只负责同步成员资料与停用状态。
+          </p>
           <label>
             <input
               type="checkbox"

@@ -5,11 +5,9 @@ export interface Env {
   DocumentRoom?: DurableObjectNamespace;
   COLLAB_TICKET_SECRET: string;
   PHASE0_ADMIN_SECRET: string;
-  PASSKEY_ENROLLMENT_SECRET?: string;
   APP_ORIGIN?: string;
-  AUTH_MODE?: string;
-  PASSKEY_ORIGIN?: string;
-  PASSKEY_RP_ID?: string;
+  /** `members` (default): only the app owner and its RandallFlare member list; `accounts`: any RandallFlare account. */
+  RF_ACCESS_POLICY?: string;
   ENVIRONMENT?: string;
   RELEASE_SHA?: string;
   XAI_API_KEY?: string;

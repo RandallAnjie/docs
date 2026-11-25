@@ -1,164 +1,99 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  authMode,
-  decodeStoredPasskeyPublicKey,
-  encodePasskeyPublicKey,
+  accessPolicy,
   handleAuthApi,
+  identityAllowed,
   isTrustedMutationOrigin,
+  randallFlareIdentity,
 } from './auth';
 import type { Env } from './env';
 
 function env(overrides: Partial<Env> = {}): Env {
-  return {
-    AUTH_MODE: 'passkey',
-    PASSKEY_RP_ID: 'docs.example.com',
-    PASSKEY_ORIGIN: 'https://docs.example.com',
-    PASSKEY_ENROLLMENT_SECRET: 'a-secure-enrollment-secret-with-32-chars',
-    ...overrides,
-  } as Env;
+  return { APP_ORIGIN: 'https://docs.example.com', ...overrides } as Env;
 }
 
-describe('passkey authentication configuration', () => {
-  it('never re-enables anonymous mode from configuration', () => {
-    expect(authMode(env({ AUTH_MODE: 'phase0' }))).toBe('passkey');
-    expect(authMode(env({ AUTH_MODE: 'passkey' }))).toBe('passkey');
-    expect(authMode(env({ AUTH_MODE: undefined }))).toBe('passkey');
-    expect(authMode(env({ AUTH_MODE: 'typo' }))).toBe('passkey');
-  });
+function signedIn(headers: Record<string, string>): Request {
+  return new Request('https://docs.example.com/api/auth/session', { headers });
+}
 
-  it('accepts unsafe requests only from the configured browser Origin', () => {
-    expect(
-      isTrustedMutationOrigin(
-        new Request('https://docs.example.com/api/pages', {
-          method: 'POST',
-          headers: { origin: 'https://docs.example.com' },
-        }),
-        env(),
-      ),
-    ).toBe(true);
-    expect(
-      isTrustedMutationOrigin(
-        new Request('https://preview.example.com/api/pages', {
-          method: 'POST',
-          headers: { origin: 'https://docs.example.com' },
-        }),
-        env(),
-      ),
-    ).toBe(true);
-    expect(
-      isTrustedMutationOrigin(
-        new Request('https://docs.example.com/api/pages', {
-          method: 'POST',
-          headers: { origin: 'https://preview.example.com' },
-        }),
-        env(),
-      ),
-    ).toBe(false);
-    expect(
-      isTrustedMutationOrigin(
-        new Request('https://docs.example.com/api/pages', { method: 'POST' }),
-        env(),
-      ),
-    ).toBe(false);
-  });
-
-  it('fails closed when the relying-party settings are incomplete', () => {
-    const request = new Request('https://docs.example.com/api/pages', {
-      method: 'POST',
-      headers: { origin: 'https://docs.example.com' },
+describe('RandallFlare sign-in', () => {
+  it('reads the identity the gateway states', () => {
+    const identity = randallFlareIdentity(
+      signedIn({
+        'RF-User-Id': 'cmacct123',
+        'RF-User-Username': 'ada',
+        'RF-User-Name': encodeURIComponent('Ada 洛芙莱斯'),
+        'RF-User-Email': 'Ada@Example.com',
+        'RF-User-Member': '1',
+      }),
+    );
+    expect(identity).toEqual({
+      id: 'cmacct123',
+      email: 'ada@example.com',
+      username: 'ada',
+      name: 'Ada 洛芙莱斯',
+      owner: false,
+      member: true,
     });
-    expect(isTrustedMutationOrigin(request, env({ PASSKEY_ORIGIN: undefined }))).toBe(false);
-    expect(isTrustedMutationOrigin(request, env({ PASSKEY_RP_ID: 'other.example.com' }))).toBe(
+  });
+
+  it('treats a request without RF-User-Id as anonymous', () => {
+    expect(randallFlareIdentity(signedIn({ 'RF-User-Email': 'a@b.c' }))).toBeNull();
+    expect(randallFlareIdentity(signedIn({ 'RF-User-Id': '' }))).toBeNull();
+  });
+
+  it('counts the owner as a member', () => {
+    expect(
+      randallFlareIdentity(signedIn({ 'RF-User-Id': 'owner1', 'RF-User-Owner': '1' }))?.member,
+    ).toBe(true);
+  });
+
+  it('admits only members unless the policy opens Rdocs to every account', () => {
+    const outsider = randallFlareIdentity(signedIn({ 'RF-User-Id': 'acct2' }))!;
+    const emailVisitor = randallFlareIdentity(
+      signedIn({ 'RF-User-Id': 'email:x@y.z', 'RF-User-Email': 'x@y.z' }),
+    )!;
+    expect(accessPolicy(env())).toBe('members');
+    expect(accessPolicy(env({ RF_ACCESS_POLICY: 'ACCOUNTS' }))).toBe('accounts');
+    expect(identityAllowed(outsider, 'members')).toBe(false);
+    expect(identityAllowed(outsider, 'accounts')).toBe(true);
+    expect(identityAllowed(emailVisitor, 'accounts')).toBe(false);
+  });
+
+  it('accepts unsafe requests only from the app Origin', () => {
+    const post = (origin?: string) =>
+      new Request('https://docs.example.com/api/pages', {
+        method: 'POST',
+        headers: origin ? { origin } : {},
+      });
+    expect(isTrustedMutationOrigin(post('https://docs.example.com'), env())).toBe(true);
+    expect(isTrustedMutationOrigin(post('https://evil.example.com'), env())).toBe(false);
+    expect(isTrustedMutationOrigin(post(), env())).toBe(false);
+    expect(isTrustedMutationOrigin(post('https://docs.example.com'), env({ APP_ORIGIN: '' }))).toBe(
       false,
     );
   });
 
-  it('does not make existing login depend on the enrollment secret', () => {
-    const request = new Request('https://docs.example.com/api/pages', {
-      method: 'POST',
-      headers: { origin: 'https://docs.example.com' },
-    });
-    expect(isTrustedMutationOrigin(request, env({ PASSKEY_ENROLLMENT_SECRET: undefined }))).toBe(
-      true,
-    );
-  });
-
-  it('does not let a legacy Phase 0 value bypass Origin checks', () => {
-    expect(
-      isTrustedMutationOrigin(
-        new Request('https://preview.example.com/api/pages', { method: 'POST' }),
-        env({ AUTH_MODE: 'phase0' }),
-      ),
-    ).toBe(false);
-  });
-
-  it('keeps passkey registration fail-closed for legacy Phase 0 configuration', async () => {
-    const bootstrap = await handleAuthApi(
-      new Request('https://docs.example.com/api/auth/passkey/registration/options', {
-        method: 'POST',
-        headers: { origin: 'https://docs.example.com', 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      }),
-      env({ AUTH_MODE: 'phase0' }),
-      {} as ExecutionContext,
-    );
-    expect(bootstrap?.status).toBe(400);
-
-    const wrongOrigin = await handleAuthApi(
-      new Request('https://docs.example.com/api/auth/passkey/registration/options', {
-        method: 'POST',
-        headers: { origin: 'https://evil.example.com', 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      }),
-      env({ AUTH_MODE: 'phase0' }),
-      {} as ExecutionContext,
-    );
-    expect(wrongOrigin?.status).toBe(403);
-
-    const forwardedUrl = await handleAuthApi(
-      new Request('https://worker.internal/api/auth/passkey/registration/options', {
-        method: 'POST',
-        headers: { origin: 'https://docs.example.com', 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      }),
-      env({ AUTH_MODE: 'phase0' }),
-      {} as ExecutionContext,
-    );
-    expect(forwardedUrl?.status).toBe(400);
-  });
-
-  it('reports enrollment separately from passkey login configuration', async () => {
-    const response = await handleAuthApi(
-      new Request('https://docs.example.com/api/auth/session'),
-      env({ PASSKEY_ENROLLMENT_SECRET: undefined }),
-      {} as ExecutionContext,
-    );
+  it('reports an anonymous session with the gateway login path', async () => {
+    const response = await handleAuthApi(signedIn({}), env());
     expect(response?.status).toBe(200);
-    expect(await response?.json()).toMatchObject({
-      mode: 'passkey',
+    await expect(response?.json()).resolves.toMatchObject({
+      mode: 'randallflare',
+      status: 'anonymous',
       authenticated: false,
-      passkeyConfigured: true,
-      enrollmentConfigured: false,
-      registrationOpen: true,
-      expectedOrigin: 'https://docs.example.com',
+      loginPath: '/__rf_access/login',
+      logoutPath: '/__rf_access/logout',
     });
   });
-});
 
-describe('passkey public key storage', () => {
-  it('round-trips COSE bytes as base64url text', () => {
-    const original = new Uint8Array([165, 1, 2, 3, 38, 32, 1, 33, 88, 32, ...Array(32).fill(7)]);
-    const encoded = encodePasskeyPublicKey(original);
-    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(JSON.stringify(encoded)).not.toBe('"{}"');
-    expect([...decodeStoredPasskeyPublicKey(encoded)!]).toEqual([...original]);
-  });
-
-  it('rejects the JSON-empty-object blob RandallFlare D1 stored for ArrayBuffers', () => {
-    expect(decodeStoredPasskeyPublicKey('{}')).toBeNull();
-    expect(decodeStoredPasskeyPublicKey(new Uint8Array([0x7b, 0x7d]))).toBeNull();
-    expect(decodeStoredPasskeyPublicKey(new Uint8Array([0x7b, 0x7d]).buffer)).toBeNull();
-    expect(decodeStoredPasskeyPublicKey('')).toBeNull();
+  it('no longer serves passkey endpoints', async () => {
+    const response = await handleAuthApi(
+      new Request('https://docs.example.com/api/auth/passkey/authentication/options', {
+        method: 'POST',
+      }),
+      env(),
+    );
+    expect(response?.status).toBe(404);
   });
 });

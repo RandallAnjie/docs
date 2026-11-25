@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
 import type {
-  DeviceSummary,
   DirectoryPerson,
   NotificationPreferences,
   OAuthAppSummary,
-  SessionSummary,
   WorkspaceSkillSummary,
   WorkspaceTemplateSummary,
 } from '@rdocs/shared';
@@ -16,14 +14,10 @@ import {
   deleteWorkspaceSkill,
   getNotificationPreferences,
   instantiateWorkspaceTemplate,
-  listDevices,
   listDirectory,
   listOAuthApps,
-  listSessions,
   listWorkspaceSkills,
   listWorkspaceTemplates,
-  revokeDevice,
-  revokeSession,
   updateNotificationPreferences,
 } from './api';
 import { copyPage } from './api';
@@ -40,8 +34,6 @@ export function WorkspaceExtras({
   organizationId: string;
   canManage: boolean;
 }) {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [query, setQuery] = useState('');
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
@@ -59,17 +51,12 @@ export function WorkspaceExtras({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [sessionResult, deviceResult, directory, preference, templateResult, skillResult] =
-        await Promise.all([
-          listSessions(),
-          listDevices(),
-          listDirectory(organizationId, query),
-          getNotificationPreferences(organizationId),
-          listWorkspaceTemplates(organizationId),
-          listWorkspaceSkills(organizationId),
-        ]);
-      setSessions(sessionResult.sessions);
-      setDevices(deviceResult.devices);
+      const [directory, preference, templateResult, skillResult] = await Promise.all([
+        listDirectory(organizationId, query),
+        getNotificationPreferences(organizationId),
+        listWorkspaceTemplates(organizationId),
+        listWorkspaceSkills(organizationId),
+      ]);
       setPeople(directory.people);
       setPrefs(preference.preferences);
       setTemplates(templateResult.templates);
@@ -91,61 +78,16 @@ export function WorkspaceExtras({
     <section className="tenant-panel organization-settings">
       <div className="tenant-panel-heading">
         <div>
-          <span>安全、通讯录、模板与技能</span>
-          <small>会话、设备密钥、邮件偏好、组织模板和 Agent 技能</small>
+          <span>账户、通讯录、模板与技能</span>
+          <small>邮件偏好、通讯录、组织模板和 Agent 技能</small>
         </div>
       </div>
 
-      <h3>登录会话</h3>
-      {sessions.map((session) => (
-        <div key={session.id} className="member-row">
-          <div>
-            <strong>{session.current ? '当前会话' : '其他会话'}</strong>
-            <small>最近活动 {new Date(session.lastSeenAt).toLocaleString()}</small>
-          </div>
-          {!session.current ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void revokeSession(session.id)
-                  .then(() => load())
-                  .catch((reason) => setError(fail(reason, '无法撤销会话')))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              退出
-            </button>
-          ) : null}
-        </div>
-      ))}
-
-      <h3>设备密钥</h3>
-      {devices.map((device) => (
-        <div key={device.credentialId} className="member-row">
-          <div>
-            <strong>{device.label}</strong>
-            <small>
-              {device.deviceType === 'multiDevice' ? '可同步' : '本机'} · 登记于{' '}
-              {new Date(device.createdAt).toLocaleDateString()}
-            </small>
-          </div>
-          <button
-            type="button"
-            disabled={busy || devices.length <= 1}
-            onClick={() => {
-              setBusy(true);
-              void revokeDevice(device.credentialId)
-                .then(() => load())
-                .catch((reason) => setError(fail(reason, '无法移除设备')))
-                .finally(() => setBusy(false));
-            }}
-          >
-            移除
-          </button>
-        </div>
-      ))}
+      <h3>登录与账户</h3>
+      <p className="tenant-panel-note">
+        Rdocs 通过 RandallFlare 账户登录，不保存密码或设备密钥。登录设备、两步验证和会话请在
+        RandallFlare 账户设置中管理。
+      </p>
 
       <h3>邮件通知</h3>
       {prefs ? (

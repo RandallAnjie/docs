@@ -70,12 +70,6 @@ interface InvitationAcceptRow extends InvitationRow {
   token_hash: string;
 }
 
-export interface RegistrationInvitation {
-  id: string;
-  organizationId: string;
-  email: string;
-}
-
 interface SpaceRow {
   id: string;
   organization_id: string;
@@ -259,40 +253,6 @@ async function sha256(value: string): Promise<string> {
     await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)),
   );
   return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-export async function findRegistrationInvitation(
-  env: Env,
-  token: string,
-  email: string,
-): Promise<RegistrationInvitation | null> {
-  if (!token || token.length > 512) return null;
-  const row = await env.DB.prepare(
-    `SELECT id, organization_id, email
-       FROM invitations
-      WHERE token_hash = ? AND organization_role <> 'guest'
-        AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
-  )
-    .bind(await sha256(token), Date.now())
-    .first<{ id: string; organization_id: string; email: string }>();
-  return row && row.email === email
-    ? { id: row.id, organizationId: row.organization_id, email: row.email }
-    : null;
-}
-
-export async function registrationInvitationStillValid(
-  env: Env,
-  invitationId: string,
-  email: string,
-): Promise<boolean> {
-  const row = await env.DB.prepare(
-    `SELECT 1 AS found FROM invitations
-      WHERE id = ? AND email = ? AND organization_role <> 'guest'
-        AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
-  )
-    .bind(invitationId, email, Date.now())
-    .first<{ found: number }>();
-  return Boolean(row);
 }
 
 export async function signInvitationToken(env: Env, invitationId: string): Promise<string | null> {
@@ -528,7 +488,7 @@ export async function provisionPersonalWorkspace(env: Env, actor: AuthUserSummar
       'organization',
       organizationId,
       {
-        source: 'passkey_registration',
+        source: 'randallflare_sign_in',
       },
     ),
   ]);

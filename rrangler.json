@@ -24,10 +24,8 @@
   },
   "vars": {
     "APP_ORIGIN": "https://docs.bigrandall.io",
-    "AUTH_MODE": "passkey",
     "ENVIRONMENT": "production",
-    "PASSKEY_ORIGIN": "https://docs.bigrandall.io",
-    "PASSKEY_RP_ID": "docs.bigrandall.io",
+    "RF_ACCESS_POLICY": "members",
     "AI_API_BASE": "https://token.bigrandall.io/v1",
     "MAIL_FROM": "noreply@rf.bigrandall.io"
   },

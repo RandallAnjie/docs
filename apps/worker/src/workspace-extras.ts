@@ -1,10 +1,8 @@
 import type {
   AuthUserSummary,
-  DeviceSummary,
   DirectoryPerson,
   NotificationPreferences,
   OAuthAppSummary,
-  SessionSummary,
   WorkspaceSkillSummary,
   WorkspaceTemplateSummary,
 } from '@rdocs/shared';
@@ -59,85 +57,8 @@ export async function handleWorkspaceExtrasApi(
   request: Request,
   env: Env,
   actor: AuthUserSummary,
-  sessionId: string | null = null,
 ): Promise<Response | null> {
   const url = new URL(request.url);
-
-  if (url.pathname === '/api/me/sessions' && request.method === 'GET') {
-    const rows = (
-      await env.DB.prepare(
-        `SELECT id, created_at, last_seen_at, expires_at
-           FROM sessions WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
-          ORDER BY last_seen_at DESC LIMIT 50`,
-      )
-        .bind(actor.id, Date.now())
-        .all<{ created_at: number; expires_at: number; id: string; last_seen_at: number }>()
-    ).results;
-    const sessions: SessionSummary[] = rows.map((row) => ({
-      createdAt: Number(row.created_at),
-      current: row.id === sessionId,
-      expiresAt: Number(row.expires_at),
-      id: row.id,
-      lastSeenAt: Number(row.last_seen_at),
-    }));
-    return json({ sessions });
-  }
-
-  const sessionMatch = url.pathname.match(/^\/api\/me\/sessions\/([^/]+)$/);
-  if (sessionMatch?.[1] && request.method === 'DELETE') {
-    const result = await env.DB.prepare(
-      `UPDATE sessions SET revoked_at = ?
-        WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
-    )
-      .bind(Date.now(), decodeURIComponent(sessionMatch[1]), actor.id)
-      .run();
-    if (!result.meta.changes) return error('会话不存在', 404);
-    return json({ ok: true });
-  }
-
-  if (url.pathname === '/api/me/devices' && request.method === 'GET') {
-    const rows = (
-      await env.DB.prepare(
-        `SELECT credential_id, device_type, backed_up, label, created_at, last_used_at
-           FROM passkey_credentials WHERE user_id = ? ORDER BY created_at DESC`,
-      )
-        .bind(actor.id)
-        .all<{
-          backed_up: number;
-          created_at: number;
-          credential_id: string;
-          device_type: DeviceSummary['deviceType'];
-          label: string | null;
-          last_used_at: number | null;
-        }>()
-    ).results;
-    const devices: DeviceSummary[] = rows.map((row) => ({
-      backedUp: Boolean(row.backed_up),
-      createdAt: Number(row.created_at),
-      credentialId: row.credential_id,
-      deviceType: row.device_type,
-      label: row.label || '设备密钥',
-      lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
-    }));
-    return json({ devices });
-  }
-
-  const deviceMatch = url.pathname.match(/^\/api\/me\/devices\/([^/]+)$/);
-  if (deviceMatch?.[1] && request.method === 'DELETE') {
-    const count = await env.DB.prepare(
-      'SELECT COUNT(*) AS count FROM passkey_credentials WHERE user_id = ?',
-    )
-      .bind(actor.id)
-      .first<{ count: number }>();
-    if (Number(count?.count ?? 0) <= 1) return error('至少保留一把设备密钥', 409);
-    const result = await env.DB.prepare(
-      'DELETE FROM passkey_credentials WHERE credential_id = ? AND user_id = ?',
-    )
-      .bind(decodeURIComponent(deviceMatch[1]), actor.id)
-      .run();
-    if (!result.meta.changes) return error('设备不存在', 404);
-    return json({ ok: true });
-  }
 
   const templateList = url.pathname.match(/^\/api\/organizations\/([^/]+)\/templates$/);
   if (templateList?.[1]) {

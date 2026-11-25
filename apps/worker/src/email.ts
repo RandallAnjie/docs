@@ -120,10 +120,10 @@ export function invitationEmailBodies(input: { acceptUrl: string; organizationNa
   html: string;
   text: string;
 } {
-  const text = `你被邀请加入 ${input.organizationName}。\n\n打开这个链接，用设备密钥登记后即可加入：\n${input.acceptUrl}\n\n如果不是你本人，请忽略这封邮件。`;
+  const text = `你被邀请加入 ${input.organizationName}。\n\n打开这个链接，用 RandallFlare 账户登录后即可加入：\n${input.acceptUrl}\n\n如果不是你本人，请忽略这封邮件。`;
   const html = `<!doctype html><html lang="zh-CN"><body style="font:16px/1.55 system-ui,sans-serif;color:#222;max-width:560px">
 <p>你被邀请加入 <strong>${escapeHtml(input.organizationName)}</strong>。</p>
-<p><a href="${escapeHtml(input.acceptUrl)}">打开邀请并登记设备密钥</a></p>
+<p><a href="${escapeHtml(input.acceptUrl)}">打开邀请并用 RandallFlare 登录</a></p>
 <p style="color:#666;font-size:13px">如果不是你本人，请忽略这封邮件。</p>
 </body></html>`;
   return { html, text };

@@ -73,7 +73,7 @@ Phase 0 高风险协作闭环、Phase 1 MVP 产品闭环和 Phase 2 日常可用
 - 已完成：备份生产 D1，并精确应用 migrations `0004`–`0029`；迁移账本、85 个页面的编辑器 schema v10、50 张平台计数表（含 5 张 FTS5 影子表）、43 个显式索引、同步资源、页面链接投影、页面订阅、提醒、系统身份、设备密钥、组织所有者和外键完整性均已复验。`0027` 前原始导出位于 `/tmp/rdocs-db-backup-x1koXW/before-0027.sql`（179,346 bytes，SHA-256 `21a0fb8b94b6fa5c3109f86bc16fc8ecc17c15c2debd93e05b7e7e14cd513b65`）；因 RF-10 另有剔除错误 FTS 影子数据、补回 41 个迁移前显式索引并已实际重放及演练 `0027` 的恢复副本 `/tmp/rdocs-db-backup-x1koXW/before-0027-restorable.sql`（174,988 bytes，SHA-256 `01af7c9d554e8500cfd70405faea69b273ee22b91f0c6addf63817f928c621d6`）。
 - 已完成：格式、类型、单元/集成测试、构建、原生 WebSocket、generation 恢复和生产产品主链路 smoke。
 - 已完成：Rdocs v0.1 业务代码合并到 `main`，RandallFlare Git build 已自动激活并在正式域名复验。
-- 已完成：按 [设备密钥手册](PASSKEY_SETUP.md) 登记真实密钥、切换到 `passkey`、删除一次性登记 secret，并让旧 `phase0` 配置在代码中失效。
+- 已完成：登录统一切换为 RandallFlare 账户（见 [RandallFlare 登录](RANDALLFLARE_SIGN_IN.md)），移除设备密钥与自有会话。
 - 仍需持续完成：使用两个真实账号复验正式成员邀请、空间/页面授权、历史外部只读封顶、评论、在线撤权、分享和附件。
 
 ## 已知非阻塞差异
