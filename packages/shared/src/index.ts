@@ -393,23 +393,6 @@ export interface CalendarEventSummary {
   uid: string;
 }
 
-export interface SessionSummary {
-  createdAt: number;
-  current: boolean;
-  expiresAt: number;
-  id: string;
-  lastSeenAt: number;
-}
-
-export interface DeviceSummary {
-  backedUp: boolean;
-  createdAt: number;
-  credentialId: string;
-  deviceType: 'singleDevice' | 'multiDevice';
-  label: string;
-  lastUsedAt: number | null;
-}
-
 export interface WorkspaceTemplateSummary {
   createdAt: number;
   createdBy: string;
@@ -805,7 +788,7 @@ export interface RestoreRevisionResponse {
   idempotencyKey: string;
 }
 
-export type AuthMode = 'passkey';
+export type AuthMode = 'randallflare';
 
 export interface AuthUserSummary {
   id: string;
@@ -814,14 +797,23 @@ export interface AuthUserSummary {
   avatarUrl: string | null;
 }
 
+/** anonymous: not signed in; forbidden: signed in to RandallFlare but not on Rdocs' member list. */
+export type AuthStatus = 'anonymous' | 'forbidden' | 'active';
+
+export interface RandallFlareAccountSummary {
+  email: string | null;
+  name: string | null;
+  username: string | null;
+}
+
 export interface AuthSessionResponse {
   mode: AuthMode;
+  status: AuthStatus;
   authenticated: boolean;
   user: AuthUserSummary | null;
-  passkeyConfigured: boolean;
-  enrollmentConfigured: boolean;
-  registrationOpen: boolean;
-  expectedOrigin: string | null;
+  account: RandallFlareAccountSummary | null;
+  loginPath: string;
+  logoutPath: string;
 }
 
 export function isPageId(value: string): boolean {

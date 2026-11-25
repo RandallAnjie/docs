@@ -139,7 +139,7 @@ export function PlatformSettings({
 
       {tab === 'tokens' ? (
         <>
-          <form className="member-invite-form" onSubmit={(event) => void createToken(event)}>
+          <form className="settings-form" onSubmit={(event) => void createToken(event)}>
             <label>
               <span>名称</span>
               <input
@@ -148,9 +148,10 @@ export function PlatformSettings({
                 maxLength={80}
               />
             </label>
-            <div className="dialog-actions" style={{ flexWrap: 'wrap' }}>
+            <fieldset className="settings-checkbox-group">
+              <legend>权限</legend>
               {SCOPES.map((scope) => (
-                <label key={scope.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <label key={scope.id}>
                   <input
                     type="checkbox"
                     checked={scopes.includes(scope.id)}
@@ -165,7 +166,7 @@ export function PlatformSettings({
                   {scope.label}
                 </label>
               ))}
-            </div>
+            </fieldset>
             <button className="primary-button" type="submit" disabled={busy}>
               <KeyRound size={16} /> 创建令牌
             </button>
@@ -206,7 +207,14 @@ export function PlatformSettings({
                   .map((token) => (
                     <tr key={token.id}>
                       <td>{token.name}</td>
-                      <td>{token.scopes.join(', ')}</td>
+                      <td>
+                        {token.scopes
+                          .map(
+                            (scope) =>
+                              SCOPES.find((candidate) => candidate.id === scope)?.label ?? scope,
+                          )
+                          .join('、')}
+                      </td>
                       <td>
                         <code>{token.tokenPrefix}…</code>
                       </td>
@@ -269,14 +277,11 @@ export function PlatformSettings({
 
       {tab === 'enterprise' && enterprise ? (
         <form
-          className="member-invite-form"
+          className="settings-form"
           onSubmit={(event) => {
             event.preventDefault();
             setBusy(true);
             void updateEnterpriseSettings(organizationId, {
-              samlEnabled: enterprise.samlEnabled,
-              samlEntityId: enterprise.samlEntityId ?? undefined,
-              samlSsoUrl: enterprise.samlSsoUrl ?? undefined,
               scimEnabled: enterprise.scimEnabled,
               legalHold: enterprise.legalHold,
               sessionMaxAgeHours: enterprise.sessionMaxAgeHours,
@@ -286,34 +291,9 @@ export function PlatformSettings({
               .finally(() => setBusy(false));
           }}
         >
-          <label>
-            <span>SAML Entity ID</span>
-            <input
-              value={enterprise.samlEntityId ?? ''}
-              onChange={(event) =>
-                setEnterprise({ ...enterprise, samlEntityId: event.target.value || null })
-              }
-            />
-          </label>
-          <label>
-            <span>SAML SSO URL</span>
-            <input
-              value={enterprise.samlSsoUrl ?? ''}
-              onChange={(event) =>
-                setEnterprise({ ...enterprise, samlSsoUrl: event.target.value || null })
-              }
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={enterprise.samlEnabled}
-              onChange={(event) =>
-                setEnterprise({ ...enterprise, samlEnabled: event.target.checked })
-              }
-            />
-            启用 SAML（保存元数据后作为企业入口，不替代设备密钥）
-          </label>
+          <p className="tenant-panel-note">
+            登录统一由 RandallFlare 账户完成；SCIM 只负责同步成员资料与停用状态。
+          </p>
           <label>
             <input
               type="checkbox"
@@ -359,7 +339,7 @@ export function PlatformSettings({
       {tab === 'calendar' ? (
         <div>
           <form
-            className="member-invite-form"
+            className="settings-form"
             onSubmit={(event) => {
               event.preventDefault();
               setBusy(true);

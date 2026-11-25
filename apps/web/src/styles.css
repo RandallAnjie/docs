@@ -11150,3 +11150,626 @@ button.page-icon-display:hover {
     padding: 28px 20px 60px;
   }
 }
+
+/* ── Internal pages polish ─────────────────────────────────────────────── */
+
+/* The page view uses the same sidebar as the home view. */
+.sidebar-actions {
+  display: grid;
+  gap: 1px;
+  padding: 0 7px 8px;
+}
+.sidebar-actions button,
+.sidebar-actions a {
+  min-height: 29px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.sidebar-actions kbd {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  color: #aaa9a5;
+  font-family: inherit;
+  font-size: 10px;
+}
+.sidebar-section-heading {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 6px 0 8px;
+  color: #9b9a97;
+  font-size: 11px;
+  font-weight: 600;
+}
+.sidebar-section-heading p {
+  overflow: hidden;
+  margin: 0 auto 0 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-section-heading > button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9b9a97;
+  cursor: pointer;
+}
+.sidebar-section-heading > button:hover {
+  background: #e2e2e0;
+  color: #37352f;
+}
+.sidebar-section-heading > button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.sidebar-bottom {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 1px;
+  padding: 6px 7px 7px;
+  border-top: 1px solid #ededeb;
+}
+.sidebar-bottom button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #787774;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar-bottom button:hover {
+  background: #ebebea;
+  color: #37352f;
+}
+
+/* Space row actions sit on one line and appear on hover. */
+.notion-space-row > .notion-space-create-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+@media (hover: hover) {
+  .notion-space-row > .notion-space-create-actions {
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .notion-space-row:hover > .notion-space-create-actions,
+  .notion-space-row:focus-within > .notion-space-create-actions {
+    opacity: 1;
+  }
+}
+
+.notion-inline-empty p {
+  max-width: 460px;
+  padding: 0 16px;
+  text-align: center;
+  text-wrap: balance;
+}
+
+/* Slash menu group labels: no empty-state padding above them. */
+.slash-menu .slash-group-label {
+  padding: 0;
+  text-align: left;
+}
+.slash-menu .slash-group-label:first-child {
+  margin-top: 4px;
+}
+
+/* Header: page actions first, then a divider before inbox and account. */
+.header-global-actions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgb(55 53 47 / 9%);
+}
+.header-global-actions + .header-account {
+  margin-left: 2px;
+  padding-left: 0;
+  border-left: 0;
+}
+.share-button svg {
+  color: currentColor;
+}
+
+/* Mobile navigation drawer (both the home and page views). */
+.mobile-nav-toggle,
+.mobile-nav-backdrop {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .mobile-nav-toggle {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+  }
+  .mobile-nav-backdrop {
+    position: fixed;
+    z-index: 39;
+    inset: 0;
+    display: block;
+    background: rgb(15 15 15 / 28%);
+  }
+  .document-header {
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .header-leading {
+    gap: 4px;
+    min-width: 0;
+  }
+  .breadcrumbs {
+    min-width: 0;
+  }
+  .breadcrumbs > a:first-child {
+    display: none;
+  }
+  .header-optional,
+  .collaborator-stack,
+  .page-notification-control,
+  .page-reminder-control {
+    display: none !important;
+  }
+  .header-button.share-button {
+    width: 32px;
+    color: transparent;
+  }
+  .header-button.share-button svg {
+    color: #fff;
+  }
+  .header-global-actions {
+    margin-left: 2px;
+    padding-left: 4px;
+  }
+
+  /* Page view: the sidebar is a drawer instead of a hidden rail. */
+  .app-shell .sidebar {
+    display: none;
+  }
+  .app-shell.mobile-nav-open .sidebar,
+  .app-shell.mobile-nav-open.sidebar-collapsed .sidebar {
+    position: fixed;
+    z-index: 40;
+    inset: 0 auto 0 0;
+    display: flex;
+    width: min(300px, 86vw);
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    background: #f7f7f5;
+    box-shadow: 12px 0 32px rgb(15 15 15 / 18%);
+    transform: none;
+  }
+  .app-shell.mobile-nav-open .sidebar .sidebar-top {
+    height: auto;
+    padding: 6px 7px 4px;
+  }
+  .app-shell.mobile-nav-open .sidebar .workspace-switcher {
+    display: flex;
+    width: 100%;
+    height: auto;
+    padding: 6px 8px;
+    place-items: initial;
+  }
+  .app-shell.mobile-nav-open .sidebar .workspace-switcher-copy,
+  .app-shell.mobile-nav-open .sidebar .workspace-switcher > svg {
+    display: revert;
+  }
+  .app-shell.mobile-nav-open .sidebar .sidebar-actions,
+  .app-shell.mobile-nav-open .sidebar .sidebar-bottom {
+    display: grid;
+  }
+  .app-shell.mobile-nav-open .sidebar .sidebar-nav {
+    display: block;
+  }
+  .document-header {
+    padding-left: 8px;
+  }
+
+  /* Home view: the top bar opens the full sidebar as a drawer. */
+  .notion-home-sidebar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+  }
+  .notion-home-sidebar > .workspace-switcher-root {
+    margin-bottom: 0;
+  }
+  .notion-home-shell.mobile-nav-open .notion-home-sidebar {
+    z-index: 40;
+    right: auto;
+    bottom: 0;
+    width: min(300px, 86vw);
+    height: 100vh;
+    height: 100dvh;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px 7px 7px;
+    box-shadow: 12px 0 32px rgb(15 15 15 / 18%);
+  }
+  .notion-home-shell.mobile-nav-open .notion-home-sidebar > .mobile-nav-toggle {
+    align-self: flex-end;
+  }
+  .notion-home-shell.mobile-nav-open .notion-home-sidebar > .workspace-switcher-root {
+    width: 100%;
+    margin-bottom: 4px;
+  }
+  .notion-home-shell.mobile-nav-open .notion-primary-navigation,
+  .notion-home-shell.mobile-nav-open .notion-sidebar-bottom {
+    display: grid;
+  }
+  .notion-home-shell.mobile-nav-open .notion-space-navigation {
+    display: block;
+  }
+}
+
+/* Workspace settings: section navigation instead of one long scroll. */
+.organization-settings-dialog {
+  width: min(1060px, 100%);
+  height: min(760px, calc(100vh - 80px));
+  overflow: hidden;
+}
+.organization-settings-dialog > .dialog-close-button {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  right: 12px;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 10px;
+  background: #f7f7f5;
+  border-right: 1px solid #ededeb;
+}
+.settings-nav-title {
+  display: grid;
+  gap: 2px;
+  margin: 0 8px 14px;
+}
+.settings-nav-title strong {
+  overflow: hidden;
+  color: #37352f;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-nav-title small {
+  color: #9b9a97;
+  font-size: 12px;
+}
+.settings-nav button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5f5e5a;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-nav button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-nav button small {
+  margin-left: auto;
+  color: #9b9a97;
+  font-size: 11px;
+}
+.settings-nav button:hover {
+  background: #ebebea;
+  color: #37352f;
+}
+.settings-nav button.active {
+  background: #e8e7e4;
+  color: #37352f;
+  font-weight: 550;
+}
+.settings-content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 32px 40px;
+}
+.settings-content > .tenant-panel,
+.settings-content > .organization-settings,
+.settings-content > section,
+.settings-content > div {
+  max-width: 760px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+.settings-content .tenant-panel-heading {
+  align-items: flex-start;
+  margin: 0 40px 18px 0;
+  padding: 0 0 14px;
+  border-bottom: 1px solid #ededeb;
+}
+.settings-content .tenant-panel-heading span {
+  color: #37352f;
+  font-size: 18px;
+  font-weight: 600;
+}
+.settings-content .tenant-panel-heading small {
+  display: block;
+  margin-top: 4px;
+  color: #9b9a97;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.settings-content .member-invite-form .primary-button {
+  font-size: 14px;
+}
+.settings-content h3 {
+  margin: 22px 0 8px;
+  color: #37352f;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tenant-panel-note {
+  margin: 0 0 10px;
+  color: #787774;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .notion-home-sidebar > .workspace-switcher-root {
+    width: min(220px, calc(100vw - 150px));
+  }
+  .organization-settings-dialog {
+    height: 100vh;
+    height: 100dvh;
+  }
+  .settings-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .settings-nav {
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 12px 52px 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid #ededeb;
+  }
+  .settings-nav-title {
+    display: none;
+  }
+  .settings-nav button {
+    flex: 0 0 auto;
+    width: auto;
+  }
+  .settings-content {
+    padding: 18px 16px 32px;
+  }
+  .settings-content .tenant-panel-heading {
+    margin-right: 0;
+  }
+}
+
+/* Home sidebar page links match the page view's tree. */
+.notion-space-navigation .page-tree-row a {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+.notion-space-navigation .page-tree-row a span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Settings: the member panel is a plain section, not a card in a card. */
+.settings-content .tenant-panel,
+.settings-content .organization-settings {
+  background: transparent;
+}
+.settings-content .organization-settings > .tenant-panel-heading > b {
+  display: none;
+}
+.settings-content .role-badge,
+.settings-content .member-status {
+  white-space: nowrap;
+}
+.organization-settings-dialog > .dialog-close-button {
+  background: #fff;
+}
+.organization-settings-dialog > .dialog-close-button:hover {
+  background: #f1f1ef;
+}
+
+@media (max-width: 760px) {
+  .mobile-nav-backdrop {
+    z-index: 60;
+  }
+  .app-shell.mobile-nav-open .sidebar,
+  .app-shell.mobile-nav-open.sidebar-collapsed .sidebar,
+  .notion-home-shell.mobile-nav-open .notion-home-sidebar {
+    z-index: 61;
+  }
+  .organization-settings-dialog > .dialog-close-button {
+    top: 9px;
+    right: 8px;
+  }
+  .settings-content .member-table-wrap {
+    overflow-x: auto;
+  }
+}
+
+/* Settings forms: one field per row instead of the 3-column invite grid. */
+.settings-form {
+  display: grid;
+  gap: 12px;
+  max-width: 560px;
+  margin: 0 0 14px;
+}
+.settings-form label {
+  display: grid;
+  gap: 6px;
+  color: #5f5e5a;
+  font-size: 13px;
+}
+.settings-form label:has(> input[type='checkbox']) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-form input:not([type='checkbox']),
+.settings-form textarea,
+.settings-form select,
+.settings-search {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid #dcd9d2;
+  border-radius: 7px;
+  background: #fff;
+  color: #37352f;
+  font: inherit;
+  font-size: 14px;
+}
+.settings-form textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.settings-form input:focus,
+.settings-form textarea:focus,
+.settings-form select:focus,
+.settings-search:focus {
+  border-color: #9fb6d8;
+  outline: 2px solid rgb(35 131 226 / 18%);
+  outline-offset: 0;
+}
+.settings-form > .primary-button,
+.settings-form > .dialog-actions {
+  justify-self: start;
+}
+.settings-form > .primary-button {
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+.settings-search {
+  max-width: 360px;
+  margin-bottom: 6px;
+}
+.settings-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-checkbox-group legend {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 0;
+  color: #5f5e5a;
+  font-size: 13px;
+}
+.settings-checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #37352f;
+  font-size: 14px;
+}
+.settings-content .member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid #f0efec;
+}
+.settings-content .member-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-content .member-row strong {
+  color: #37352f;
+  font-size: 14px;
+  font-weight: 550;
+}
+.settings-content .member-row small {
+  overflow: hidden;
+  color: #9b9a97;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-content .member-row > button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid #dcd9d2;
+  border-radius: 6px;
+  background: #fff;
+  color: #37352f;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-content .member-row > button:hover {
+  background: #f7f7f5;
+}
+.settings-content .settings-form {
+  margin-top: 16px;
+}
+.settings-form .dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.settings-form .dialog-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 14px;
+}

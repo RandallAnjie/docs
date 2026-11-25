@@ -47,7 +47,7 @@ import {
   requireSpaceAction,
   type SpaceAction,
 } from './access';
-import { authenticateRequest, createSession, handleAuthApi, isTrustedMutationOrigin } from './auth';
+import { authenticateRequest, handleAuthApi, isTrustedMutationOrigin } from './auth';
 import {
   deliverDueReminders,
   deliverPageUpdateNotifications,
@@ -63,7 +63,6 @@ import { isCollaborationOriginAllowed } from './origins';
 import { dispatchRandallFlareEmail, handleInboundEmail } from './email';
 import { markdownToHtmlDocument, simplePdf, unzipEntries, zipStore } from './export-archive';
 import {
-  emailFromSamlResponse,
   handleEnterpriseProtocol,
   handleScimUsers,
   processDueScheduledJobs,
@@ -4190,27 +4189,6 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const enterprise = await handleEnterpriseProtocol(request, env);
   if (enterprise) return enterprise;
 
-  if (url.pathname === '/api/saml/acs' && request.method === 'POST') {
-    const form = await request.formData();
-    const email = emailFromSamlResponse(String(form.get('SAMLResponse') ?? ''));
-    if (!email) return error('SAML 断言无效', 400);
-    const user = await env.DB.prepare(
-      `SELECT u.id FROM users u
-         JOIN organization_members m ON m.user_id = u.id
-         JOIN enterprise_settings e ON e.organization_id = m.organization_id
-        WHERE LOWER(u.email) = ? AND u.status = 'active' AND e.saml_enabled = 1
-        LIMIT 1`,
-    )
-      .bind(email)
-      .first<{ id: string }>();
-    if (!user) return error('SAML 用户未开通或不存在', 403);
-    const session = await createSession(env, user.id);
-    return new Response(null, {
-      status: 303,
-      headers: { location: '/', 'set-cookie': session.cookie },
-    });
-  }
-
   const scimUsers = await handleScimUsers(request, env);
   if (scimUsers) return scimUsers;
 
@@ -4310,10 +4288,13 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
     }
   }
 
-  const authResponse = await handleAuthApi(request, env, context);
+  const authResponse = await handleAuthApi(request, env);
   if (authResponse) return authResponse;
-  const auth = await authenticateRequest(request, env, context);
-  if (!auth.user) return error('请先使用设备密钥登录', 401);
+  const auth = await authenticateRequest(request, env);
+  if (auth.status === 'forbidden' || (auth.identity && !auth.user)) {
+    return error('你的 RandallFlare 账户没有 Rdocs 的访问权限', 403, 'access_denied');
+  }
+  if (!auth.user) return error('请先使用 RandallFlare 账户登录', 401, 'login_required');
   if (
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) &&
     !isTrustedMutationOrigin(request, env)
@@ -4325,7 +4306,7 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
 
   const tenancyResponse = await handleTenancyApi(request, env, actor, context);
   if (tenancyResponse) return tenancyResponse;
-  const extrasResponse = await handleWorkspaceExtrasApi(request, env, actor, auth.sessionId);
+  const extrasResponse = await handleWorkspaceExtrasApi(request, env, actor);
   if (extrasResponse) return extrasResponse;
   const platformResponse = await handlePlatformApi(request, env, actor);
   if (platformResponse) return platformResponse;

@@ -63,6 +63,7 @@ export function appShellClassName(input: {
   sidebarPeek?: boolean;
   contextPanelOpen?: boolean;
   focusMode?: boolean;
+  mobileNavOpen?: boolean;
 }): string {
   return [
     'app-shell',
@@ -72,6 +73,7 @@ export function appShellClassName(input: {
     input.sidebarCollapsed && input.sidebarPeek ? 'sidebar-peek' : '',
     input.contextPanelOpen ? 'context-panel-open' : '',
     input.focusMode ? 'focus-mode' : '',
+    input.mobileNavOpen ? 'mobile-nav-open' : '',
   ]
     .filter(Boolean)
     .join(' ');

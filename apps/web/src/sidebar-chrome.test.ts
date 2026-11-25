@@ -101,6 +101,7 @@ describe('sidebar chrome helpers', () => {
     );
     expect(appShellClassName({ sidebarCollapsed: false, sidebarPeek: true })).toBe('app-shell');
     expect(appShellClassName({ focusMode: true })).toBe('app-shell focus-mode');
+    expect(appShellClassName({ mobileNavOpen: true })).toBe('app-shell mobile-nav-open');
   });
 
   it('does not keep a cramped icon rail that stacks the avatar and expand control', () => {

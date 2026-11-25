@@ -18,31 +18,6 @@ function error(message: string, status: number, code?: string): Response {
   return json({ error: message, ...(code ? { code } : {}) }, { status });
 }
 
-export function samlMetadataXml(origin: string): string {
-  const entity = `${origin}/api/saml/metadata`;
-  const acs = `${origin}/api/saml/acs`;
-  return `<?xml version="1.0"?>
-<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${entity}">
-  <SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
-    <AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${acs}" index="0" isDefault="true"/>
-  </SPSSODescriptor>
-</EntityDescriptor>`;
-}
-
-export function emailFromSamlResponse(encoded: string): string | null {
-  try {
-    const xml = atob(encoded.replace(/\s/g, ''));
-    const match =
-      xml.match(/<NameID[^>]*>([^<]+)<\/NameID>/i) ||
-      xml.match(/EmailAddress[^>]*>([^<]+)</i) ||
-      xml.match(/([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
-    const email = match?.[1]?.trim().toLowerCase() ?? '';
-    return email.includes('@') ? email : null;
-  } catch {
-    return null;
-  }
-}
-
 export function scimListResponse<T>(resources: T[]) {
   return {
     schemas: ['urn:ietf:params:scim:api:messages:2.0:ListResponse'],
@@ -532,11 +507,6 @@ export async function handleEnterpriseProtocol(
   env: Env,
 ): Promise<Response | null> {
   const url = new URL(request.url);
-  if (url.pathname === '/api/saml/metadata' && request.method === 'GET') {
-    return new Response(samlMetadataXml(url.origin), {
-      headers: { 'content-type': 'application/samlmetadata+xml; charset=utf-8' },
-    });
-  }
   if (url.pathname === '/scim/v2/ServiceProviderConfig' && request.method === 'GET') {
     return json({
       schemas: ['urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig'],

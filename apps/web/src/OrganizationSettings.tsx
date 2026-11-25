@@ -1,4 +1,17 @@
-import { Check, Clipboard, MailPlus, Shield, Trash2, UserRoundCog, Users } from 'lucide-react';
+import {
+  Activity,
+  Bell,
+  Check,
+  Clipboard,
+  MailPlus,
+  Plug,
+  Shield,
+  Trash2,
+  UserRoundCog,
+  Users,
+  UsersRound,
+  type LucideIcon,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import type {
@@ -31,6 +44,21 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   guest: '外部只读（历史）',
 };
 
+type SettingsSection = 'members' | 'groups' | 'activity' | 'account' | 'platform';
+
+const SETTINGS_SECTIONS: ReadonlyArray<{
+  id: SettingsSection;
+  label: string;
+  icon: LucideIcon;
+  adminOnly?: boolean;
+}> = [
+  { id: 'members', label: '成员与邀请', icon: Users },
+  { id: 'groups', label: '用户组', icon: UsersRound },
+  { id: 'activity', label: '活动日志', icon: Activity, adminOnly: true },
+  { id: 'account', label: '通知与扩展', icon: Bell },
+  { id: 'platform', label: '集成与平台', icon: Plug },
+];
+
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
@@ -58,6 +86,7 @@ export function OrganizationSettings({
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<OrganizationAssignableRole>('member');
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [section, setSection] = useState<SettingsSection>('members');
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const canManage = organization.role === 'owner' || organization.role === 'admin';
@@ -188,217 +217,257 @@ export function OrganizationSettings({
     }
   };
 
+  const sections = SETTINGS_SECTIONS.filter((candidate) => !candidate.adminOnly || canManage);
+
   return (
-    <section className="tenant-panel organization-settings">
-      <div className="tenant-panel-heading">
-        <div>
-          <span>成员与设备密钥邀请</span>
-          <small>正式成员从邀请链接登记设备密钥；匿名用户不能进入文档空间</small>
+    <div className="settings-layout">
+      <nav className="settings-nav" aria-label="设置分区">
+        <div className="settings-nav-title">
+          <strong>{organization.name}</strong>
+          <small>工作区设置</small>
         </div>
-        <b>
-          <Users size={14} /> {members.length} 人
-        </b>
-      </div>
-
-      {canManage ? (
-        <form className="member-invite-form" onSubmit={(event) => void invite(event)}>
-          <label>
-            <span>邀请邮箱</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="name@example.com"
-              required
-              maxLength={254}
-            />
-          </label>
-          <label>
-            <span>组织角色</span>
-            <select value={role} onChange={(event) => setRole(event.target.value as typeof role)}>
-              {organization.role === 'owner' ? <option value="admin">管理员</option> : null}
-              <option value="member">成员</option>
-            </select>
-          </label>
-          <button className="primary-button" type="submit" disabled={Boolean(busyId)}>
-            <MailPlus size={16} /> 创建邀请
-          </button>
-        </form>
-      ) : null}
-
-      {inviteUrl ? (
-        <div className="invite-link-result">
-          <div>
-            <Check size={16} />
-            <span>邀请链接已生成，7 天内有效</span>
-          </div>
-          <code>{inviteUrl}</code>
+        {sections.map(({ id, label, icon: Icon }) => (
           <button
+            key={id}
             type="button"
-            onClick={() => {
-              void navigator.clipboard.writeText(inviteUrl);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1_500);
-            }}
+            aria-current={section === id ? 'page' : undefined}
+            className={section === id ? 'active' : undefined}
+            onClick={() => setSection(id)}
           >
-            {copied ? <Check size={15} /> : <Clipboard size={15} />}
-            {copied ? '已复制' : '复制链接'}
+            <Icon size={16} />
+            <span>{label}</span>
+            {id === 'members' ? <small>{members.length}</small> : null}
           </button>
-        </div>
-      ) : null}
+        ))}
+      </nav>
+      <div className="settings-content">
+        {section === 'members' ? renderMembers() : null}
+        {section === 'groups' ? (
+          <GroupSettings
+            organizationId={organization.id}
+            organizationMembers={members}
+            canManage={canManage}
+          />
+        ) : null}
+        {section === 'activity' && canManage ? (
+          <OrganizationActivity organizationId={organization.id} />
+        ) : null}
+        {section === 'account' ? (
+          <WorkspaceExtras organizationId={organization.id} canManage={canManage} />
+        ) : null}
+        {section === 'platform' ? (
+          <PlatformSettings organizationId={organization.id} canManage={canManage} />
+        ) : null}
+        {error ? (
+          <p className="tenant-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
 
-      {loading ? (
-        <div className="settings-loading">
-          <div className="loading-mark" /> 加载成员…
+  function renderMembers() {
+    return (
+      <section className="tenant-panel organization-settings">
+        <div className="tenant-panel-heading">
+          <div>
+            <span>成员与邀请</span>
+            <small>
+              被邀请人用 RandallFlare 账户打开邀请链接即可加入；账户还需在 Rdocs 成员名单内
+            </small>
+          </div>
+          <b>
+            <Users size={14} /> {members.length} 人
+          </b>
         </div>
-      ) : (
-        <div className="member-table-wrap">
-          <table className="member-table">
-            <thead>
-              <tr>
-                <th>成员</th>
-                <th>角色</th>
-                <th>状态</th>
-                <th>
-                  <span className="sr-only">操作</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((member) => {
-                const protectedMember = member.role === 'owner' || member.userId === currentUserId;
-                return (
-                  <tr key={member.userId}>
-                    <td>
-                      <div className="member-identity">
-                        <span>{member.displayName.slice(0, 1).toUpperCase()}</span>
-                        <div>
-                          <strong>{member.displayName}</strong>
-                          <small>{member.email}</small>
+
+        {canManage ? (
+          <form className="member-invite-form" onSubmit={(event) => void invite(event)}>
+            <label>
+              <span>邀请邮箱</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+                required
+                maxLength={254}
+              />
+            </label>
+            <label>
+              <span>组织角色</span>
+              <select value={role} onChange={(event) => setRole(event.target.value as typeof role)}>
+                {organization.role === 'owner' ? <option value="admin">管理员</option> : null}
+                <option value="member">成员</option>
+              </select>
+            </label>
+            <button className="primary-button" type="submit" disabled={Boolean(busyId)}>
+              <MailPlus size={16} /> 创建邀请
+            </button>
+          </form>
+        ) : null}
+
+        {inviteUrl ? (
+          <div className="invite-link-result">
+            <div>
+              <Check size={16} />
+              <span>邀请链接已生成，7 天内有效</span>
+            </div>
+            <code>{inviteUrl}</code>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(inviteUrl);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1_500);
+              }}
+            >
+              {copied ? <Check size={15} /> : <Clipboard size={15} />}
+              {copied ? '已复制' : '复制链接'}
+            </button>
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="settings-loading">
+            <div className="loading-mark" /> 加载成员…
+          </div>
+        ) : (
+          <div className="member-table-wrap">
+            <table className="member-table">
+              <thead>
+                <tr>
+                  <th>成员</th>
+                  <th>角色</th>
+                  <th>状态</th>
+                  <th>
+                    <span className="sr-only">操作</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((member) => {
+                  const protectedMember =
+                    member.role === 'owner' || member.userId === currentUserId;
+                  return (
+                    <tr key={member.userId}>
+                      <td>
+                        <div className="member-identity">
+                          <span>{member.displayName.slice(0, 1).toUpperCase()}</span>
+                          <div>
+                            <strong>{member.displayName}</strong>
+                            <small>{member.email}</small>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td>
-                      {canManage && !protectedMember ? (
-                        <select
-                          value={member.role}
-                          disabled={busyId === member.userId}
-                          onChange={(event) =>
-                            void changeMember(member, {
-                              role: event.target.value as OrganizationAssignableRole,
-                            })
-                          }
-                        >
-                          {organization.role === 'owner' ? (
-                            <option value="admin">管理员</option>
-                          ) : null}
-                          <option value="member">成员</option>
-                          {member.role === 'guest' ? (
-                            <option value="guest" disabled>
-                              外部只读（历史）
-                            </option>
-                          ) : null}
-                        </select>
-                      ) : (
-                        <span className="role-badge">
-                          <Shield size={13} /> {ROLE_LABELS[member.role]}
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`member-status ${member.status}`}>
-                        {member.status === 'active'
-                          ? '正常'
-                          : member.status === 'suspended'
-                            ? '已停用'
-                            : '待接受'}
-                      </span>
-                    </td>
-                    <td>
-                      {canManage && !protectedMember ? (
-                        <div className="member-actions">
-                          <button
-                            type="button"
-                            title={member.status === 'active' ? '停用' : '恢复'}
-                            onClick={() =>
+                      </td>
+                      <td>
+                        {canManage && !protectedMember ? (
+                          <select
+                            value={member.role}
+                            disabled={busyId === member.userId}
+                            onChange={(event) =>
                               void changeMember(member, {
-                                status: member.status === 'active' ? 'suspended' : 'active',
+                                role: event.target.value as OrganizationAssignableRole,
                               })
                             }
-                            disabled={busyId === member.userId}
                           >
-                            <UserRoundCog size={15} />
-                          </button>
-                          {organization.role === 'owner' ? (
+                            {organization.role === 'owner' ? (
+                              <option value="admin">管理员</option>
+                            ) : null}
+                            <option value="member">成员</option>
+                            {member.role === 'guest' ? (
+                              <option value="guest" disabled>
+                                外部只读（历史）
+                              </option>
+                            ) : null}
+                          </select>
+                        ) : (
+                          <span className="role-badge">
+                            <Shield size={13} /> {ROLE_LABELS[member.role]}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`member-status ${member.status}`}>
+                          {member.status === 'active'
+                            ? '正常'
+                            : member.status === 'suspended'
+                              ? '已停用'
+                              : '待接受'}
+                        </span>
+                      </td>
+                      <td>
+                        {canManage && !protectedMember ? (
+                          <div className="member-actions">
                             <button
                               type="button"
-                              title="转让所有权"
-                              onClick={() => void transferOwnership(member)}
+                              title={member.status === 'active' ? '停用' : '恢复'}
+                              onClick={() =>
+                                void changeMember(member, {
+                                  status: member.status === 'active' ? 'suspended' : 'active',
+                                })
+                              }
                               disabled={busyId === member.userId}
                             >
-                              <Shield size={15} />
+                              <UserRoundCog size={15} />
                             </button>
-                          ) : null}
-                          <button
-                            className="danger"
-                            type="button"
-                            title="移出组织"
-                            onClick={() => void removeMember(member)}
-                            disabled={busyId === member.userId}
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+                            {organization.role === 'owner' ? (
+                              <button
+                                type="button"
+                                title="转让所有权"
+                                onClick={() => void transferOwnership(member)}
+                                disabled={busyId === member.userId}
+                              >
+                                <Shield size={15} />
+                              </button>
+                            ) : null}
+                            <button
+                              className="danger"
+                              type="button"
+                              title="移出组织"
+                              onClick={() => void removeMember(member)}
+                              disabled={busyId === member.userId}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-      {canManage && pendingInvitations.length ? (
-        <div className="pending-invitations">
-          <h3>
-            待接受邀请 <span>{pendingInvitations.length}</span>
-          </h3>
-          {pendingInvitations.map((invitation) => (
-            <div key={invitation.id}>
-              <div>
-                <strong>{invitation.email}</strong>
-                <small>
-                  {ROLE_LABELS[invitation.organizationRole]} ·{' '}
-                  {new Date(invitation.expiresAt).toLocaleString()}
-                </small>
+        {canManage && pendingInvitations.length ? (
+          <div className="pending-invitations">
+            <h3>
+              待接受邀请 <span>{pendingInvitations.length}</span>
+            </h3>
+            {pendingInvitations.map((invitation) => (
+              <div key={invitation.id}>
+                <div>
+                  <strong>{invitation.email}</strong>
+                  <small>
+                    {ROLE_LABELS[invitation.organizationRole]} ·{' '}
+                    {new Date(invitation.expiresAt).toLocaleString()}
+                  </small>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void revoke(invitation)}
+                  disabled={busyId === invitation.id}
+                >
+                  撤销
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => void revoke(invitation)}
-                disabled={busyId === invitation.id}
-              >
-                撤销
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      <GroupSettings
-        organizationId={organization.id}
-        organizationMembers={members}
-        canManage={canManage}
-      />
-      {canManage ? <OrganizationActivity organizationId={organization.id} /> : null}
-      <WorkspaceExtras organizationId={organization.id} canManage={canManage} />
-      <PlatformSettings organizationId={organization.id} canManage={canManage} />
-
-      {error ? (
-        <p className="tenant-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </section>
-  );
+            ))}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
 }

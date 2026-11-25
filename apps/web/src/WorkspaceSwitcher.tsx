@@ -154,7 +154,7 @@ export function WorkspaceSwitcher({
               <span style={{ background: identity.color }}>{firstCharacter(identity.name)}</span>
               <div>
                 <strong>{identity.name}</strong>
-                <small>设备密钥账户</small>
+                <small>RandallFlare 账户</small>
               </div>
             </div>
             <p>工作区</p>

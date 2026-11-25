@@ -18,11 +18,6 @@ import {
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { TextSelection } from '@tiptap/pm/state';
 import {
-  browserSupportsWebAuthn,
-  startAuthentication,
-  startRegistration,
-} from '@simplewebauthn/browser';
-import {
   Activity,
   Bold,
   ArchiveRestore,
@@ -48,7 +43,6 @@ import {
   Heading2,
   Heading3,
   Italic,
-  KeyRound,
   LibraryBig,
   Link2,
   ListTree,
@@ -63,6 +57,7 @@ import {
   MoreHorizontal,
   Music2,
   PanelLeftClose,
+  Menu,
   PanelLeftOpen,
   Paperclip,
   Plus,
@@ -81,6 +76,7 @@ import {
   Upload,
   Video,
   Zap,
+  X,
 } from 'lucide-react';
 import {
   useCallback,
@@ -116,8 +112,6 @@ import {
 } from '@rdocs/shared';
 
 import {
-  beginPasskeyAuthentication,
-  beginPasskeyRegistration,
   acceptInvitation,
   attachmentDownloadUrl,
   copyPage,
@@ -127,8 +121,6 @@ import {
   createSpace,
   deleteOrphanSyncedBlock,
   deletePage,
-  finishPasskeyAuthentication,
-  finishPasskeyRegistration,
   exportMarkdown,
   exportPageHtml,
   exportPagePdf,
@@ -143,7 +135,6 @@ import {
   listPages,
   listOrganizations,
   listSpaces,
-  logout,
   importMarkdown,
   importMarkdownZip,
   listOrganizationDatabases,
@@ -233,6 +224,7 @@ import {
   useAppLocation,
 } from './navigation';
 import { LandingPage } from './LandingPage';
+import { randallFlareLoginUrl, randallFlareLogoutUrl } from './randallflare-auth';
 import { firstCharacter, WorkspaceSwitcher } from './WorkspaceSwitcher';
 import {
   appShellClassName,
@@ -724,15 +716,8 @@ export function App() {
   }, [formToken, refreshSession, shareToken, siteRoute?.pageSlug, siteRoute?.siteSlug]);
 
   const signOut = useCallback(async () => {
-    try {
-      await logout();
-      await refreshSession();
-      window.location.assign('/');
-    } catch (reason) {
-      setSession(null);
-      setSessionError(reason instanceof Error ? reason.message : '无法退出当前会话');
-    }
-  }, [refreshSession]);
+    window.location.assign(randallFlareLogoutUrl(session?.logoutPath));
+  }, [session?.logoutPath]);
 
   if (formToken) return <PublicDatabaseForm token={formToken} />;
   if (siteRoute) return <PublishedSite {...siteRoute} />;
@@ -745,28 +730,14 @@ export function App() {
       <LoadingScreen message="正在打开 Rdocs…" />
     );
   }
+  if (session.status === 'forbidden') {
+    return <AccessDenied session={session} />;
+  }
   if (!session.authenticated || !session.user) {
-    if (invitationToken || authView === 'register') {
-      return (
-        <PasskeyGate
-          session={session}
-          mode="register"
-          invitationToken={invitationToken}
-          onAuthenticated={refreshSession}
-        />
-      );
+    if (pageId || invitationToken || authView !== 'landing') {
+      return <RandallFlareSignIn loginPath={session.loginPath} location={location} />;
     }
-    if (pageId || authView === 'login') {
-      return (
-        <PasskeyGate
-          session={session}
-          mode="login"
-          invitationToken={null}
-          onAuthenticated={refreshSession}
-        />
-      );
-    }
-    return <LandingPage />;
+    return <LandingPage loginHref={randallFlareLoginUrl(location, session.loginPath)} />;
   }
 
   const identity = identityFromUser(session.user);
@@ -896,167 +867,54 @@ function SharedPage({ token }: { token: string }) {
   );
 }
 
-function passkeyErrorMessage(reason: unknown): string {
-  if (reason instanceof Error) {
-    if (reason.name === 'NotAllowedError' || reason.name === 'AbortError') {
-      return '设备验证已取消或超时，请再试一次。';
-    }
-    if (reason.name === 'InvalidStateError') return '这把设备密钥已经登记过了。';
-    return reason.message;
-  }
-  return '设备密钥操作失败，请重试。';
+function RandallFlareSignIn({
+  loginPath,
+  location,
+}: {
+  loginPath: string;
+  location: { pathname: string; search: string; hash: string };
+}) {
+  const href = randallFlareLoginUrl(location, loginPath);
+  useEffect(() => {
+    window.location.replace(href);
+  }, [href]);
+  return (
+    <div className="full-state">
+      <Brand />
+      <div className="loading-mark" />
+      <p>正在前往 RandallFlare 登录…</p>
+      <a className="quiet-link" href={href}>
+        没有自动跳转？点此继续
+      </a>
+    </div>
+  );
 }
 
-function PasskeyGate({
-  session,
-  mode,
-  invitationToken,
-  onAuthenticated,
-}: {
-  session: AuthSessionResponse;
-  mode: 'login' | 'register';
-  invitationToken: string | null;
-  onAuthenticated: () => Promise<void>;
-}) {
-  const [registering, setRegistering] = useState(mode === 'register' || Boolean(invitationToken));
-  const [email, setEmail] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const supported = browserSupportsWebAuthn();
-  const originMatches =
-    !session.expectedOrigin || window.location.origin === session.expectedOrigin;
-
-  useEffect(() => {
-    setRegistering(mode === 'register' || Boolean(invitationToken));
-  }, [invitationToken, mode]);
-
-  const authenticate = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const { challengeId, options } = await beginPasskeyAuthentication();
-      const response = await startAuthentication({ optionsJSON: options });
-      await finishPasskeyAuthentication(challengeId, response);
-      await onAuthenticated();
-    } catch (reason) {
-      setError(passkeyErrorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const register = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const { challengeId, options } = await beginPasskeyRegistration({
-        email,
-        displayName,
-        invitationToken: invitationToken ?? undefined,
-      });
-      const response = await startRegistration({ optionsJSON: options });
-      await finishPasskeyRegistration(challengeId, response);
-      await onAuthenticated();
-    } catch (reason) {
-      setError(passkeyErrorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  let unavailable: ReactNode = null;
-  if (!session.passkeyConfigured) {
-    unavailable = <p className="auth-warning">管理员尚未配置 Rdocs 的设备密钥域名和登记密钥。</p>;
-  } else if (!originMatches) {
-    unavailable = (
-      <p className="auth-warning">
-        设备密钥只在正式域名生效。请前往{' '}
-        <a href={session.expectedOrigin ?? '/'}>{session.expectedOrigin}</a>。
-      </p>
-    );
-  } else if (!supported) {
-    unavailable = <p className="auth-warning">当前浏览器不支持 WebAuthn 设备密钥。</p>;
-  }
-
+function AccessDenied({ session }: { session: AuthSessionResponse }) {
+  const account = session.account;
+  const label = account?.username
+    ? `@${account.username}`
+    : (account?.email ?? account?.name ?? '当前账户');
   return (
     <main className="auth-shell">
       <nav className="auth-nav">
         <Brand />
-        <a className="quiet-link" href="/">
-          返回首页
-        </a>
       </nav>
       <section className="auth-card">
         <div className="auth-key-mark">
-          <KeyRound size={24} />
+          <LockKeyhole size={24} />
         </div>
-        <span className="auth-eyebrow">Rdocs 设备密钥</span>
-        <h1>
-          {registering ? (invitationToken ? '接受邀请并登记设备' : '登记这台设备') : '欢迎回来'}
-        </h1>
+        <span className="auth-eyebrow">RandallFlare 账户</span>
+        <h1>暂无访问权限</h1>
         <p>
-          {registering
-            ? '设备会在本地生成私钥；Rdocs 只保存公钥，无法读取你的生物识别数据。'
-            : '使用系统生物识别、PIN、手机或安全密钥登录，无需密码。'}
+          你已用 <strong>{label}</strong> 登录 RandallFlare，但这个账户不在 Rdocs
+          的成员名单里。请联系 Rdocs 所有者把你加入名单，或换一个账户登录。
         </p>
-
-        {unavailable ? (
-          unavailable
-        ) : registering ? (
-          <form className="auth-form" onSubmit={(event) => void register(event)}>
-            <label>
-              显示名称
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                autoComplete="name"
-                maxLength={80}
-                required
-              />
-            </label>
-            <label>
-              邮箱（仅用于账号标识）
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                autoComplete="email"
-                maxLength={254}
-                required
-              />
-            </label>
-            <button className="primary-button" type="submit" disabled={busy}>
-              <KeyRound size={17} />
-              {busy ? '正在验证设备…' : '创建设备密钥'}
-            </button>
-          </form>
-        ) : (
-          <button
-            className="primary-button auth-primary"
-            type="button"
-            onClick={() => void authenticate()}
-            disabled={busy}
-          >
-            <KeyRound size={17} />
-            {busy ? '正在等待设备…' : '使用设备密钥登录'}
-          </button>
-        )}
-
-        {error ? (
-          <p className="auth-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        {!unavailable ? (
-          <a className="auth-switch" href={registering ? '/login' : '/register'}>
-            {registering ? '已有可用设备密钥？返回登录' : '还没有可用设备密钥？用同一邮箱重新登记'}
-          </a>
-        ) : null}
-        <small className="auth-footnote">私钥不会离开设备 · 用户验证必需 · 会话可随时撤销</small>
+        <a className="primary-button auth-primary" href={randallFlareLogoutUrl(session.logoutPath)}>
+          <LogOut size={17} />
+          退出并换个账户
+        </a>
+        <small className="auth-footnote">成员名单在 RandallFlare 控制台的应用访问设置中管理</small>
       </section>
     </main>
   );
@@ -1146,8 +1004,22 @@ function TenantHome({
   const [accessSpace, setAccessSpace] = useState<SpaceSummary | null>(null);
   const [markdownSpaceId, setMarkdownSpaceId] = useState<string | null>(null);
   const [templateSpace, setTemplateSpace] = useState<SpaceSummary | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const markdownInput = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [discoveryTab, templateSpace, trashSpace, spaceDialogOpen, settingsOpen]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     document.title = 'Rdocs';
@@ -1372,7 +1244,7 @@ function TenantHome({
   };
 
   return (
-    <main className="notion-home-shell">
+    <main className={`notion-home-shell${mobileNavOpen ? ' mobile-nav-open' : ''}`}>
       <input
         ref={markdownInput}
         type="file"
@@ -1381,6 +1253,15 @@ function TenantHome({
         onChange={(event) => void importMarkdownFile(event.target.files?.[0])}
       />
       <aside className="notion-home-sidebar">
+        <button
+          className="icon-button subtle mobile-nav-toggle"
+          type="button"
+          aria-label={mobileNavOpen ? '关闭导航' : '打开导航'}
+          aria-expanded={mobileNavOpen}
+          onClick={() => setMobileNavOpen((open) => !open)}
+        >
+          {mobileNavOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
         <WorkspaceSwitcher
           organizations={organizations}
           activeOrganizationId={selectedOrganizationId}
@@ -1538,6 +1419,13 @@ function TenantHome({
           ) : null}
         </div>
       </aside>
+      {mobileNavOpen ? (
+        <div
+          className="mobile-nav-backdrop"
+          role="presentation"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
 
       <section className="notion-home-main">
         <header className="notion-home-header">
@@ -1784,7 +1672,7 @@ function TenantHome({
               aria-label="关闭设置"
               onClick={() => setSettingsOpen(false)}
             >
-              ×
+              <X size={17} />
             </button>
             <OrganizationSettings
               organization={selectedOrganization}
@@ -2192,6 +2080,9 @@ function DocumentWorkspace({
   const [creatingUnder, setCreatingUnder] = useState<string | null | undefined>(undefined);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   const transcribeInput = useRef<HTMLInputElement>(null);
   const [appearanceDialogOpen, setAppearanceDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
@@ -2319,6 +2210,23 @@ function DocumentWorkspace({
   const activeSpace = organizationSpaces.find((space) => space.id === page.spaceId);
   const sidebarHidden = desktopSidebar && sidebarCollapsed;
   const sidebarPeeking = sidebarHidden && sidebarPeek;
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [requestedPageId, discoveryTab]);
+
+  useEffect(() => {
+    if (desktopSidebar) setMobileNavOpen(false);
+  }, [desktopSidebar]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     writeSidebarCollapsed(sidebarCollapsed, window.localStorage);
@@ -2952,6 +2860,7 @@ function DocumentWorkspace({
         sidebarPeek: sidebarPeeking,
         contextPanelOpen,
         focusMode,
+        mobileNavOpen,
       })}
     >
       {sidebarHidden ? (
@@ -3001,33 +2910,50 @@ function DocumentWorkspace({
             {sidebarHidden ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
         </div>
-        <div className="sidebar-actions">
-          {!renewTicket ? (
+        {!renewTicket ? (
+          <div className="sidebar-actions">
             <button type="button" onClick={() => setDiscoveryTab('search')}>
               <Search size={16} />
               搜索 <kbd>{searchShortcutLabel()}</kbd>
             </button>
-          ) : null}
-          {!renewTicket ? (
             <a href="/">
               <FileText size={16} />
               主页
             </a>
-          ) : null}
-          {canEditStructure ? (
-            <button
-              onClick={() => void createAndOpenPage(null)}
-              disabled={creatingUnder !== undefined}
-            >
-              <FilePlus2 size={16} />
-              {creatingUnder === null ? '正在创建…' : '新建页面'}
+            <button type="button" onClick={() => setDiscoveryTab('library')}>
+              <LibraryBig size={16} />
+              资料库
             </button>
-          ) : null}
-        </div>
+            <button type="button" onClick={() => setDiscoveryTab('recent')}>
+              <Clock3 size={16} />
+              最近访问
+            </button>
+            <button type="button" onClick={() => setDiscoveryTab('updates')}>
+              <Activity size={16} />
+              所有更新
+            </button>
+            <button type="button" onClick={() => setDiscoveryTab('favorites')}>
+              <Star size={16} />
+              收藏
+            </button>
+          </div>
+        ) : null}
         <nav className="sidebar-nav" ref={sidebarNavigation}>
           <div className="sidebar-section-heading">
-            <p>{activeSpace?.name ?? '团队空间'}</p>
-            <span>{pages.length}</span>
+            <p>{activeSpace?.name ?? (renewTicket ? '页面' : '团队空间')}</p>
+            {canEditStructure ? (
+              <button
+                type="button"
+                aria-label={`在${activeSpace?.name ?? '当前空间'}中新建页面`}
+                title="新建页面"
+                onClick={() => void createAndOpenPage(null)}
+                disabled={creatingUnder !== undefined}
+              >
+                <Plus size={14} />
+              </button>
+            ) : (
+              <span>{pages.length}</span>
+            )}
           </div>
           <PageTree
             nodes={pageTree}
@@ -3086,26 +3012,27 @@ function DocumentWorkspace({
               <div className="page-tree-empty">还没有页面</div>
             ))}
           {treeError && <div className="page-tree-error">{treeError}</div>}
-          <div className="sidebar-shortcuts">
-            <button type="button" onClick={() => setDiscoveryTab('library')}>
-              <LibraryBig size={16} />
-              <span>资料库</span>
-            </button>
-            <button type="button" onClick={() => setDiscoveryTab('favorites')}>
-              <Star size={16} />
-              <span>收藏</span>
-            </button>
-            <button type="button" onClick={() => setDiscoveryTab('recent')}>
-              <Clock3 size={16} />
-              <span>最近访问</span>
-            </button>
-            <button type="button" onClick={() => setDiscoveryTab('updates')}>
-              <Activity size={16} />
-              <span>所有更新</span>
+        </nav>
+        {!renewTicket && activeSpace ? (
+          <div className="sidebar-bottom">
+            {canEditStructure ? (
+              <button type="button" onClick={() => setTemplateDialogOpen(true)}>
+                <Sparkles size={16} /> 模板
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setTrashDialogOpen(true)}>
+              <Trash2 size={16} /> 回收站
             </button>
           </div>
-        </nav>
+        ) : null}
       </aside>
+      {mobileNavOpen ? (
+        <div
+          className="mobile-nav-backdrop"
+          role="presentation"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
 
       <main className="document-area" aria-busy={isSwitching}>
         <input
@@ -3135,6 +3062,15 @@ function DocumentWorkspace({
                 <PanelLeftOpen size={16} />
               </button>
             ) : null}
+            <button
+              className="icon-button subtle mobile-nav-toggle"
+              type="button"
+              aria-label="打开导航"
+              aria-expanded={mobileNavOpen}
+              onClick={() => setMobileNavOpen(true)}
+            >
+              <Menu size={18} />
+            </button>
             <div className="breadcrumbs">
               <a href="/">{activeOrganization?.name ?? 'Rdocs'}</a>
               {breadcrumbItems.map((item, index) => (
@@ -3151,12 +3087,11 @@ function DocumentWorkspace({
             </div>
           </div>
           <div className="header-actions">
-            {onLogout ? <NotificationBell organizationId={page.organizationId} /> : null}
             <ConnectionPill state={connection} offlineReady={offlineReady} />
             <CollaboratorStack collaborators={collaborators} />
             {onLogout && !renewTicket ? (
               <button
-                className={`icon-button subtle ${favorited ? 'active' : ''}`}
+                className={`icon-button subtle header-optional ${favorited ? 'active' : ''}`}
                 type="button"
                 aria-pressed={favorited}
                 aria-label={favorited ? '取消收藏' : '收藏页面'}
@@ -3193,7 +3128,7 @@ function DocumentWorkspace({
               </button>
             ) : null}
             <button
-              className={`icon-button subtle${focusMode ? ' focus-mode-toggle-on' : ''}`}
+              className={`icon-button subtle header-optional${focusMode ? ' focus-mode-toggle-on' : ''}`}
               type="button"
               aria-pressed={focusMode}
               aria-label={focusMode ? '退出专注写作' : '专注写作'}
@@ -3408,6 +3343,11 @@ function DocumentWorkspace({
                   <Trash2 size={15} /> 移入回收站
                 </button>
               </div>
+            ) : null}
+            {onLogout && !renewTicket ? (
+              <span className="header-global-actions">
+                <NotificationBell organizationId={page.organizationId} />
+              </span>
             ) : null}
             <HeaderAccount
               identity={identity}
@@ -3745,6 +3685,12 @@ function DocumentWorkspace({
       ) : null}
       {accessDialogOpen ? (
         <PageAccessDialog page={page} onClose={() => setAccessDialogOpen(false)} />
+      ) : null}
+      {templateDialogOpen && activeSpace ? (
+        <TemplateDialog space={activeSpace} onClose={() => setTemplateDialogOpen(false)} />
+      ) : null}
+      {trashDialogOpen && activeSpace ? (
+        <SpaceTrashDialog space={activeSpace} onClose={() => setTrashDialogOpen(false)} />
       ) : null}
       {discoveryTab ? (
         <Suspense fallback={null}>
