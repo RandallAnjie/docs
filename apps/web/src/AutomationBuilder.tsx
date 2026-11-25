@@ -36,6 +36,11 @@ import {
   createDatabaseAutomation,
   deleteDatabaseAutomation,
   getDatabase,
+  getNotionConnection,
+  getNotionDatabaseSchema,
+  searchNotion,
+  type NotionPropertySchema,
+  type NotionSearchResult,
   listDatabaseAutomations,
   listOrganizationDatabases,
   listOrganizationMembers,
@@ -646,6 +651,152 @@ function useTargetDatabase(
   return target ?? fallback;
 }
 
+function NotionActionEditor({
+  step,
+  snapshot,
+  onChange,
+}: {
+  step: AutomationActionStep;
+  snapshot: DatabaseSnapshot;
+  onChange: (step: AutomationActionStep) => void;
+}) {
+  const organizationId = snapshot.database.organizationId;
+  const config = step.config;
+  const databaseId = typeof config.notionDatabaseId === 'string' ? config.notionDatabaseId : '';
+  const [databases, setDatabases] = useState<NotionSearchResult[]>([]);
+  const [schema, setSchema] = useState<NotionPropertySchema[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const mapping = Array.isArray(config.properties)
+    ? (config.properties as Array<{ name: string; type: string; value: JsonValue }>)
+    : [];
+  useEffect(() => {
+    let active = true;
+    void searchNotion(organizationId, '', 'database')
+      .then((result) => active && setDatabases(result.results))
+      .catch(
+        (reason: unknown) =>
+          active && setError(reason instanceof Error ? reason.message : '无法读取 Notion'),
+      );
+    return () => {
+      active = false;
+    };
+  }, [organizationId]);
+  useEffect(() => {
+    if (!databaseId) {
+      setSchema([]);
+      return;
+    }
+    let active = true;
+    void getNotionDatabaseSchema(organizationId, databaseId)
+      .then(
+        (result) => active && setSchema(result.properties.filter((property) => property.writable)),
+      )
+      .catch(
+        (reason: unknown) =>
+          active && setError(reason instanceof Error ? reason.message : '无法读取 Notion 数据库'),
+      );
+    return () => {
+      active = false;
+    };
+  }, [databaseId, organizationId]);
+  const setMapping = (name: string, type: string, value: JsonValue | undefined) => {
+    const rest = mapping.filter((item) => item.name !== name);
+    onChange({
+      ...step,
+      config: {
+        ...config,
+        properties: value === undefined ? rest : [...rest, { name, type, value }],
+      },
+    });
+  };
+  return (
+    <div className="automation-action-body column">
+      <label className="automation-inline">
+        Notion 数据库
+        <select
+          value={databaseId}
+          onChange={(event) =>
+            onChange({ ...step, config: { notionDatabaseId: event.target.value, properties: [] } })
+          }
+        >
+          <option value="">选择…</option>
+          {databases.map((database) => (
+            <option key={database.id} value={database.id}>
+              {database.icon ? `${database.icon} ` : ''}
+              {database.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      {schema.map((property) => {
+        const current = mapping.find((item) => item.name === property.name);
+        const value = current?.value;
+        const mode =
+          current === undefined
+            ? 'skip'
+            : value && typeof value === 'object' && !Array.isArray(value) && value.$token === 'copy'
+              ? `copy:${String(value.propertyId ?? '')}`
+              : 'literal';
+        return (
+          <div className="automation-rule" key={property.name}>
+            <span className="automation-field-name">{property.name}</span>
+            <select
+              aria-label={`${property.name} 的来源`}
+              value={mode}
+              onChange={(event) => {
+                const next = event.target.value;
+                if (next === 'skip') setMapping(property.name, property.type, undefined);
+                else if (next === 'literal')
+                  setMapping(property.name, property.type, property.options[0] ?? '');
+                else
+                  setMapping(property.name, property.type, {
+                    $token: 'copy',
+                    propertyId: next.slice(5),
+                  });
+              }}
+            >
+              <option value="skip">不写入</option>
+              {snapshot.properties.map((source) => (
+                <option key={source.id} value={`copy:${source.id}`}>
+                  复制「{source.name}」
+                </option>
+              ))}
+              <option value="literal">固定值</option>
+            </select>
+            {mode === 'literal' ? (
+              property.options.length ? (
+                <select
+                  aria-label={`${property.name} 的值`}
+                  value={typeof value === 'string' ? value : ''}
+                  onChange={(event) => setMapping(property.name, property.type, event.target.value)}
+                >
+                  {property.options.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  aria-label={`${property.name} 的值`}
+                  value={typeof value === 'string' ? value : ''}
+                  onChange={(event) => setMapping(property.name, property.type, event.target.value)}
+                />
+              )
+            ) : null}
+          </div>
+        );
+      })}
+      {error ? <p className="dialog-error">{error}</p> : null}
+      {!databases.length && !error ? (
+        <p className="automation-hint">
+          没有可用的 Notion 数据库：请在 Notion 中把数据库连接到这个集成。
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ActionEditor({
   step,
   snapshot,
@@ -924,7 +1075,7 @@ function ActionEditor({
         </div>
       );
     case 'notion_create_page':
-      return <p className="automation-hint">在「Notion 连接」中配置后可用。</p>;
+      return <NotionActionEditor step={step} snapshot={snapshot} onChange={onChange} />;
   }
 }
 
@@ -1098,6 +1249,7 @@ export function DatabaseAutomationDialog({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [databases, setDatabases] = useState<Array<{ id: string; title: string }>>([]);
   const [members, setMembers] = useState<OrganizationMemberSummary[]>([]);
+  const [notionConnected, setNotionConnected] = useState(false);
   const [manualRowId, setManualRowId] = useState(snapshot.rows[0]?.id ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1138,6 +1290,9 @@ export function DatabaseAutomationDialog({
             })),
           ),
       )
+      .catch(() => undefined);
+    void getNotionConnection(organizationId)
+      .then((result) => active && setNotionConnected(result.connected))
       .catch(() => undefined);
     void cachedRequest(`members:${organizationId}`, () => listOrganizationMembers(organizationId))
       .then(
@@ -1394,7 +1549,7 @@ export function DatabaseAutomationDialog({
                             {AUTOMATION_ACTION_LABELS[type]}
                           </option>
                         ))}
-                        {step.type === 'notion_create_page' ? (
+                        {notionConnected || step.type === 'notion_create_page' ? (
                           <option value="notion_create_page">
                             {AUTOMATION_ACTION_LABELS.notion_create_page}
                           </option>

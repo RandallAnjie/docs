@@ -1,6 +1,7 @@
 import {
   Activity,
   Bell,
+  BookOpen,
   Check,
   Clipboard,
   MailPlus,
@@ -33,6 +34,7 @@ import {
 } from './api';
 import { confirmDialog } from './dialogs';
 import { GroupSettings } from './GroupSettings';
+import { NotionSettings } from './NotionSettings';
 import { OrganizationActivity } from './OrganizationActivity';
 import { PlatformSettings } from './PlatformSettings';
 import { WorkspaceExtras } from './WorkspaceExtras';
@@ -44,7 +46,7 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   guest: '外部只读（历史）',
 };
 
-type SettingsSection = 'members' | 'groups' | 'activity' | 'account' | 'platform';
+type SettingsSection = 'members' | 'groups' | 'activity' | 'account' | 'notion' | 'platform';
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsSection;
@@ -56,6 +58,7 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: 'groups', label: '用户组', icon: UsersRound },
   { id: 'activity', label: '活动日志', icon: Activity, adminOnly: true },
   { id: 'account', label: '通知与扩展', icon: Bell },
+  { id: 'notion', label: 'Notion', icon: BookOpen },
   { id: 'platform', label: '集成与平台', icon: Plug },
 ];
 
@@ -255,6 +258,7 @@ export function OrganizationSettings({
         {section === 'account' ? (
           <WorkspaceExtras organizationId={organization.id} canManage={canManage} />
         ) : null}
+        {section === 'notion' ? <NotionSettings organizationId={organization.id} /> : null}
         {section === 'platform' ? (
           <PlatformSettings organizationId={organization.id} canManage={canManage} />
         ) : null}

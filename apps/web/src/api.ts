@@ -1863,3 +1863,75 @@ export function publishSiteDatabaseView(
     { method: 'PUT', body: JSON.stringify(input) },
   );
 }
+
+// ── Notion connector ─────────────────────────────────────────────────────
+
+export interface NotionConnection {
+  connected: boolean;
+  workspaceName?: string | null;
+  botName?: string | null;
+  connectedAt?: number | null;
+  canManage: boolean;
+}
+
+export interface NotionSearchResult {
+  id: string;
+  kind: 'database' | 'page';
+  title: string;
+  url: string | null;
+  icon: string | null;
+}
+
+export interface NotionPropertySchema {
+  name: string;
+  type: string;
+  options: string[];
+  writable: boolean;
+}
+
+function notionPath(organizationId: string, path = ''): string {
+  return `/api/organizations/${encodeURIComponent(organizationId)}/notion${path}`;
+}
+
+export function getNotionConnection(organizationId: string): Promise<NotionConnection> {
+  return request(notionPath(organizationId));
+}
+
+export function connectNotion(organizationId: string, token: string): Promise<NotionConnection> {
+  return request(notionPath(organizationId), { method: 'PUT', body: JSON.stringify({ token }) });
+}
+
+export function disconnectNotion(organizationId: string): Promise<NotionConnection> {
+  return request(notionPath(organizationId), { method: 'DELETE' });
+}
+
+export function searchNotion(
+  organizationId: string,
+  query: string,
+  kind: 'database' | 'page',
+): Promise<{ results: NotionSearchResult[] }> {
+  return request(notionPath(organizationId, `/search?kind=${kind}&q=${encodeURIComponent(query)}`));
+}
+
+export function getNotionDatabaseSchema(
+  organizationId: string,
+  notionDatabaseId: string,
+): Promise<{ id: string; title: string; properties: NotionPropertySchema[] }> {
+  return request(notionPath(organizationId, `/databases/${encodeURIComponent(notionDatabaseId)}`));
+}
+
+export function importFromNotion(
+  organizationId: string,
+  input: { notionId: string; kind: 'database' | 'page'; spaceId: string },
+): Promise<{
+  page: PageSummary;
+  kind: 'database' | 'page';
+  imported?: number;
+  truncated?: boolean;
+  skippedProperties?: string[];
+}> {
+  return request(notionPath(organizationId, '/import'), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}

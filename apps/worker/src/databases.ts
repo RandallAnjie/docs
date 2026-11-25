@@ -3031,7 +3031,12 @@ async function createRow(
   env: Env,
   authorization: DatabaseAuthorization,
   actor: AuthUserSummary,
-  options: { triggerType?: 'row_created' | 'form_submitted'; skipAutomations?: boolean } = {},
+  options: {
+    triggerType?: 'row_created' | 'form_submitted';
+    skipAutomations?: boolean;
+    /** Skip reading the whole database back; for bulk imports. */
+    minimal?: boolean;
+  } = {},
 ): Promise<Response> {
   const input = (await requestBody(request)) ?? {};
   const normalized = await normalizedRowValues(
@@ -3128,6 +3133,7 @@ async function createRow(
       pageId,
     },
   );
+  if (options.minimal) return json({ row: { id: rowId, pageId } }, { status: 201 });
   const latest = await findDatabase(env, authorization.database.id);
   if (!latest) throw new Error('database_row_create_result_missing');
   const current = await snapshot(env, { database: latest, role: authorization.role }, actor.id);
@@ -4770,4 +4776,38 @@ export async function handleDatabasesApi(
   }
 
   return null;
+}
+
+/**
+ * Create many rows without running automations, for imports. Returns how many
+ * were created; stops at the first row the database refuses.
+ */
+export async function bulkCreateDatabaseRows(
+  env: Env,
+  databaseId: string,
+  actor: AuthUserSummary,
+  rows: ReadonlyArray<Record<string, JsonValue>>,
+): Promise<number> {
+  const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+  if (!authorization) throw new Error('无权写入目标数据库');
+  let created = 0;
+  for (const values of rows) {
+    const response = await createRow(
+      new Request('https://rdocs.internal/api/import-row', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values }),
+      }),
+      env,
+      authorization,
+      actor,
+      { skipAutomations: true, minimal: true },
+    );
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(payload?.error ?? `第 ${created + 1} 条记录导入失败`);
+    }
+    created += 1;
+  }
+  return created;
 }

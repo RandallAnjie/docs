@@ -117,6 +117,7 @@ const MIGRATIONS = [
   '0033_share_link_editor.sql',
   '0034_randallflare_sign_in.sql',
   '0035_automation_definitions.sql',
+  '0036_notion_connections.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -3219,6 +3220,283 @@ describe('database automations v2', () => {
     expect(JSON.parse(stored.trigger_config_json).definition.actions[0].config.secret).toBe(
       'a-secret-of-16-chars!',
     );
+    database.close();
+  });
+});
+
+describe('Notion connector', () => {
+  const token = 'ntn_' + 'a'.repeat(40);
+
+  type FetchCall = { url: string; method: string; body: unknown; auth: string | null };
+
+  function mockNotion(routes: Record<string, unknown>) {
+    const calls: FetchCall[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url, method, body, auth: new Headers(init?.headers).get('authorization') });
+      const key = `${method} ${url.replace('https://api.notion.com/v1', '').split('?')[0]}`;
+      if (!(key in routes))
+        return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+      return new Response(JSON.stringify(routes[key]), { status: 200 });
+    }) as typeof fetch;
+    return { calls, restore: () => (globalThis.fetch = original) };
+  }
+
+  async function setup() {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'notion');
+    const member = seedTenant(database, 'notion-member');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_notion', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    database.prepare(`UPDATE spaces SET visibility = 'organization' WHERE id = 'spc_notion'`).run();
+    const env = testEnv(database);
+    const markdowns: string[] = [];
+    const { handleNotionApi } = await import('../apps/worker/src/notion');
+    const { bulkCreateDatabaseRows } = await import('../apps/worker/src/databases');
+    const deps = {
+      createMarkdownPage: async (input: {
+        actorId: string;
+        spaceId: string;
+        title: string;
+        markdown: string;
+      }) => {
+        const id = crypto.randomUUID();
+        markdowns.push(input.markdown);
+        database
+          .prepare(
+            `INSERT INTO pages(id, organization_id, space_id, parent_id, title, sort_key, created_by, updated_by, created_at, updated_at)
+             VALUES (?, 'org_notion', ?, NULL, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(id, input.spaceId, input.title, id, input.actorId, input.actorId, now, now);
+        database
+          .prepare(
+            `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+             VALUES (?, 1, 1, 'inherit', ?)`,
+          )
+          .run(id, now);
+        database
+          .prepare(
+            `INSERT INTO page_search_projection(page_id, organization_id, space_id, generation, collab_seq, title, normalized_body, updated_at)
+             VALUES (?, 'org_notion', ?, 1, 0, ?, '', ?)`,
+          )
+          .run(id, input.spaceId, input.title, now);
+        return {
+          id,
+          organizationId: 'org_notion',
+          spaceId: input.spaceId,
+          title: input.title,
+        } as never;
+      },
+      databasesApi: handleDatabasesApi,
+      bulkCreateRows: bulkCreateDatabaseRows,
+    };
+    const call = async (actor: AuthUserSummary, path: string, method = 'GET', body?: unknown) => {
+      const response = await handleNotionApi(
+        new Request(`https://docs.test/api/organizations/org_notion/notion${path}`, {
+          method,
+          ...(body === undefined
+            ? {}
+            : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+        }),
+        env,
+        actor,
+        deps,
+      );
+      return { status: response?.status, body: (await response?.json()) as Record<string, any> };
+    };
+    return { database, owner, member, env, call, markdowns };
+  }
+
+  it('stores the token encrypted and only lets admins manage it', async () => {
+    const { database, owner, member, call } = await setup();
+    const notion = mockNotion({
+      'GET /users/me': { name: 'Rdocs', bot: { workspace_name: 'Acme' } },
+    });
+    try {
+      expect((await call(member, '', 'PUT', { token })).status).toBe(403);
+      expect((await call(owner, '', 'PUT', { token: 'not-a-token' })).status).toBe(400);
+      const connected = await call(owner, '', 'PUT', { token });
+      expect(connected.body).toMatchObject({ connected: true, workspaceName: 'Acme' });
+      expect(JSON.stringify(connected.body)).not.toContain(token);
+      expect(notion.calls[0]?.auth).toBe(`Bearer ${token}`);
+      const stored = database.prepare('SELECT token_ciphertext FROM notion_connections').get() as {
+        token_ciphertext: string;
+      };
+      expect(stored.token_ciphertext).not.toContain('ntn_');
+      expect((await call(member, '')).body).toMatchObject({ connected: true, canManage: false });
+    } finally {
+      notion.restore();
+    }
+    database.close();
+  });
+
+  it('imports a Notion database with mapped fields and rows', async () => {
+    const { database, owner, call } = await setup();
+    const notionDb = '11112222333344445555666677778888';
+    const notion = mockNotion({
+      'GET /users/me': { name: 'Rdocs', bot: {} },
+      [`GET /databases/11112222-3333-4444-5555-666677778888`]: {
+        title: [{ plain_text: '任务' }],
+        properties: {
+          名称: { type: 'title', title: {} },
+          状态: { type: 'status', status: { options: [{ name: '未开始' }, { name: '完成' }] } },
+          工时: { type: 'number', number: {} },
+          截止: { type: 'date', date: {} },
+          按钮: { type: 'button', button: {} },
+        },
+      },
+      [`POST /databases/11112222-3333-4444-5555-666677778888/query`]: {
+        has_more: false,
+        next_cursor: null,
+        results: [
+          {
+            properties: {
+              名称: { type: 'title', title: [{ plain_text: '写文档' }] },
+              状态: { type: 'status', status: { name: '完成' } },
+              工时: { type: 'number', number: 3 },
+              截止: { type: 'date', date: { start: '2026-12-01' } },
+            },
+          },
+          {
+            properties: {
+              名称: { type: 'title', title: [{ plain_text: '发布' }] },
+              状态: { type: 'status', status: null },
+            },
+          },
+        ],
+      },
+    });
+    try {
+      await call(owner, '', 'PUT', { token });
+      const imported = await call(owner, '/import', 'POST', {
+        notionId: `https://www.notion.so/acme/Tasks-${notionDb}?v=${'f'.repeat(32)}`,
+        kind: 'database',
+        spaceId: 'spc_notion',
+      });
+      expect(imported.status).toBe(201);
+      expect(imported.body).toMatchObject({
+        kind: 'database',
+        imported: 2,
+        truncated: false,
+        skippedProperties: ['按钮'],
+      });
+      const snapshot = await handleDatabasesApi(
+        new Request(`https://docs.test/api/databases/${imported.body.databaseId}`),
+        testEnv(database),
+        owner,
+      );
+      const data = (await snapshot?.json()) as {
+        properties: Array<{
+          id: string;
+          name: string;
+          type: string;
+          config: Record<string, unknown>;
+        }>;
+        rows: Array<{ values: Record<string, unknown> }>;
+      };
+      const field = (name: string) => data.properties.find((property) => property.name === name)!;
+      expect(field('状态')).toMatchObject({
+        type: 'status',
+        config: { options: ['未开始', '完成'] },
+      });
+      const first = data.rows.find((row) => row.values[field('名称').id] === '写文档')!;
+      expect(first.values[field('状态').id]).toBe('完成');
+      expect(first.values[field('工时').id]).toBe(3);
+      expect(first.values[field('截止').id]).toMatchObject({
+        start: '2026-12-01T00:00:00.000Z',
+        includeTime: false,
+      });
+      // Importing never runs automations or writes past the space the member may use.
+      expect(
+        database.prepare('SELECT COUNT(*) AS total FROM database_automation_runs').get(),
+      ).toEqual({ total: 0 });
+    } finally {
+      notion.restore();
+    }
+    database.close();
+  });
+
+  it('imports a page as Markdown and writes automation rows to Notion', async () => {
+    const { database, owner, call, markdowns } = await setup();
+    const pageId = 'aaaabbbbccccddddeeeeffff00001111';
+    const notionDb = '99998888777766665555444433332222';
+    const notion = mockNotion({
+      'GET /users/me': { name: 'Rdocs', bot: {} },
+      [`GET /pages/aaaabbbb-cccc-dddd-eeee-ffff00001111`]: {
+        properties: { title: { type: 'title', title: [{ plain_text: '周报' }] } },
+      },
+      [`GET /blocks/aaaabbbb-cccc-dddd-eeee-ffff00001111/children`]: {
+        has_more: false,
+        next_cursor: null,
+        results: [{ type: 'heading_1', heading_1: { rich_text: [{ plain_text: '本周' }] } }],
+      },
+      [`GET /databases/99998888-7777-6666-5555-444433332222`]: {
+        title: [{ plain_text: '外部任务' }],
+        properties: {
+          Name: { type: 'title', title: {} },
+          Status: { type: 'status', status: { options: [{ name: 'Done' }] } },
+        },
+      },
+      'POST /pages': { id: 'created' },
+    });
+    try {
+      await call(owner, '', 'PUT', { token });
+      const page = await call(owner, '/import', 'POST', {
+        notionId: pageId,
+        kind: 'page',
+        spaceId: 'spc_notion',
+      });
+      expect(page.status).toBe(201);
+      expect(markdowns.at(-1)).toBe('# 周报\n\n## 本周\n');
+
+      const { validateNotionCreatePage, runNotionCreatePage } =
+        await import('../apps/worker/src/notion');
+      const config = {
+        notionDatabaseId: notionDb,
+        properties: [
+          { name: 'Name', type: 'title', value: { $token: 'copy', propertyId: 'p_title' } },
+          { name: 'Status', type: 'status', value: 'Done' },
+        ],
+      };
+      expect(await validateNotionCreatePage(testEnv(database), 'org_notion', config)).toBeNull();
+      expect(
+        await validateNotionCreatePage(testEnv(database), 'org_notion', {
+          ...config,
+          properties: [{ name: 'Missing', type: 'title', value: 'x' }],
+        }),
+      ).toContain('不存在');
+      await runNotionCreatePage(testEnv(database), {
+        organizationId: 'org_notion',
+        config,
+        values: {
+          now: Date.now(),
+          timezone: 'UTC',
+          triggerUserId: owner.id,
+          triggerRowId: 'r1',
+          triggerValues: { p_title: '发布 v2' },
+        },
+      });
+      const created = notion.calls.find(
+        (entry) => entry.method === 'POST' && entry.url.endsWith('/pages'),
+      );
+      expect(created?.body).toEqual({
+        parent: { database_id: '99998888-7777-6666-5555-444433332222' },
+        properties: {
+          Name: { title: [{ type: 'text', text: { content: '发布 v2' } }] },
+          Status: { status: { name: 'Done' } },
+        },
+      });
+    } finally {
+      notion.restore();
+    }
     database.close();
   });
 });

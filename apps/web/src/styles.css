@@ -12896,3 +12896,131 @@ button.page-icon-display:hover {
 .database-view-popover.database-filter-panel input:not([type]) {
   width: 150px;
 }
+
+/* Notion settings. */
+.notion-connected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 640px;
+  padding: 12px 14px;
+  border: 1px solid #dff0e5;
+  border-radius: 10px;
+  background: #f4faf6;
+  color: #2b6a40;
+}
+.notion-connected > div {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+}
+.notion-connected strong {
+  color: #37352f;
+  font-size: 14px;
+  font-weight: 550;
+}
+.notion-connected small {
+  color: #787774;
+  font-size: 12px;
+}
+.notion-connected button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #dcd9d2;
+  border-radius: 6px;
+  background: #fff;
+  color: #a1362a;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.notion-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding-left: 20px;
+  color: #5f5e5a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.notion-steps a {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #1d5a91;
+}
+.notion-import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.notion-kind {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: #f1f1ef;
+}
+.notion-kind button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5f5e5a;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.notion-kind button.active {
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 15 15 / 10%);
+  color: #37352f;
+}
+.notion-search {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 200px;
+  color: #9b9a97;
+}
+.notion-search .settings-search {
+  flex: 1;
+  max-width: none;
+  margin: 0;
+}
+.notion-space {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #5f5e5a;
+  font-size: 13px;
+}
+.notion-space select {
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 1px solid #dcd9d2;
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+.notion-notice {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f4faf6;
+  color: #2b6a40;
+  font-size: 13px;
+}
+.notion-notice a {
+  color: #1d5a91;
+}
