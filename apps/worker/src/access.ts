@@ -269,25 +269,75 @@ async function resolvePageAccessInternal(
     .first<PageAccessRow>();
   if (!page) return null;
   const spaceAccess = await resolveSpaceAccess(env, page.space_id, userId);
-  if (!spaceAccess || spaceAccess.organizationId !== page.organization_id) return null;
-  if (spaceAccess.spaceRole === 'space_admin') return spaceAccess;
+  if (spaceAccess && spaceAccess.organizationId !== page.organization_id) return null;
+  if (spaceAccess?.spaceRole === 'space_admin') return spaceAccess;
 
-  const boundary = await env.DB.prepare(
-    `WITH RECURSIVE ancestors(id, parent_id, depth) AS (
+  const ancestorsSql = `WITH RECURSIVE ancestors(id, parent_id, depth) AS (
        SELECT id, parent_id, 0 FROM pages WHERE id = ? ${includeDeleted ? '' : 'AND deleted_at IS NULL'}
        UNION ALL
        SELECT p.id, p.parent_id, ancestors.depth + 1
          FROM pages p JOIN ancestors ON p.id = ancestors.parent_id
         ${includeDeleted ? '' : 'WHERE p.deleted_at IS NULL'}
-     )
-     SELECT ancestors.id
+     )`;
+  const boundary = await env.DB.prepare(
+    `${ancestorsSql}
+     SELECT ancestors.id, ancestors.depth
        FROM ancestors JOIN page_access_state state ON state.page_id = ancestors.id
       WHERE state.access_mode = 'restricted'
       ORDER BY ancestors.depth ASC LIMIT 1`,
   )
     .bind(pageId)
-    .first<{ id: string }>();
-  if (!boundary) return spaceAccess;
+    .first<{ id: string; depth: number }>();
+
+  // Invites on this page or a parent (up to the nearest restricted page) add
+  // access on top of the space or restricted role.
+  const membership = spaceAccess ?? (await findActiveMembership(env, page.organization_id, userId));
+  if (!membership) return null;
+  const invites = (
+    await env.DB.prepare(
+      `${ancestorsSql}
+       SELECT pg.principal_type, pg.role
+         FROM ancestors JOIN page_grants pg ON pg.page_id = ancestors.id
+        WHERE pg.additive = 1 AND pg.role <> 'none' AND pg.organization_id = ?
+          AND ancestors.depth <= ?
+          AND (
+            (pg.principal_type = 'user' AND pg.principal_id = ?)
+            OR (pg.principal_type = 'organization' AND pg.principal_id = ? AND ? <> 'guest')
+            OR (
+              pg.principal_type = 'group' AND EXISTS (
+                SELECT 1 FROM group_members gm
+                 WHERE gm.group_id = pg.principal_id AND gm.user_id = ?
+              )
+            )
+          )`,
+    )
+      .bind(
+        pageId,
+        page.organization_id,
+        boundary?.depth ?? Number.MAX_SAFE_INTEGER,
+        userId,
+        page.organization_id,
+        membership.role,
+        userId,
+      )
+      .all<PageGrantAccessRow>()
+  ).results;
+  const invitedRole = capRoleForMembership(membership.role, strongestInviteRole(invites));
+  const withInvites = (baseRole: SpaceRole | null): SpaceAccessContext | null => {
+    const role = higherSpaceRole(baseRole, invitedRole);
+    if (!role) return null;
+    return spaceAccess
+      ? { ...spaceAccess, spaceRole: role }
+      : {
+          organizationId: membership.organizationId,
+          userId: membership.userId,
+          role: membership.role,
+          spaceId: page.space_id,
+          spaceRole: role,
+        };
+  };
+  if (!boundary) return withInvites(spaceAccess?.spaceRole ?? null);
+  if (!spaceAccess) return withInvites(null);
 
   const grants = (
     await env.DB.prepare(
@@ -323,11 +373,18 @@ async function resolvePageAccessInternal(
       grants.map((grant) => ({ principalType: grant.principal_type, role: grant.role })),
     ),
   );
-  if (!grantedRole) return null;
-  return {
-    ...spaceAccess,
-    spaceRole: grantedRole,
-  };
+  return withInvites(grantedRole);
+}
+
+/** The highest role any matching invite gives (invites never take access away). */
+export function strongestInviteRole(
+  invites: ReadonlyArray<{ role: PageGrantRole }>,
+): SpaceRole | null {
+  let role: SpaceRole | null = null;
+  for (const invite of invites) {
+    if (invite.role !== 'none') role = higherSpaceRole(role, invite.role);
+  }
+  return role;
 }
 
 export function resolvePageAccess(

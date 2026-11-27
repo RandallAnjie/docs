@@ -86,6 +86,17 @@ export function markdownToYjsSnapshot(markdown: string): {
       index += 1;
       continue;
     }
+    const databaseBlock = line.trim().match(/^<!-- rdocs:database:([0-9a-f-]{36}):([^\s]*) -->$/i);
+    if (databaseBlock) {
+      nodes.push(
+        element('databaseBlock', '', {
+          databaseId: databaseBlock[1] ?? '',
+          title: decodeMarkdownComponent(databaseBlock[2] ?? '') || '数据库',
+        }),
+      );
+      index += 1;
+      continue;
+    }
     const pageLink = line.trim().match(/^<!-- rdocs:page-link:([0-9a-f-]{36}):([^\s]*) -->$/i);
     if (pageLink) {
       nodes.push(
@@ -446,6 +457,13 @@ function renderElement(node: Y.XmlElement): string {
     }
     case 'deletedSyncedBlock':
       return '> 已删除的同步块（可在 Rdocs 中于 30 天内整体撤销）\n\n';
+    case 'databaseBlock': {
+      const databaseId = node.getAttribute('databaseId') ?? '';
+      const title = node.getAttribute('title') || '数据库';
+      return databaseId
+        ? `<!-- rdocs:database:${databaseId}:${encodeMarkdownComponent(title)} -->\n\n`
+        : '';
+    }
     case 'pageLink': {
       const pageId = node.getAttribute('pageId') ?? '';
       const title = node.getAttribute('title') ?? '关联页面';

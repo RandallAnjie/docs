@@ -118,6 +118,7 @@ const MIGRATIONS = [
   '0034_randallflare_sign_in.sql',
   '0035_automation_definitions.sql',
   '0036_notion_connections.sql',
+  '0037_page_invites.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -1892,6 +1893,85 @@ describe('tenant boundary integration', () => {
     await expect(resolvePageAccess(env, 'page_restricted', owner.id)).resolves.toMatchObject({
       spaceRole: 'space_admin',
     });
+    database.close();
+  });
+
+  it('adds invited access on top of the space role, for the page and its children', async () => {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'invites');
+    const member = seedTenant(database, 'invitee');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_invites', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    const page = (id: string, parent: string | null) => {
+      database
+        .prepare(
+          `INSERT INTO pages(
+             id, organization_id, space_id, parent_id, title, sort_key, created_by, updated_by,
+             created_at, updated_at
+           ) VALUES (?, 'org_invites', 'spc_invites', ?, ?, '1', ?, ?, ?, ?)`,
+        )
+        .run(id, parent, id, owner.id, owner.id, now, now);
+      database
+        .prepare(
+          `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, updated_at)
+           VALUES (?, 1, 1, ?)`,
+        )
+        .run(id, now);
+    };
+    page('page_doc', null);
+    page('page_child', 'page_doc');
+    page('page_other', null);
+    const invite = (pageId: string, role: string, additive = 1) =>
+      database
+        .prepare(
+          `INSERT INTO page_grants(
+             id, organization_id, page_id, principal_type, principal_id, role, created_by,
+             created_at, additive
+           ) VALUES (?, 'org_invites', ?, 'user', ?, ?, ?, ?, ?)
+           ON CONFLICT(organization_id, page_id, principal_type, principal_id)
+           DO UPDATE SET role = excluded.role, additive = excluded.additive`,
+        )
+        .run(`grant_${pageId}`, pageId, member.id, role, owner.id, now, additive);
+    database
+      .prepare(`UPDATE spaces SET visibility = 'organization' WHERE id = 'spc_invites'`)
+      .run();
+    const env = testEnv(database);
+    const roleOf = async (pageId: string) =>
+      (await resolvePageAccess(env, pageId, member.id))?.spaceRole ?? null;
+
+    // Organization spaces give members read access.
+    expect(await roleOf('page_doc')).toBe('viewer');
+    // An old-style (non-invite) grant on an inheriting page changes nothing.
+    invite('page_doc', 'editor', 0);
+    expect(await roleOf('page_doc')).toBe('viewer');
+    // An invite raises the page and everything under it, but not other pages.
+    invite('page_doc', 'editor');
+    expect(await roleOf('page_doc')).toBe('editor');
+    expect(await roleOf('page_child')).toBe('editor');
+    expect(await roleOf('page_other')).toBe('viewer');
+    // A weaker invite never lowers the space role.
+    invite('page_doc', 'viewer');
+    invite('page_child', 'viewer');
+    expect(await roleOf('page_child')).toBe('viewer');
+    // Restricting the parent removes space access, but an invite on the
+    // child still lets the member in there (sharing a sub-page).
+    database
+      .prepare(`UPDATE page_access_state SET access_mode = 'restricted' WHERE page_id = 'page_doc'`)
+      .run();
+    database.prepare(`DELETE FROM page_grants WHERE page_id = 'page_doc'`).run();
+    expect(await roleOf('page_doc')).toBeNull();
+    invite('page_child', 'editor');
+    expect(await roleOf('page_child')).toBe('editor');
+    // In a private space an invite is the only way in, and only to that page.
+    database.prepare(`UPDATE spaces SET visibility = 'restricted' WHERE id = 'spc_invites'`).run();
+    expect(await roleOf('page_other')).toBeNull();
+    invite('page_other', 'commenter');
+    expect(await roleOf('page_other')).toBe('commenter');
     database.close();
   });
 

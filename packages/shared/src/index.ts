@@ -89,6 +89,8 @@ export interface PageGrantSummary {
   principalType: SpaceGrantPrincipalType;
   principalId: string;
   role: PageGrantRole;
+  /** An invite adds access on top of the space role; otherwise a restricted-mode grant. */
+  invite?: boolean;
   createdAt: number;
 }
 
@@ -477,6 +479,8 @@ export interface DatabaseSnapshot {
   views: DatabaseViewSummary[];
   rows: DatabaseRowSummary[];
   templates: DatabaseTemplateSummary[];
+  /** The caller's own access (single-database reads only). */
+  access?: { canEdit: boolean };
 }
 
 export interface DatabaseFormLinkSummary {
