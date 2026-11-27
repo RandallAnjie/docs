@@ -3,7 +3,10 @@ import ReactDOM from 'react-dom/client';
 
 import { App } from './App';
 import { DialogHost } from './dialogs';
+import { installScrollLock } from './scroll-lock';
 import './styles.css';
+
+installScrollLock();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

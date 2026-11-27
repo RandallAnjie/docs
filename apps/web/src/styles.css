@@ -13770,3 +13770,193 @@ button.page-icon-display:hover {
     display: none !important;
   }
 }
+
+/* ══ Layers ═══════════════════════════════════════════════════════════════
+   One stacking scale for everything that floats. Lower layers never cover
+   higher ones: page chrome < mobile drawer < editor tools < side peek <
+   menus and popovers < dialogs < anchored layers < confirmations < notices. */
+:root {
+  --z-chrome: 40;
+  --z-drawer: 60;
+  --z-editor-float: 70;
+  --z-peek: 80;
+  --z-popover: 200;
+  --z-modal: 300;
+  --z-floating: 350;
+  --z-confirm: 400;
+  --z-notice: 450;
+  --z-toast: 500;
+}
+
+.context-panel {
+  z-index: var(--z-chrome);
+}
+.mobile-nav-backdrop {
+  z-index: var(--z-drawer);
+}
+.app-shell.mobile-nav-open .sidebar,
+.app-shell.mobile-nav-open.sidebar-collapsed .sidebar,
+.notion-home-shell.mobile-nav-open .notion-home-sidebar {
+  z-index: calc(var(--z-drawer) + 1);
+}
+.rdocs-table-toolbar,
+.rdocs-table-add-row,
+.rdocs-table-add-col,
+.rdocs-drag-handle-portal {
+  z-index: var(--z-editor-float);
+}
+.database-record-backdrop {
+  z-index: var(--z-peek);
+}
+.database-record-drawer {
+  z-index: calc(var(--z-peek) + 1);
+}
+.slash-menu,
+.rdocs-block-menu,
+.ai-selection-toolbar,
+.editor-selection-toolbar,
+.page-action-menu,
+.header-account-menu,
+.workspace-menu,
+.notification-popover,
+.page-notification-popover,
+.page-reminder-popover,
+.rdocs-inline-reminder-popover,
+.page-tree-menu,
+.page-backlinks-popover,
+.database-menu,
+.database-view-popover,
+.database-canvas .database-view-popover,
+.database-template-menu,
+.database-view-menu,
+.database-view-options,
+.database-date-reminder-backdrop {
+  z-index: var(--z-popover);
+}
+.dialog-backdrop,
+.workspace-dialog-backdrop,
+.database-field-backdrop {
+  z-index: var(--z-modal);
+}
+.database-field-panel {
+  z-index: calc(var(--z-modal) + 1);
+}
+.floating-layer,
+.database-row-menu {
+  z-index: var(--z-floating);
+}
+.app-dialog-backdrop {
+  z-index: var(--z-confirm);
+}
+.floating-error,
+.page-action-error {
+  z-index: var(--z-notice);
+}
+.app-toast-stack {
+  z-index: var(--z-toast);
+}
+
+/* Scrolling inside a layer stops at its edge instead of moving the page. */
+.rdocs-dialog,
+.dialog-backdrop,
+.automation-editor,
+.automation-list,
+.settings-content,
+.settings-nav,
+.database-record-drawer,
+.database-field-panel-body,
+.floating-layer,
+.slash-menu > div,
+.database-menu,
+.database-view-popover,
+.database-template-menu,
+.notification-popover,
+.page-tree-menu,
+.sidebar-nav,
+.notion-space-navigation,
+.discovery-dialog {
+  overscroll-behavior: contain;
+}
+.document-scroll {
+  scrollbar-gutter: stable;
+}
+
+/* Anchored layers rendered into <body>: one menu look, own scrolling. */
+.floating-layer {
+  right: auto;
+  bottom: auto;
+  margin: 0;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow:
+    rgb(15 15 15 / 5%) 0 0 0 1px,
+    rgb(15 15 15 / 10%) 0 3px 6px,
+    rgb(15 15 15 / 20%) 0 9px 24px;
+}
+.floating-layer.database-field-menu-pop,
+.floating-layer.database-relation-picker {
+  display: grid;
+  min-width: 220px;
+  padding: 6px 4px;
+}
+.floating-layer.database-field-menu-pop > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgb(55 53 47);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.floating-layer.database-field-menu-pop > button svg {
+  flex: 0 0 auto;
+  color: rgb(55 53 47 / 65%);
+}
+.floating-layer.database-field-menu-pop > button:hover {
+  background: rgb(55 53 47 / 8%);
+}
+.floating-layer.database-field-menu-pop > button.danger,
+.floating-layer.database-field-menu-pop > button.danger svg {
+  color: rgb(235 87 87);
+}
+.floating-layer.database-field-menu-pop hr {
+  margin: 6px 0;
+  border: 0;
+  border-top: 1px solid rgb(55 53 47 / 9%);
+}
+.floating-layer.database-relation-picker > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.floating-layer.database-relation-picker > label:hover {
+  background: rgb(55 53 47 / 8%);
+}
+.floating-layer.database-relation-picker input {
+  width: auto;
+  margin: 0;
+  accent-color: rgb(35 131 226);
+}
+.database-option-chip {
+  /* Chips render outside the canvas too (anchored layers). */
+  line-height: 20px;
+}
+
+/* Tables scroll with the page like Notion; only virtualized tables (many
+   rows) keep their own vertical scroller. */
+.database-table-wrap:not(.is-virtual) {
+  max-height: none;
+}

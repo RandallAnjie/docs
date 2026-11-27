@@ -145,6 +145,7 @@ import {
   type DatabaseFilterOperator,
 } from './database-view';
 import { DatabaseAutomationDialog } from './AutomationBuilder';
+import { Floating } from './floating';
 import { matchesMediaQuery } from './sidebar-chrome';
 import { DatabaseFilterPanel, DatabaseSortPanel } from './DatabaseViewControls';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
@@ -1097,34 +1098,44 @@ function MultiSelectChips({
   value: string[];
 }) {
   const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   return (
     <div className="database-multi-chips">
-      <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)}>
+      <button
+        ref={setAnchor}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
         {value.length ? (
           value.map((item) => <OptionChip key={item} name={item} options={options} />)
         ) : (
           <span>添加</span>
         )}
       </button>
-      {open ? (
-        <div className="database-relation-picker">
-          {options.map((option) => {
-            const checked = value.includes(option);
-            return (
-              <label key={option}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() =>
-                    onChange(checked ? value.filter((item) => item !== option) : [...value, option])
-                  }
-                />
-                <OptionChip name={option} options={options} />
-              </label>
-            );
-          })}
-        </div>
-      ) : null}
+      <Floating
+        anchor={anchor}
+        open={open}
+        onClose={() => setOpen(false)}
+        className="database-relation-picker"
+        role="listbox"
+      >
+        {options.map((option) => {
+          const checked = value.includes(option);
+          return (
+            <label key={option}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() =>
+                  onChange(checked ? value.filter((item) => item !== option) : [...value, option])
+                }
+              />
+              <OptionChip name={option} options={options} />
+            </label>
+          );
+        })}
+      </Floating>
     </div>
   );
 }
@@ -1539,6 +1550,7 @@ function TableFieldHeader({
   onToggleWrap: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (renaming) inputRef.current?.select();
   }, [renaming]);
@@ -1581,6 +1593,7 @@ function TableFieldHeader({
       {canEdit ? (
         <div className="database-field-menu-wrap">
           <button
+            ref={setMenuAnchor}
             type="button"
             className="database-field-menu"
             aria-label={`${property.name}字段菜单`}
@@ -1592,53 +1605,57 @@ function TableFieldHeader({
           >
             <ChevronDown size={13} />
           </button>
-          {menuOpen ? (
-            <div className="database-field-menu-pop" role="menu">
-              <button type="button" role="menuitem" onClick={() => onSort('ascending')}>
-                <ArrowUp size={14} /> 升序
-              </button>
-              <button type="button" role="menuitem" onClick={() => onSort('descending')}>
-                <ArrowDown size={14} /> 降序
-              </button>
-              <hr />
-              <button type="button" role="menuitem" onClick={onConfigure}>
-                <Settings2 size={14} /> 字段配置
-              </button>
-              {onInsert ? (
-                <>
-                  <button type="button" role="menuitem" onClick={() => onInsert('left')}>
-                    <ArrowLeftToLine size={14} /> 在左侧插入字段
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => onInsert('right')}>
-                    <ArrowRightToLine size={14} /> 在右侧插入字段
-                  </button>
-                </>
-              ) : null}
-              {onDuplicate && property.type !== 'title' ? (
-                <button type="button" role="menuitem" onClick={onDuplicate}>
-                  <Copy size={14} /> 复制字段
+          <Floating
+            anchor={menuAnchor}
+            open={menuOpen}
+            onClose={onToggleMenu}
+            align="end"
+            className="database-field-menu-pop"
+          >
+            <button type="button" role="menuitem" onClick={() => onSort('ascending')}>
+              <ArrowUp size={14} /> 升序
+            </button>
+            <button type="button" role="menuitem" onClick={() => onSort('descending')}>
+              <ArrowDown size={14} /> 降序
+            </button>
+            <hr />
+            <button type="button" role="menuitem" onClick={onConfigure}>
+              <Settings2 size={14} /> 字段配置
+            </button>
+            {onInsert ? (
+              <>
+                <button type="button" role="menuitem" onClick={() => onInsert('left')}>
+                  <ArrowLeftToLine size={14} /> 在左侧插入字段
                 </button>
-              ) : null}
-              <hr />
-              <button type="button" role="menuitem" aria-pressed={frozen} onClick={onFreeze}>
-                <Pin size={14} /> {frozen ? '取消冻结' : '冻结到此列'}
-              </button>
-              <button type="button" role="menuitem" aria-pressed={wrapped} onClick={onToggleWrap}>
-                <WrapText size={14} /> {wrapped ? '取消自动换行' : '自动换行'}
-              </button>
-              <hr />
-              {property.type !== 'title' ? (
-                <button type="button" role="menuitem" onClick={onHide}>
-                  <EyeOff size={14} /> 隐藏字段
+                <button type="button" role="menuitem" onClick={() => onInsert('right')}>
+                  <ArrowRightToLine size={14} /> 在右侧插入字段
                 </button>
-              ) : null}
-              {property.type !== 'title' ? (
-                <button type="button" role="menuitem" className="danger" onClick={onDelete}>
-                  <Trash2 size={14} /> 删除字段
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+              </>
+            ) : null}
+            {onDuplicate && property.type !== 'title' ? (
+              <button type="button" role="menuitem" onClick={onDuplicate}>
+                <Copy size={14} /> 复制字段
+              </button>
+            ) : null}
+            <hr />
+            <button type="button" role="menuitem" aria-pressed={frozen} onClick={onFreeze}>
+              <Pin size={14} /> {frozen ? '取消冻结' : '冻结到此列'}
+            </button>
+            <button type="button" role="menuitem" aria-pressed={wrapped} onClick={onToggleWrap}>
+              <WrapText size={14} /> {wrapped ? '取消自动换行' : '自动换行'}
+            </button>
+            <hr />
+            {property.type !== 'title' ? (
+              <button type="button" role="menuitem" onClick={onHide}>
+                <EyeOff size={14} /> 隐藏字段
+              </button>
+            ) : null}
+            {property.type !== 'title' ? (
+              <button type="button" role="menuitem" className="danger" onClick={onDelete}>
+                <Trash2 size={14} /> 删除字段
+              </button>
+            ) : null}
+          </Floating>
         </div>
       ) : null}
     </div>
@@ -1697,7 +1714,7 @@ function TableDatabaseView({
   const selected = selectedRowIds ?? new Set<string>();
   const allSelected = Boolean(rows.length && rows.every((row) => selected.has(row.id)));
   const extraColumns = 1 + (onAddProperty && canEdit ? 1 : 0);
-  const [rowMenu, setRowMenu] = useState<{ id: string; left: number; top: number } | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const rowMenuId = rowMenu?.id ?? null;
   const [wrapWidth, setWrapWidth] = useState(1200);
   // Touch screens have no hover to reveal the row handle, so the gutter only holds the checkbox.
@@ -1979,7 +1996,7 @@ function TableDatabaseView({
   };
   return (
     <div
-      className="database-table-wrap"
+      className={`database-table-wrap${virtualize ? ' is-virtual' : ''}`}
       ref={wrap}
       tabIndex={0}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
@@ -2182,15 +2199,9 @@ function TableDatabaseView({
                             title="打开菜单"
                             onClick={(event) => {
                               event.stopPropagation();
-                              const rect = event.currentTarget.getBoundingClientRect();
+                              const anchor = event.currentTarget;
                               setRowMenu((current) =>
-                                current?.id === row.id
-                                  ? null
-                                  : {
-                                      id: row.id,
-                                      left: rect.left,
-                                      top: Math.min(rect.bottom + 4, window.innerHeight - 190),
-                                    },
+                                current?.id === row.id ? null : { id: row.id, anchor },
                               );
                             }}
                           >
@@ -2204,56 +2215,52 @@ function TableDatabaseView({
                           onChange={() => onToggleRow?.(row.id)}
                         />
                       </span>
-                      {rowMenuId === row.id
-                        ? createPortal(
-                            <div
-                              className="database-menu database-row-menu"
-                              role="menu"
-                              style={{ position: 'fixed', left: rowMenu?.left, top: rowMenu?.top }}
-                            >
-                              <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() => {
-                                  setRowMenuId(null);
-                                  onExpandRow?.(row);
-                                }}
-                              >
-                                <PanelRightOpen size={15} /> 在侧边预览打开
-                              </button>
-                              <a
-                                role="menuitem"
-                                href={`/p/${encodeURIComponent(row.pageId)}`}
-                                onClick={() => setRowMenuId(null)}
-                              >
-                                <Maximize2 size={15} /> 以完整页面打开
-                              </a>
-                              <hr />
-                              <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() => {
-                                  setRowMenuId(null);
-                                  duplicateRow(row);
-                                }}
-                              >
-                                <Copy size={15} /> 创建副本
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="danger"
-                                onClick={() => {
-                                  setRowMenuId(null);
-                                  removeRow(row);
-                                }}
-                              >
-                                <Archive size={15} /> 归档
-                              </button>
-                            </div>,
-                            document.body,
-                          )
-                        : null}
+                      <Floating
+                        anchor={rowMenuId === row.id ? (rowMenu?.anchor ?? null) : null}
+                        open={rowMenuId === row.id}
+                        onClose={() => setRowMenu(null)}
+                        className="database-menu database-row-menu"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setRowMenuId(null);
+                            onExpandRow?.(row);
+                          }}
+                        >
+                          <PanelRightOpen size={15} /> 在侧边预览打开
+                        </button>
+                        <a
+                          role="menuitem"
+                          href={`/p/${encodeURIComponent(row.pageId)}`}
+                          onClick={() => setRowMenuId(null)}
+                        >
+                          <Maximize2 size={15} /> 以完整页面打开
+                        </a>
+                        <hr />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setRowMenuId(null);
+                            duplicateRow(row);
+                          }}
+                        >
+                          <Copy size={15} /> 创建副本
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="danger"
+                          onClick={() => {
+                            setRowMenuId(null);
+                            removeRow(row);
+                          }}
+                        >
+                          <Archive size={15} /> 归档
+                        </button>
+                      </Floating>
                     </td>
                     {properties.map((property, index) => {
                       const selectedCell =
