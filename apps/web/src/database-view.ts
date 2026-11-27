@@ -237,7 +237,7 @@ export const RELATIVE_DATE_LABELS = {
 } as const;
 export type RelativeDateToken = keyof typeof RELATIVE_DATE_LABELS;
 
-function localDayKey(date: Date): string {
+export function localDayKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
@@ -853,4 +853,58 @@ export function resizeDatabaseDate(
   }
   const nextEnd = date >= range.start ? date : range.start;
   return { ...objectValue, start: rawStart, end: `${nextEnd}${rawEnd.slice(10)}` };
+}
+
+/** Local calendar days a date cell covers (start and end, `YYYY-MM-DD`). */
+export function cellDayRange(value: JsonValue | undefined): { start: string; end: string } | null {
+  const start = cellDayKey(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return null;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    typeof value.end !== 'string'
+  ) {
+    return { start, end: start };
+  }
+  const end = cellDayKey({ ...value, start: value.end });
+  return { start, end: /^\d{4}-\d{2}-\d{2}$/.test(end) && end >= start ? end : start };
+}
+
+/** Every `YYYY-MM-DD` from start to end inclusive, capped at `limit` days. */
+export function daysBetween(start: string, end: string, limit = 62): string[] {
+  const days: string[] = [];
+  const cursor = new Date(`${start}T00:00:00.000Z`);
+  const last = Date.parse(`${end}T00:00:00.000Z`);
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(last)) return days;
+  while (cursor.getTime() <= last && days.length < limit) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return days;
+}
+
+/** Consecutive runs of days that share a month, for a timeline header. */
+export function monthSegments(days: readonly string[]): { month: string; span: number }[] {
+  const segments: { month: string; span: number }[] = [];
+  for (const day of days) {
+    const month = day.slice(0, 7);
+    const last = segments[segments.length - 1];
+    if (last && last.month === month) last.span += 1;
+    else segments.push({ month, span: 1 });
+  }
+  return segments;
+}
+
+/** Round axis ticks from zero: 0, step, 2·step … covering `maximum` (step 1, 2 or 5 × 10ⁿ). */
+export function niceTicks(maximum: number, target = 4): number[] {
+  if (!(maximum > 0)) return [0, 1];
+  const rough = maximum / target;
+  const power = 10 ** Math.floor(Math.log10(rough));
+  const step = [1, 2, 5, 10].map((factor) => factor * power).find((value) => value >= rough)!;
+  const ticks: number[] = [];
+  for (let tick = 0; tick < maximum + step * 1e-9; tick += step)
+    ticks.push(Number(tick.toFixed(10)));
+  if (ticks[ticks.length - 1]! < maximum) ticks.push(Number((ticks.length * step).toFixed(10)));
+  return ticks;
 }

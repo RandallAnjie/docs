@@ -126,6 +126,11 @@ import {
   filterOperatorLabel,
   filterValueLabel,
   databaseCalendarDays,
+  cellDayRange,
+  daysBetween,
+  localDayKey,
+  monthSegments,
+  niceTicks,
   databaseDateRange,
   databaseViewFilters,
   databaseViewSorts,
@@ -2583,6 +2588,173 @@ function PropertyPicker({
   );
 }
 
+interface SettingOption<T extends string | number> {
+  value: T;
+  label: string;
+  icon?: ReactNode;
+}
+
+/** Notion-style quiet setting: a text button that opens a small anchored menu. */
+function ViewSettingChip<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+  align = 'start',
+  placeholder = '未设置',
+}: {
+  label?: string;
+  value: T | null;
+  options: SettingOption<T>[];
+  onChange: (value: T) => void;
+  align?: 'start' | 'end';
+  placeholder?: string;
+}) {
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const current = options.find((option) => option.value === value);
+  const close = useCallback(() => setOpen(false), []);
+  return (
+    <>
+      <button
+        ref={setAnchor}
+        type="button"
+        className={`database-setting-chip${open ? ' is-open' : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={label ? `${label}：${current?.label ?? placeholder}` : undefined}
+        onClick={() => setOpen((next) => !next)}
+      >
+        {label ? <span>{label}</span> : null}
+        <strong>{current?.label ?? placeholder}</strong>
+        <ChevronDown size={13} />
+      </button>
+      <Floating
+        anchor={anchor}
+        open={open}
+        onClose={close}
+        align={align}
+        className="database-field-menu-pop database-setting-menu"
+      >
+        {label ? <p className="database-setting-menu-title">{label}</p> : null}
+        {options.map((option) => (
+          <button
+            key={String(option.value)}
+            type="button"
+            role="menuitemradio"
+            aria-checked={option.value === value}
+            onClick={() => {
+              setOpen(false);
+              if (option.value !== value) onChange(option.value);
+            }}
+          >
+            {option.icon}
+            <span>{option.label}</span>
+            {option.value === value ? <Check size={14} className="database-setting-check" /> : null}
+          </button>
+        ))}
+      </Floating>
+    </>
+  );
+}
+
+function propertyOptions(properties: DatabasePropertySummary[]): SettingOption<string>[] {
+  return properties.map((property) => ({
+    value: property.id,
+    label: property.name,
+    icon: propertyTypeIcon(property.type),
+  }));
+}
+
+/** Previous / today / next, as in Notion's calendar and timeline headers. */
+function PeriodNavigator({
+  previousLabel,
+  nextLabel,
+  onPrevious,
+  onToday,
+  onNext,
+}: {
+  previousLabel: string;
+  nextLabel: string;
+  onPrevious: () => void;
+  onToday: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="database-period-nav">
+      <button type="button" aria-label={previousLabel} onClick={onPrevious}>
+        <ChevronLeft size={16} />
+      </button>
+      <button type="button" className="database-period-today" onClick={onToday}>
+        今天
+      </button>
+      <button type="button" aria-label={nextLabel} onClick={onNext}>
+        <ChevronRight size={16} />
+      </button>
+    </div>
+  );
+}
+
+/** Non-empty, displayable properties of a row for cards (title and `exclude` left out). */
+function cardProperties(
+  row: DatabaseRowSummary,
+  properties: DatabasePropertySummary[],
+  exclude: ReadonlySet<string> = new Set(),
+): DatabasePropertySummary[] {
+  const title = titleProperty(properties)?.id;
+  return properties.filter((property) => {
+    if (property.id === title || exclude.has(property.id) || property.type === 'button') {
+      return false;
+    }
+    const value = row.values[property.id];
+    if (property.type === 'checkbox') return value === true;
+    return valueText(value) !== '';
+  });
+}
+
+function CardTitle({
+  row,
+  properties,
+}: {
+  row: DatabaseRowSummary;
+  properties: DatabasePropertySummary[];
+}) {
+  const title = rowTitle(row, properties);
+  return (
+    <span className={`database-card-title${title ? '' : ' is-empty'}`}>
+      <FileText size={15} aria-hidden="true" />
+      <span>{title || '未命名'}</span>
+    </span>
+  );
+}
+
+function CardValues({
+  row,
+  properties,
+  organizationId,
+}: {
+  row: DatabaseRowSummary;
+  properties: DatabasePropertySummary[];
+  organizationId: string;
+}) {
+  if (!properties.length) return null;
+  return (
+    <div className="database-card-values">
+      {properties.map((property) => (
+        <div key={property.id} title={property.name}>
+          <DatabaseValueDisplay
+            property={property}
+            value={row.values[property.id]}
+            organizationId={organizationId}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const NO_GROUP = '\u0000none';
+
 function BoardDatabaseView(props: DatabaseViewProps) {
   const groupCandidates = props.allProperties.filter((property) =>
     ['status', 'select', 'checkbox'].includes(property.type),
@@ -2598,50 +2770,52 @@ function BoardDatabaseView(props: DatabaseViewProps) {
       />
     );
   }
+  const options = optionNames(groupProperty);
   const groups = new Map<string, { value: JsonValue; rows: DatabaseRowSummary[] }>();
   if (groupProperty.type === 'checkbox') {
-    groups.set('已选', { value: true, rows: [] });
-    groups.set('未选', { value: false, rows: [] });
-  }
-  for (const option of optionNames(groupProperty)) {
-    groups.set(option, { value: option, rows: [] });
+    groups.set('已勾选', { value: true, rows: [] });
+    groups.set('未勾选', { value: false, rows: [] });
+  } else {
+    groups.set(NO_GROUP, { value: null, rows: [] });
+    for (const option of options) groups.set(option, { value: option, rows: [] });
   }
   for (const row of props.rows) {
     const current = row.values[groupProperty.id];
-    const name =
+    const key =
       groupProperty.type === 'checkbox'
         ? current === true
-          ? '已选'
-          : '未选'
-        : valueText(current) || '未分组';
-    const group = groups.get(name) ?? { value: current ?? null, rows: [] };
-    groups.set(name, { ...group, rows: [...group.rows, row] });
+          ? '已勾选'
+          : '未勾选'
+        : valueText(current) || NO_GROUP;
+    const group = groups.get(key) ?? { value: current ?? null, rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
   }
-  if (!groups.size || props.rows.some((row) => !valueText(row.values[groupProperty.id]))) {
-    if (groupProperty.type !== 'checkbox' && !groups.has('未分组')) {
-      groups.set('未分组', { value: null, rows: [] });
-    }
-  }
+  // Like Notion, the "No <property>" column only stays when it has cards.
+  if (groups.get(NO_GROUP)?.rows.length === 0 && groups.size > 1) groups.delete(NO_GROUP);
+  const exclude = new Set([groupProperty.id]);
   return (
     <div className="database-board-shell">
-      <PropertyPicker
-        label="分组"
-        value={groupProperty.id}
-        properties={groupCandidates}
-        onChange={(groupPropertyId) =>
-          void props.updateViewConfig({ ...props.view.config, groupPropertyId })
-        }
-      />
+      <div className="database-layout-bar">
+        <ViewSettingChip
+          label="分组依据"
+          value={groupProperty.id}
+          options={propertyOptions(groupCandidates)}
+          onChange={(groupPropertyId) =>
+            void props.updateViewConfig({ ...props.view.config, groupPropertyId })
+          }
+        />
+      </div>
       <div className="database-board">
-        {[...groups].map(([name, group]) => (
+        {[...groups].map(([key, group]) => (
           <section
-            key={name}
+            key={key}
             style={
               {
                 '--group-tint':
-                  name === '未分组'
+                  key === NO_GROUP || groupProperty.type === 'checkbox'
                     ? 'rgb(247 247 245)'
-                    : optionSwatch(name, optionNames(groupProperty)).background,
+                    : optionSwatch(key, options).background,
               } as React.CSSProperties
             }
             onDragOver={(event) => {
@@ -2660,14 +2834,15 @@ function BoardDatabaseView(props: DatabaseViewProps) {
             }}
           >
             <header>
-              {name === '未分组' ? (
-                <span>{name}</span>
+              {key === NO_GROUP ? (
+                <span className="database-board-empty-group">无{groupProperty.name}</span>
+              ) : groupProperty.type === 'checkbox' ? (
+                <span className="database-board-empty-group">
+                  {key === '已勾选' ? <CheckSquare size={14} /> : null}
+                  {key}
+                </span>
               ) : (
-                <OptionChip
-                  name={name}
-                  options={optionNames(groupProperty)}
-                  status={groupProperty.type === 'status'}
-                />
+                <OptionChip name={key} options={options} status={groupProperty.type === 'status'} />
               )}
               <small>{group.rows.length}</small>
             </header>
@@ -2681,46 +2856,28 @@ function BoardDatabaseView(props: DatabaseViewProps) {
                 }}
               >
                 <button type="button" onClick={() => props.onExpandRow?.(row)}>
-                  {rowTitle(row, props.properties)}
+                  <CardTitle row={row} properties={props.properties} />
                 </button>
-                <div className="database-card-values">
-                  {props.properties
-                    .filter(
-                      (property) =>
-                        property.id !== titleProperty(props.properties)?.id &&
-                        property.id !== groupProperty.id &&
-                        property.type !== 'button' &&
-                        row.values[property.id] !== false &&
-                        valueText(row.values[property.id]) !== '',
-                    )
-                    .slice(0, 4)
-                    .map((property) => (
-                      <div key={property.id} title={property.name}>
-                        {SELF_DESCRIBING_TYPES.has(property.type) ? null : (
-                          <small>{property.name}</small>
-                        )}
-                        <DatabaseValueDisplay
-                          property={property}
-                          value={row.values[property.id]}
-                          organizationId={props.organizationId}
-                        />
-                      </div>
-                    ))}
-                </div>
+                <CardValues
+                  row={row}
+                  properties={cardProperties(row, props.properties, exclude)}
+                  organizationId={props.organizationId}
+                />
               </article>
             ))}
             {props.canEdit ? (
               <button
                 type="button"
+                className="database-board-add"
                 onClick={() => {
                   const title = titleProperty(props.properties);
                   void props.createRow({
                     ...(title ? { [title.id]: '未命名' } : {}),
-                    ...(name === '未分组' ? {} : { [groupProperty.id]: group.value }),
+                    ...(key === NO_GROUP ? {} : { [groupProperty.id]: group.value }),
                   });
                 }}
               >
-                <Plus size={13} /> 新建
+                <Plus size={14} /> 新建
               </button>
             ) : null}
           </section>
@@ -2731,6 +2888,12 @@ function BoardDatabaseView(props: DatabaseViewProps) {
 }
 
 const DATE_TYPES = new Set<DatabasePropertyType>(['date', 'created_time', 'last_edited_time']);
+const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+
+function monthTitle(month: string): string {
+  const [year, value] = month.split('-');
+  return `${year}年${Number(value)}月`;
+}
 
 function CalendarDatabaseView(props: DatabaseViewProps) {
   const dateCandidates = props.allProperties.filter((property) => DATE_TYPES.has(property.type));
@@ -2742,18 +2905,28 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
       <ViewRequirement icon={<CalendarDays size={24} />} text="添加日期属性后即可使用日历。" />
     );
   }
+  const today = localDayKey(new Date());
   const configuredMonth =
     typeof props.view.config.calendarMonth === 'string' &&
     /^\d{4}-\d{2}$/.test(props.view.config.calendarMonth)
       ? props.view.config.calendarMonth
-      : new Date().toISOString().slice(0, 7);
+      : today.slice(0, 7);
   const days = databaseCalendarDays(configuredMonth);
-  const rowsByDate = new Map<string, DatabaseRowSummary[]>();
-  const unscheduled: DatabaseRowSummary[] = [];
+  const visibleDays = new Set(days.map((day) => day.date));
+  const rowsByDate = new Map<string, { row: DatabaseRowSummary; continued: boolean }[]>();
+  let unscheduled = 0;
   for (const row of props.rows) {
-    const date = dateInputValue(row.values[dateProperty.id]);
-    if (!date) unscheduled.push(row);
-    else rowsByDate.set(date, [...(rowsByDate.get(date) ?? []), row]);
+    const range = cellDayRange(row.values[dateProperty.id]);
+    if (!range) {
+      unscheduled += 1;
+      continue;
+    }
+    for (const day of daysBetween(range.start, range.end)) {
+      if (!visibleDays.has(day)) continue;
+      const entries = rowsByDate.get(day) ?? [];
+      entries.push({ row, continued: day !== range.start });
+      rowsByDate.set(day, entries);
+    }
   }
   const moveMonth = (offset: number) => {
     const month = new Date(`${configuredMonth}-01T00:00:00.000Z`);
@@ -2763,8 +2936,9 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
       calendarMonth: month.toISOString().slice(0, 7),
     });
   };
+  const canMove = props.canEdit && dateProperty.type === 'date';
   const moveRow = (rowId: string, date: string) => {
-    if (!props.canEdit || dateProperty.type !== 'date') return;
+    if (!canMove) return;
     const row = props.rows.find((candidate) => candidate.id === rowId);
     if (row) {
       void props.saveCell(row, dateProperty, moveDatabaseDate(row.values[dateProperty.id], date));
@@ -2772,58 +2946,58 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
   };
   return (
     <div className="database-calendar-shell">
-      <div className="database-calendar-toolbar">
-        <PropertyPicker
-          label="日期"
-          value={dateProperty.id}
-          properties={dateCandidates}
-          onChange={(datePropertyId) =>
-            void props.updateViewConfig({ ...props.view.config, datePropertyId })
-          }
-        />
-        <div>
-          <button type="button" aria-label="上个月" onClick={() => moveMonth(-1)}>
-            <ChevronLeft size={15} />
-          </button>
-          <button
-            type="button"
-            onClick={() =>
+      <div className="database-layout-bar">
+        <strong className="database-layout-bar-title">{monthTitle(configuredMonth)}</strong>
+        <div className="database-layout-bar-actions">
+          {unscheduled ? (
+            <span className="database-layout-bar-note">{unscheduled} 条没有日期</span>
+          ) : null}
+          <ViewSettingChip
+            label="日期依据"
+            value={dateProperty.id}
+            options={propertyOptions(dateCandidates)}
+            align="end"
+            onChange={(datePropertyId) =>
+              void props.updateViewConfig({ ...props.view.config, datePropertyId })
+            }
+          />
+          <PeriodNavigator
+            previousLabel="上个月"
+            nextLabel="下个月"
+            onPrevious={() => moveMonth(-1)}
+            onNext={() => moveMonth(1)}
+            onToday={() =>
               void props.updateViewConfig({
                 ...props.view.config,
-                calendarMonth: new Date().toISOString().slice(0, 7),
+                calendarMonth: today.slice(0, 7),
               })
             }
-          >
-            今天
-          </button>
-          <strong>
-            {new Date(`${configuredMonth}-01T00:00:00.000Z`).toLocaleDateString('zh-CN', {
-              year: 'numeric',
-              month: 'long',
-              timeZone: 'UTC',
-            })}
-          </strong>
-          <button type="button" aria-label="下个月" onClick={() => moveMonth(1)}>
-            <ChevronRight size={15} />
-          </button>
+          />
         </div>
       </div>
       <div className="database-calendar-weekdays" aria-hidden="true">
-        {['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((weekday) => (
-          <span key={weekday}>{weekday}</span>
+        {WEEKDAYS.map((weekday, index) => (
+          <span key={weekday} className={index >= 5 ? 'weekend' : ''}>
+            {weekday}
+          </span>
         ))}
       </div>
       <div className="database-calendar-grid">
-        {days.map((day) => {
-          const dayRows = rowsByDate.get(day.date) ?? [];
+        {days.map((day, index) => {
+          const entries = rowsByDate.get(day.date) ?? [];
+          const dayNumber = Number(day.date.slice(-2));
           return (
             <section
               key={day.date}
-              className={`${day.inMonth ? '' : 'outside'} ${
-                day.date === new Date().toISOString().slice(0, 10) ? 'today' : ''
-              }`}
+              className={[
+                day.inMonth ? '' : 'outside',
+                day.date === today ? 'today' : '',
+                index % 7 >= 5 ? 'weekend' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
               onDragOver={(event) => {
-                if (!props.canEdit || dateProperty.type !== 'date') return;
+                if (!canMove) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = 'move';
               }}
@@ -2833,11 +3007,10 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
               }}
             >
               <header>
-                <time dateTime={day.date}>{Number(day.date.slice(-2))}</time>
-                {props.canEdit && dateProperty.type === 'date' ? (
+                {canMove ? (
                   <button
                     type="button"
-                    aria-label={`${day.date}新建记录`}
+                    aria-label={`在 ${day.date} 新建`}
                     onClick={() => {
                       const title = titleProperty(props.properties);
                       void props.createRow({
@@ -2846,48 +3019,41 @@ function CalendarDatabaseView(props: DatabaseViewProps) {
                       });
                     }}
                   >
-                    <Plus size={12} />
+                    <Plus size={14} />
                   </button>
                 ) : null}
+                <time dateTime={day.date}>
+                  {dayNumber === 1 ? (
+                    <>
+                      <span className="database-calendar-month">
+                        {Number(day.date.slice(5, 7))}月
+                      </span>
+                      1<span className="database-calendar-month">日</span>
+                    </>
+                  ) : (
+                    dayNumber
+                  )}
+                </time>
               </header>
-              {dayRows.map((row) => (
+              {entries.map(({ row, continued }) => (
                 <button
                   key={row.id}
                   type="button"
-                  draggable={props.canEdit && dateProperty.type === 'date'}
+                  className={`database-calendar-card${continued ? ' is-continued' : ''}`}
+                  draggable={canMove}
                   onClick={() => props.onExpandRow?.(row)}
                   onDragStart={(event) => {
                     event.dataTransfer.effectAllowed = 'move';
                     event.dataTransfer.setData('application/x-rdocs-row', row.id);
                   }}
                 >
-                  {rowTitle(row, props.properties)}
+                  <CardTitle row={row} properties={props.properties} />
                 </button>
               ))}
             </section>
           );
         })}
       </div>
-      {unscheduled.length ? (
-        <details className="database-calendar-unscheduled">
-          <summary>无日期 · {unscheduled.length}</summary>
-          <div>
-            {unscheduled.map((row) => (
-              <button
-                key={row.id}
-                type="button"
-                draggable={props.canEdit && dateProperty.type === 'date'}
-                onClick={() => props.onExpandRow?.(row)}
-                onDragStart={(event) =>
-                  event.dataTransfer.setData('application/x-rdocs-row', row.id)
-                }
-              >
-                {rowTitle(row, props.properties)}
-              </button>
-            ))}
-          </div>
-        </details>
-      ) : null}
     </div>
   );
 }
@@ -2898,13 +3064,22 @@ function ListDatabaseView(props: DatabaseViewProps) {
   return (
     <div className="database-list-view">
       {props.rows.map((row) => (
-        <button key={row.id} type="button" onClick={() => props.onExpandRow?.(row)}>
-          <FileText size={17} />
-          <strong>{rowTitle(row, props.properties)}</strong>
-          {props.properties
-            .filter((property) => property.id !== titleProperty(props.properties)?.id)
-            .slice(0, 3)
-            .map((property) => (
+        <div
+          key={row.id}
+          role="button"
+          tabIndex={0}
+          className="database-list-row"
+          onClick={() => props.onExpandRow?.(row)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              props.onExpandRow?.(row);
+            }
+          }}
+        >
+          <CardTitle row={row} properties={props.properties} />
+          <span className="database-list-values">
+            {cardProperties(row, props.properties).map((property) => (
               <span key={property.id} title={property.name}>
                 <DatabaseValueDisplay
                   property={property}
@@ -2913,9 +3088,14 @@ function ListDatabaseView(props: DatabaseViewProps) {
                 />
               </span>
             ))}
-          <ExternalLink size={14} />
-        </button>
+          </span>
+        </div>
       ))}
+      {props.canEdit ? (
+        <button type="button" className="database-list-add" onClick={props.addRow}>
+          <Plus size={14} /> 新建
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -2927,30 +3107,30 @@ function GalleryDatabaseView(props: DatabaseViewProps) {
     <div className="database-gallery-view">
       {props.rows.map((row) => (
         <article key={row.id}>
-          <div className="database-gallery-cover">
-            {rowTitle(row, props.properties).slice(0, 1)}
-          </div>
           <button type="button" onClick={() => props.onExpandRow?.(row)}>
-            {rowTitle(row, props.properties)}
+            <CardTitle row={row} properties={props.properties} />
           </button>
-          {props.properties
-            .filter((property) => property.id !== titleProperty(props.properties)?.id)
-            .slice(0, 4)
-            .map((property) => (
-              <p key={property.id}>
-                <small>{property.name}</small>
-                <DatabaseValueDisplay
-                  property={property}
-                  value={row.values[property.id]}
-                  organizationId={props.organizationId}
-                />
-              </p>
-            ))}
+          <CardValues
+            row={row}
+            properties={cardProperties(row, props.properties)}
+            organizationId={props.organizationId}
+          />
         </article>
       ))}
+      {props.canEdit ? (
+        <button type="button" className="database-gallery-add" onClick={props.addRow}>
+          <Plus size={14} /> 新建
+        </button>
+      ) : null}
     </div>
   );
 }
+
+const TIMELINE_SCALES: SettingOption<number>[] = [
+  { value: 14, label: '两周' },
+  { value: 30, label: '月' },
+  { value: 90, label: '季度' },
+];
 
 function TimelineDatabaseView(props: DatabaseViewProps) {
   const dateCandidates = props.allProperties.filter((property) => DATE_TYPES.has(property.type));
@@ -2959,23 +3139,25 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
     dateCandidates[0];
   if (!dateProperty)
     return <ViewRequirement icon={<Columns3 size={24} />} text="添加日期属性后即可使用时间线。" />;
+  const title = titleProperty(props.properties);
   const datedRows = props.rows
-    .map((row) => ({ row, range: databaseDateRange(row.values[dateProperty.id]) }))
+    .map((row) => ({ row, range: cellDayRange(row.values[dateProperty.id]) }))
     .filter(
       (item): item is { row: DatabaseRowSummary; range: { start: string; end: string } } =>
         item.range !== null,
     )
     .sort((left, right) => left.range.start.localeCompare(right.range.start));
-  const unscheduled = props.rows.filter((row) => !databaseDateRange(row.values[dateProperty.id]));
+  const unscheduled = props.rows.filter((row) => !cellDayRange(row.values[dateProperty.id]));
   const timelineDays =
     props.view.config.timelineDays === 14 || props.view.config.timelineDays === 90
       ? props.view.config.timelineDays
       : 30;
+  const today = localDayKey(new Date());
   const configuredStart =
     typeof props.view.config.timelineStart === 'string' &&
     /^\d{4}-\d{2}-\d{2}$/.test(props.view.config.timelineStart)
       ? props.view.config.timelineStart
-      : (datedRows[0]?.range.start ?? new Date().toISOString().slice(0, 10));
+      : (datedRows[0]?.range.start ?? today);
   const startTime = Date.parse(`${configuredStart}T00:00:00.000Z`);
   const axisDays = Array.from({ length: timelineDays }, (_, index) => {
     const day = new Date(startTime);
@@ -2993,8 +3175,9 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
   };
   const dateOffset = (date: string) =>
     Math.round((Date.parse(`${date}T00:00:00.000Z`) - startTime) / 86_400_000);
+  const canMove = props.canEdit && dateProperty.type === 'date';
   const updateRange = (row: DatabaseRowSummary, mode: 'move' | 'start' | 'end', date: string) => {
-    if (!props.canEdit || dateProperty.type !== 'date') return;
+    if (!canMove) return;
     const value =
       mode === 'move'
         ? moveDatabaseDate(row.values[dateProperty.id], date)
@@ -3002,7 +3185,7 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
     void props.saveCell(row, dateProperty, value);
   };
   const dropOnTrack = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!props.canEdit || dateProperty.type !== 'date') return;
+    if (!canMove) return;
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const index = Math.max(
@@ -3025,123 +3208,183 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
       // Ignore drags that do not originate from this timeline.
     }
   };
+  const todayIndex = axisDays.indexOf(today);
+  const dense = timelineDays > 31;
   return (
     <div
       className="database-timeline-view"
-      style={{ '--timeline-days': timelineDays } as React.CSSProperties}
+      style={
+        {
+          '--timeline-days': timelineDays,
+          ...(todayIndex >= 0
+            ? { '--timeline-today': `${((todayIndex + 0.5) / timelineDays) * 100}%` }
+            : {}),
+        } as React.CSSProperties
+      }
     >
-      <div className="database-timeline-toolbar">
-        <PropertyPicker
-          label="时间"
-          value={dateProperty.id}
-          properties={dateCandidates}
-          onChange={(datePropertyId) =>
-            void props.updateViewConfig({ ...props.view.config, datePropertyId })
-          }
-        />
-        <div>
-          <button type="button" aria-label="上一时间段" onClick={() => shiftWindow(-timelineDays)}>
-            <ChevronLeft size={15} />
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              void props.updateViewConfig({
-                ...props.view.config,
-                timelineStart: new Date().toISOString().slice(0, 10),
-                timelineDays,
-              })
+      <div className="database-layout-bar">
+        <strong className="database-layout-bar-title">
+          {monthTitle(axisDays[0]!.slice(0, 7))}
+          {axisDays[0]!.slice(0, 7) !== axisDays[axisDays.length - 1]!.slice(0, 7)
+            ? ` – ${monthTitle(axisDays[axisDays.length - 1]!.slice(0, 7))}`
+            : ''}
+        </strong>
+        <div className="database-layout-bar-actions">
+          <ViewSettingChip
+            label="时间依据"
+            value={dateProperty.id}
+            options={propertyOptions(dateCandidates)}
+            align="end"
+            onChange={(datePropertyId) =>
+              void props.updateViewConfig({ ...props.view.config, datePropertyId })
             }
-          >
-            今天
-          </button>
-          <button type="button" aria-label="下一时间段" onClick={() => shiftWindow(timelineDays)}>
-            <ChevronRight size={15} />
-          </button>
-          <select
-            aria-label="时间线范围"
+          />
+          <ViewSettingChip
+            label="范围"
             value={timelineDays}
-            onChange={(event) =>
+            options={TIMELINE_SCALES}
+            align="end"
+            onChange={(days) =>
               void props.updateViewConfig({
                 ...props.view.config,
                 timelineStart: configuredStart,
-                timelineDays: Number(event.target.value),
+                timelineDays: days,
               })
             }
-          >
-            <option value={14}>2 周</option>
-            <option value={30}>1 月</option>
-            <option value={90}>1 季度</option>
-          </select>
+          />
+          <PeriodNavigator
+            previousLabel="上一时间段"
+            nextLabel="下一时间段"
+            onPrevious={() => shiftWindow(-timelineDays)}
+            onNext={() => shiftWindow(timelineDays)}
+            onToday={() => {
+              const start = new Date(`${today}T00:00:00.000Z`);
+              start.setUTCDate(start.getUTCDate() - Math.min(3, Math.floor(timelineDays / 7)));
+              void props.updateViewConfig({
+                ...props.view.config,
+                timelineStart: start.toISOString().slice(0, 10),
+                timelineDays,
+              });
+            }}
+          />
         </div>
       </div>
       <div className="database-timeline-axis">
-        <span>记录</span>
+        <span>{title?.name ?? '名称'}</span>
         <div>
-          {axisDays.map((date) => (
-            <time key={date} dateTime={date} title={date}>
-              {date.slice(5)}
-            </time>
-          ))}
+          <div className="database-timeline-months">
+            {monthSegments(axisDays).map((segment) => (
+              <span key={segment.month} style={{ gridColumn: `span ${segment.span}` }}>
+                {segment.span >= 3 ? monthTitle(segment.month) : ''}
+              </span>
+            ))}
+          </div>
+          <div className="database-timeline-days">
+            {axisDays.map((date) => {
+              const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+              return (
+                <time
+                  key={date}
+                  dateTime={date}
+                  title={date}
+                  className={[
+                    date === today ? 'today' : '',
+                    weekday === 0 || weekday === 6 ? 'weekend' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                >
+                  <span>
+                    {!dense || weekday === 1 || date === today ? Number(date.slice(-2)) : ''}
+                  </span>
+                </time>
+              );
+            })}
+          </div>
         </div>
       </div>
       {datedRows.map(({ row, range }) => {
         const start = Math.max(0, dateOffset(range.start));
         const end = Math.min(timelineDays - 1, dateOffset(range.end));
         const visible = end >= 0 && start < timelineDays;
+        const name = rowTitle(row, props.properties) || '未命名';
         return (
           <article key={row.id}>
-            <a href={`/p/${encodeURIComponent(row.pageId)}`}>{rowTitle(row, props.properties)}</a>
+            <button
+              type="button"
+              className="database-timeline-name"
+              onClick={() => props.onExpandRow?.(row)}
+            >
+              <CardTitle row={row} properties={props.properties} />
+            </button>
             <div
               className="database-timeline-track"
               onDragOver={(event) => {
-                if (props.canEdit && dateProperty.type === 'date') event.preventDefault();
+                if (canMove) event.preventDefault();
               }}
               onDrop={dropOnTrack}
             >
               {visible ? (
                 <div
-                  className="database-timeline-bar"
-                  draggable={props.canEdit && dateProperty.type === 'date'}
+                  className={`database-timeline-bar${
+                    (Math.max(end, start) - start + 1) * 36 < name.length * 14 + 24
+                      ? ' is-short'
+                      : ''
+                  }`}
+                  role="button"
+                  tabIndex={0}
+                  draggable={canMove}
                   style={
                     {
                       '--timeline-left': `${(start / timelineDays) * 100}%`,
                       '--timeline-width': `${((Math.max(end, start) - start + 1) / timelineDays) * 100}%`,
                     } as React.CSSProperties
                   }
+                  onClick={() => props.onExpandRow?.(row)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') props.onExpandRow?.(row);
+                  }}
                   onDragStart={(event) =>
                     event.dataTransfer.setData(
                       'application/x-rdocs-timeline',
                       JSON.stringify({ rowId: row.id, mode: 'move' }),
                     )
                   }
-                  title={`${range.start} → ${range.end}`}
+                  title={`${name} · ${range.start}${range.end !== range.start ? ` → ${range.end}` : ''}`}
                 >
-                  <button
-                    type="button"
-                    draggable={props.canEdit && dateProperty.type === 'date'}
-                    aria-label={`调整“${rowTitle(row, props.properties)}”开始日期`}
-                    onDragStart={(event) => {
-                      event.stopPropagation();
-                      event.dataTransfer.setData(
-                        'application/x-rdocs-timeline',
-                        JSON.stringify({ rowId: row.id, mode: 'start' }),
-                      );
-                    }}
-                  />
-                  <span>{rowTitle(row, props.properties)}</span>
-                  <button
-                    type="button"
-                    draggable={props.canEdit && dateProperty.type === 'date'}
-                    aria-label={`调整“${rowTitle(row, props.properties)}”结束日期`}
-                    onDragStart={(event) => {
-                      event.stopPropagation();
-                      event.dataTransfer.setData(
-                        'application/x-rdocs-timeline',
-                        JSON.stringify({ rowId: row.id, mode: 'end' }),
-                      );
-                    }}
-                  />
+                  {canMove ? (
+                    <button
+                      type="button"
+                      draggable
+                      className="database-timeline-handle is-start"
+                      aria-label={`调整“${name}”开始日期`}
+                      onClick={(event) => event.stopPropagation()}
+                      onDragStart={(event) => {
+                        event.stopPropagation();
+                        event.dataTransfer.setData(
+                          'application/x-rdocs-timeline',
+                          JSON.stringify({ rowId: row.id, mode: 'start' }),
+                        );
+                      }}
+                    />
+                  ) : null}
+                  <span>{name}</span>
+                  {canMove ? (
+                    <button
+                      type="button"
+                      draggable
+                      className="database-timeline-handle is-end"
+                      aria-label={`调整“${name}”结束日期`}
+                      onClick={(event) => event.stopPropagation()}
+                      onDragStart={(event) => {
+                        event.stopPropagation();
+                        event.dataTransfer.setData(
+                          'application/x-rdocs-timeline',
+                          JSON.stringify({ rowId: row.id, mode: 'end' }),
+                        );
+                      }}
+                    />
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -3153,10 +3396,11 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
           <summary>无日期 · {unscheduled.length}</summary>
           <div>
             {unscheduled.map((row) => (
-              <a
+              <button
                 key={row.id}
-                href={`/p/${encodeURIComponent(row.pageId)}`}
-                draggable={props.canEdit && dateProperty.type === 'date'}
+                type="button"
+                draggable={canMove}
+                onClick={() => props.onExpandRow?.(row)}
                 onDragStart={(event) =>
                   event.dataTransfer.setData(
                     'application/x-rdocs-timeline',
@@ -3164,8 +3408,8 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
                   )
                 }
               >
-                {rowTitle(row, props.properties)}
-              </a>
+                <CardTitle row={row} properties={props.properties} />
+              </button>
             ))}
           </div>
         </details>
@@ -3174,9 +3418,39 @@ function TimelineDatabaseView(props: DatabaseViewProps) {
   );
 }
 
+const CHART_TYPES: SettingOption<string>[] = [
+  { value: 'bar', label: '柱状图', icon: <BarChart3 size={14} /> },
+  { value: 'horizontal', label: '条形图', icon: <AlignLeft size={14} /> },
+  { value: 'line', label: '折线图', icon: <Activity size={14} /> },
+  { value: 'donut', label: '环形图', icon: <CircleDot size={14} /> },
+];
+const CHART_CALCULATIONS: SettingOption<string>[] = [
+  { value: 'count', label: '记录数' },
+  { value: 'sum', label: '求和' },
+  { value: 'average', label: '平均值' },
+];
+/** One series, one hue (the bars are named by the axis, not by color). */
+const CHART_SERIES = 'rgb(35 131 226)';
+const CHART_FALLBACK = [
+  'rgb(91 151 189)',
+  'rgb(108 155 125)',
+  'rgb(203 148 52)',
+  'rgb(154 109 215)',
+  'rgb(193 76 138)',
+  'rgb(217 115 13)',
+  'rgb(205 60 58)',
+  'rgb(145 145 142)',
+];
+
+function formatChartValue(value: number): string {
+  return Number.isInteger(value)
+    ? value.toLocaleString('zh-CN')
+    : value.toLocaleString('zh-CN', { maximumFractionDigits: 1 });
+}
+
 function ChartDatabaseView(props: DatabaseViewProps) {
   const candidates = props.allProperties.filter((property) =>
-    ['select', 'status', 'checkbox', 'person'].includes(property.type),
+    ['select', 'status', 'checkbox', 'person', 'multi_select'].includes(property.type),
   );
   const groupProperty =
     props.allProperties.find((property) => property.id === props.view.config.groupPropertyId) ??
@@ -3190,191 +3464,292 @@ function ChartDatabaseView(props: DatabaseViewProps) {
     props.allProperties.find((property) => property.id === props.view.config.valuePropertyId) ??
     numericProperties[0];
   const calculation =
-    props.view.config.calculation === 'sum' || props.view.config.calculation === 'average'
+    (props.view.config.calculation === 'sum' || props.view.config.calculation === 'average') &&
+    valueProperty
       ? props.view.config.calculation
       : 'count';
-  const chartType =
-    props.view.config.chartType === 'line' || props.view.config.chartType === 'donut'
-      ? props.view.config.chartType
-      : 'bar';
+  const chartType = CHART_TYPES.some((type) => type.value === props.view.config.chartType)
+    ? (props.view.config.chartType as string)
+    : 'bar';
+  const options = optionNames(groupProperty);
+  const emptyLabel = `无${groupProperty.name}`;
   const groupedRows = new Map<string, DatabaseRowSummary[]>();
+  for (const option of options) groupedRows.set(option, []);
   for (const row of props.rows) {
-    const key = valueText(row.values[groupProperty.id]) || '空';
-    groupedRows.set(key, [...(groupedRows.get(key) ?? []), row]);
+    const value = row.values[groupProperty.id];
+    const keys =
+      groupProperty.type === 'checkbox'
+        ? [value === true ? '已勾选' : '未勾选']
+        : Array.isArray(value) && groupProperty.type === 'multi_select'
+          ? value.filter((item): item is string => typeof item === 'string')
+          : [valueText(value)];
+    for (const key of keys.length ? keys : ['']) {
+      const label = key || emptyLabel;
+      groupedRows.set(label, [...(groupedRows.get(label) ?? []), row]);
+    }
   }
-  const points = [...groupedRows].map(([label, rows]) => {
-    const numbers = valueProperty
-      ? rows
-          .map((row) => row.values[valueProperty.id])
-          .filter((value): value is number => typeof value === 'number')
-      : [];
-    const value =
-      calculation === 'sum'
-        ? numbers.reduce((total, number) => total + number, 0)
-        : calculation === 'average'
-          ? numbers.length
-            ? numbers.reduce((total, number) => total + number, 0) / numbers.length
-            : 0
-          : rows.length;
-    return { label, value, rows };
-  });
-  const maximum = Math.max(1, ...points.map((point) => point.value));
+  const points = [...groupedRows]
+    .filter(([label, rows]) => rows.length > 0 || options.includes(label))
+    .map(([label, rows]) => {
+      const numbers = valueProperty
+        ? rows
+            .map((row) => row.values[valueProperty.id])
+            .filter((value): value is number => typeof value === 'number')
+        : [];
+      const value =
+        calculation === 'sum'
+          ? numbers.reduce((total, number) => total + number, 0)
+          : calculation === 'average'
+            ? numbers.length
+              ? numbers.reduce((total, number) => total + number, 0) / numbers.length
+              : 0
+            : rows.length;
+      return { label, value };
+    });
+  const ticks = niceTicks(Math.max(0, ...points.map((point) => point.value)));
+  const top = ticks[ticks.length - 1]!;
   const total = points.reduce((sum, point) => sum + point.value, 0);
+  const measureLabel =
+    calculation === 'count'
+      ? '记录数'
+      : `${valueProperty?.name ?? '数值'}${calculation === 'sum' ? '（求和）' : '（平均）'}`;
+  const colorOf = (label: string, index: number) =>
+    options.includes(label)
+      ? optionSwatch(label, options).dot
+      : label === emptyLabel
+        ? 'rgb(206 205 202)'
+        : CHART_FALLBACK[index % CHART_FALLBACK.length]!;
   const drillInto = (label: string) => {
+    if (groupProperty.type === 'multi_select') return;
     const filters = databaseViewFilters(props.view.config).filter(
       (filter) => filter.propertyId !== groupProperty.id,
     );
+    const value =
+      groupProperty.type === 'checkbox' ? label === '已勾选' : label === emptyLabel ? null : label;
     void props.updateViewConfig({
       ...props.view.config,
       filters: [
         ...filters.map(({ propertyId, operator, value }) => ({ propertyId, operator, value })),
-        { propertyId: groupProperty.id, operator: 'equals', value: label === '空' ? null : label },
+        {
+          propertyId: groupProperty.id,
+          operator: value === null ? 'is_empty' : 'equals',
+          value,
+        },
       ],
     });
   };
   const exportCsv = () => {
     const csv = [
-      ['分组', calculation === 'count' ? '记录数' : (valueProperty?.name ?? '值')],
+      [groupProperty.name, measureLabel],
       ...points.map((point) => [point.label, String(point.value)]),
     ]
       .map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(','))
       .join('\n');
-    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
     link.download = `${props.view.name}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
+  const update = (patch: Record<string, JsonValue>) =>
+    void props.updateViewConfig({ ...props.view.config, ...patch });
+  const tip = (point: { label: string; value: number }) =>
+    `${point.label}：${formatChartValue(point.value)}`;
   return (
     <div className="database-chart-view">
-      <div className="database-chart-toolbar">
-        <PropertyPicker
-          label="分组"
-          value={groupProperty.id}
-          properties={candidates}
-          onChange={(groupPropertyId) =>
-            void props.updateViewConfig({ ...props.view.config, groupPropertyId })
-          }
-        />
-        <label>
-          图表
-          <select
+      <div className="database-layout-bar">
+        <div className="database-layout-bar-actions is-start">
+          <ViewSettingChip
+            label="图表类型"
             value={chartType}
-            onChange={(event) =>
-              void props.updateViewConfig({ ...props.view.config, chartType: event.target.value })
-            }
-          >
-            <option value="bar">柱状图</option>
-            <option value="line">折线图</option>
-            <option value="donut">环形图</option>
-          </select>
-        </label>
-        <label>
-          计算
-          <select
-            value={calculation}
-            onChange={(event) =>
-              void props.updateViewConfig({ ...props.view.config, calculation: event.target.value })
-            }
-          >
-            <option value="count">记录数</option>
-            <option value="sum">求和</option>
-            <option value="average">平均值</option>
-          </select>
-        </label>
-        {calculation !== 'count' ? (
-          <PropertyPicker
-            label="数值"
-            value={valueProperty?.id ?? ''}
-            properties={numericProperties}
-            onChange={(valuePropertyId) =>
-              void props.updateViewConfig({ ...props.view.config, valuePropertyId })
-            }
+            options={CHART_TYPES}
+            onChange={(value) => update({ chartType: value })}
           />
-        ) : null}
-        <button type="button" onClick={exportCsv}>
-          <Download size={14} /> 导出 CSV
-        </button>
-      </div>
-      {chartType === 'line' ? (
-        <div className="database-line-chart">
-          <svg viewBox="0 0 720 260" role="img" aria-label={`${props.view.name}折线图`}>
-            <polyline
-              points={points
-                .map(
-                  (point, index) =>
-                    `${60 + (index * 620) / Math.max(1, points.length - 1)},${220 - (point.value / maximum) * 180}`,
-                )
-                .join(' ')}
+          <ViewSettingChip
+            label="分组依据"
+            value={groupProperty.id}
+            options={propertyOptions(candidates)}
+            onChange={(value) => update({ groupPropertyId: value })}
+          />
+          <ViewSettingChip
+            label="计算"
+            value={calculation}
+            options={numericProperties.length ? CHART_CALCULATIONS : CHART_CALCULATIONS.slice(0, 1)}
+            onChange={(value) => update({ calculation: value })}
+          />
+          {calculation !== 'count' ? (
+            <ViewSettingChip
+              label="数值"
+              value={valueProperty?.id ?? null}
+              options={propertyOptions(numericProperties)}
+              onChange={(value) => update({ valuePropertyId: value })}
             />
-            {points.map((point, index) => (
-              <g
-                key={point.label}
-                role="button"
-                tabIndex={0}
-                onClick={() => drillInto(point.label)}
-                onKeyDown={(event) => event.key === 'Enter' && drillInto(point.label)}
-              >
-                <circle
-                  cx={60 + (index * 620) / Math.max(1, points.length - 1)}
-                  cy={220 - (point.value / maximum) * 180}
-                  r="6"
-                />
-                <text x={60 + (index * 620) / Math.max(1, points.length - 1)} y="245">
-                  {point.label.slice(0, 10)}
-                </text>
-              </g>
-            ))}
-          </svg>
+          ) : null}
         </div>
-      ) : chartType === 'donut' ? (
-        <div className="database-donut-chart">
-          <div
-            className="database-donut"
-            style={{
-              background: `conic-gradient(${points
-                .reduce<{ offset: number; stops: string[] }>(
-                  (state, point, index) => {
-                    const start = state.offset;
-                    const end = start + (total ? (point.value / total) * 100 : 0);
-                    return {
-                      offset: end,
-                      stops: [
-                        ...state.stops,
-                        `hsl(${(index * 67) % 360} 48% 62%) ${start}% ${end}%`,
-                      ],
-                    };
-                  },
-                  { offset: 0, stops: [] },
-                )
-                .stops.join(', ')})`,
-            }}
-          >
-            <span>{total.toLocaleString()}</span>
+        <div className="database-layout-bar-actions">
+          <button type="button" className="database-setting-chip" onClick={exportCsv}>
+            <Download size={14} />
+            <strong>导出 CSV</strong>
+          </button>
+        </div>
+      </div>
+      <figure className="database-chart-figure">
+        <figcaption>
+          <strong>{measureLabel}</strong>
+          <span>按{groupProperty.name}</span>
+        </figcaption>
+        {!points.length ? (
+          <p className="database-chart-empty">没有可统计的记录</p>
+        ) : chartType === 'donut' ? (
+          <div className="database-donut-chart">
+            <div
+              className="database-donut"
+              role="img"
+              aria-label={points.map(tip).join('，')}
+              style={{
+                background: `conic-gradient(${points
+                  .reduce<{ offset: number; stops: string[] }>(
+                    (state, point, index) => {
+                      const start = state.offset;
+                      const end = start + (total ? (point.value / total) * 100 : 0);
+                      const gap = points.length > 1 && end - start > 1 ? 0.4 : 0;
+                      return {
+                        offset: end,
+                        stops: [
+                          ...state.stops,
+                          `${colorOf(point.label, index)} ${start}% ${end - gap}%`,
+                          `#fff ${end - gap}% ${end}%`,
+                        ],
+                      };
+                    },
+                    { offset: 0, stops: [] },
+                  )
+                  .stops.join(', ')})`,
+              }}
+            >
+              <span>
+                <strong>{formatChartValue(total)}</strong>
+                <small>{calculation === 'count' ? '条记录' : '合计'}</small>
+              </span>
+            </div>
+            <div className="database-chart-legend">
+              {points.map((point, index) => (
+                <button
+                  key={point.label}
+                  type="button"
+                  title={tip(point)}
+                  onClick={() => drillInto(point.label)}
+                >
+                  <i style={{ background: colorOf(point.label, index) }} />
+                  <span>{point.label}</span>
+                  <strong>{formatChartValue(point.value)}</strong>
+                  <small>{total ? `${Math.round((point.value / total) * 100)}%` : '0%'}</small>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="database-chart-legend">
-            {points.map((point, index) => (
-              <button key={point.label} type="button" onClick={() => drillInto(point.label)}>
-                <i style={{ background: `hsl(${(index * 67) % 360} 48% 62%)` }} />
+        ) : chartType === 'horizontal' ? (
+          <div className="database-hbar-chart">
+            {points.map((point) => (
+              <button
+                key={point.label}
+                type="button"
+                title={tip(point)}
+                onClick={() => drillInto(point.label)}
+              >
                 <span>{point.label}</span>
-                <strong>{point.value.toLocaleString()}</strong>
+                <span className="database-hbar-track">
+                  <i style={{ width: `${(point.value / top) * 100}%`, background: CHART_SERIES }} />
+                  <strong>{formatChartValue(point.value)}</strong>
+                </span>
               </button>
             ))}
           </div>
-        </div>
-      ) : (
-        <div className="database-bars">
-          {points.map((point) => (
-            <button key={point.label} type="button" onClick={() => drillInto(point.label)}>
-              <span>{point.label}</span>
-              <i style={{ '--bar-size': point.value / maximum } as React.CSSProperties} />
-              <strong>{point.value.toLocaleString()}</strong>
-            </button>
-          ))}
-        </div>
-      )}
-      <p className="database-chart-hint">点击图形即可把当前分组作为视图筛选条件。</p>
+        ) : (
+          <div className={`database-column-chart${chartType === 'line' ? ' is-line' : ''}`}>
+            <div className="database-chart-plot">
+              {ticks.map((tick) => (
+                <span
+                  key={tick}
+                  className="database-chart-gridline"
+                  style={{ bottom: `${(tick / top) * 100}%` }}
+                >
+                  <small>{formatChartValue(tick)}</small>
+                </span>
+              ))}
+              {chartType === 'line' ? (
+                <svg
+                  className="database-line-path"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <polyline
+                    vectorEffect="non-scaling-stroke"
+                    points={points
+                      .map(
+                        (point, index) =>
+                          `${((index + 0.5) / points.length) * 100},${100 - (point.value / top) * 100}`,
+                      )
+                      .join(' ')}
+                  />
+                </svg>
+              ) : null}
+              <div className="database-chart-columns">
+                {points.map((point) => (
+                  <button
+                    key={point.label}
+                    type="button"
+                    aria-label={tip(point)}
+                    onClick={() => drillInto(point.label)}
+                  >
+                    <span
+                      className="database-chart-mark"
+                      style={
+                        (chartType === 'line'
+                          ? { '--point': `${(point.value / top) * 100}%` }
+                          : { height: `${(point.value / top) * 100}%` }) as React.CSSProperties
+                      }
+                    >
+                      <strong>{formatChartValue(point.value)}</strong>
+                    </span>
+                    <span className="database-chart-tip" role="tooltip">
+                      {tip(point)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="database-chart-labels">
+              {points.map((point) => (
+                <span key={point.label} title={point.label}>
+                  {point.label}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </figure>
+      <details className="database-chart-table">
+        <summary>以表格查看</summary>
+        <table>
+          <thead>
+            <tr>
+              <th>{groupProperty.name}</th>
+              <th>{measureLabel}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={point.label}>
+                <td>{point.label}</td>
+                <td>{formatChartValue(point.value)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
     </div>
   );
 }
@@ -3455,19 +3830,24 @@ function FormPublishingPanel(props: DatabaseViewProps) {
           <p>任何拿到链接的人都能提交，但不会获得数据库读取或编辑权限。</p>
         </div>
         <div>
-          <select
-            aria-label="表单链接有效期"
+          <ViewSettingChip
+            label="有效期"
             value={expiresInDays ?? 0}
-            onChange={(event) =>
-              setExpiresInDays(event.target.value === '0' ? null : Number(event.target.value))
-            }
+            align="end"
+            options={[
+              { value: 7, label: '7 天' },
+              { value: 30, label: '30 天' },
+              { value: 90, label: '90 天' },
+              { value: 0, label: '永久' },
+            ]}
+            onChange={(days) => setExpiresInDays(days === 0 ? null : days)}
+          />
+          <button
+            type="button"
+            className="database-form-publish"
+            disabled={busy}
+            onClick={() => void createLink()}
           >
-            <option value={7}>7 天</option>
-            <option value={30}>30 天</option>
-            <option value={90}>90 天</option>
-            <option value={0}>永久</option>
-          </select>
-          <button type="button" disabled={busy} onClick={() => void createLink()}>
             发布表单
           </button>
         </div>
@@ -3536,7 +3916,9 @@ function FormDatabaseView(props: DatabaseViewProps) {
       <FormPublishingPanel {...props} />
       <form className="database-form-view" onSubmit={(event) => void submit(event)}>
         <header>
-          <ListPlus size={22} />
+          <span className="database-form-icon" aria-hidden="true">
+            <ListPlus size={30} />
+          </span>
           <div>
             <h3>
               {typeof props.view.config.formTitle === 'string'
@@ -3571,13 +3953,19 @@ function FormDatabaseView(props: DatabaseViewProps) {
                   {property.name} {requiredPropertyIds.has(property.id) ? <b>*</b> : null}
                 </span>
                 {property.type === 'checkbox' ? (
-                  <input
-                    type="checkbox"
-                    checked={propertyValue === true}
-                    onChange={(event) =>
-                      setValues((current) => ({ ...current, [property.id]: event.target.checked }))
-                    }
-                  />
+                  <span className="database-form-check">
+                    <input
+                      type="checkbox"
+                      checked={propertyValue === true}
+                      onChange={(event) =>
+                        setValues((current) => ({
+                          ...current,
+                          [property.id]: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>是</span>
+                  </span>
                 ) : property.type === 'select' || property.type === 'status' ? (
                   <select
                     required={requiredPropertyIds.has(property.id)}
@@ -3586,7 +3974,7 @@ function FormDatabaseView(props: DatabaseViewProps) {
                       setValues((current) => ({ ...current, [property.id]: event.target.value }))
                     }
                   >
-                    <option value="">请选择</option>
+                    <option value="">选择一个选项</option>
                     {optionNames(property).map((option) => (
                       <option key={option} value={option}>
                         {option}
@@ -3615,7 +4003,7 @@ function FormDatabaseView(props: DatabaseViewProps) {
                               }))
                             }
                           />
-                          <span>{option}</span>
+                          <OptionChip name={option} options={optionNames(property)} />
                         </label>
                       );
                     })}
