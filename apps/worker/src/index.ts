@@ -53,7 +53,12 @@ import {
   deliverPageUpdateNotifications,
   handleCommentsAndNotificationsApi,
 } from './comments';
-import { handleDatabasesApi, handlePublicDatabaseFormsApi } from './databases';
+import {
+  bulkCreateDatabaseRows,
+  handleDatabasesApi,
+  handlePublicDatabaseFormsApi,
+} from './databases';
+import { handleNotionApi } from './notion';
 import {
   cacheCollaborationPage,
   getCachedCollaborationPage,
@@ -4316,6 +4321,23 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   if (databasesResponse) return databasesResponse;
   const sitesResponse = await handleSitesApi(request, env, actor);
   if (sitesResponse) return sitesResponse;
+  const notionResponse = await handleNotionApi(request, env, actor, {
+    createMarkdownPage: async ({ actorId, spaceId, title, markdown }) => {
+      const page = await createImportedMarkdownPage(env, {
+        actorId,
+        filename: title,
+        markdown,
+        spaceId,
+      });
+      if (!(page instanceof Response)) {
+        await pageAudit(env, page, actorId, 'page.markdown.imported', { source: 'notion' });
+      }
+      return page;
+    },
+    databasesApi: handleDatabasesApi,
+    bulkCreateRows: bulkCreateDatabaseRows,
+  });
+  if (notionResponse) return notionResponse;
 
   if (url.pathname === '/api/search' && request.method === 'GET') {
     const organizationId = url.searchParams.get('organizationId') ?? '';

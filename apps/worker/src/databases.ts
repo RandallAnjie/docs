@@ -1,6 +1,21 @@
 import {
+  AUTOMATION_ACTION_TYPES,
+  AUTOMATION_TRIGGER_TYPES,
   EDITOR_SCHEMA_VERSION,
+  ROW_ACTION_TYPES,
+  automationDefinitionFromRecord,
+  automationDisplayText,
+  conditionsMatch,
   isPageId,
+  nextScheduleRun,
+  normalizeAutomationDefinition,
+  normalizeConditions,
+  renderAutomationTemplate,
+  resolveAutomationValue,
+  type AutomationActionStep,
+  type AutomationActionType,
+  type AutomationDefinition,
+  type AutomationValueContext,
   type AuthUserSummary,
   type DatabasePropertySummary,
   type DatabasePropertyType,
@@ -11,10 +26,8 @@ import {
   type DatabaseViewSummary,
   type DatabaseViewType,
   type DatabaseFormLinkSummary,
-  type DatabaseAutomationAction,
   type DatabaseAutomationRunSummary,
   type DatabaseAutomationSummary,
-  type DatabaseAutomationTrigger,
   type JsonValue,
   type PublicDatabaseFormDefinition,
   type ProjectWorkspaceSummary,
@@ -29,7 +42,8 @@ import {
 } from './access';
 import { evaluateDatabaseFormulaProperties } from './database-formula-graph';
 import { isComputedDatabaseProperty, normalizeDatabaseCellValue } from './database-values';
-import { automationConditionMatches, parseSimpleCron } from './cron';
+import { emailUsers, appOrigin, queueOutboundEmail } from './email';
+import { runNotionCreatePage, validateNotionCreatePage } from './notion';
 import type { Env } from './env';
 import { copyPageContent, PageContentCopyError } from './page-content-copy';
 import { searchIndexText } from './search-projection';
@@ -44,20 +58,6 @@ const MAX_CONFIG_BYTES = 50_000;
 const PUBLIC_FORM_ACTOR_ID = 'usr_rdocs_forms';
 const PUBLIC_FORM_RATE_LIMIT_PER_MINUTE = 30;
 const MAX_DATABASE_AUTOMATIONS = 100;
-const AUTOMATION_TRIGGERS = new Set<DatabaseAutomationTrigger>([
-  'row_created',
-  'row_updated',
-  'property_changed',
-  'form_submitted',
-  'manual',
-]);
-const AUTOMATION_ACTIONS = new Set<DatabaseAutomationAction>([
-  'set_property',
-  'toggle_checkbox',
-  'increment_number',
-  'archive_row',
-  'webhook',
-]);
 const PUBLIC_FORM_PROPERTY_TYPES = new Set<DatabasePropertyType>([
   'title',
   'text',
@@ -206,9 +206,9 @@ interface AutomationRecord {
   database_id: string;
   name: string;
   enabled: number;
-  trigger_type: DatabaseAutomationTrigger;
+  trigger_type: string;
   trigger_config_json: string;
-  action_type: DatabaseAutomationAction;
+  action_type: string;
   action_config_json: string;
   created_by: string;
   updated_by: string;
@@ -221,7 +221,7 @@ interface AutomationRunRecord {
   database_id: string;
   automation_id: string;
   row_id: string | null;
-  trigger_type: DatabaseAutomationTrigger;
+  trigger_type: string;
   status: 'running' | 'succeeded' | 'failed' | 'skipped';
   attempt: number;
   response_code: number | null;
@@ -347,35 +347,13 @@ function templateSummary(record: TemplateRecord, includeValues = false): Databas
   };
 }
 
-function automationSummary(record: AutomationRecord): DatabaseAutomationSummary {
-  const actionConfig = parsedObject(record.action_config_json);
-  if (typeof actionConfig.secret === 'string') {
-    delete actionConfig.secret;
-    actionConfig.hasSecret = true;
-  }
-  return {
-    id: record.id,
-    databaseId: record.database_id,
-    name: record.name,
-    enabled: Boolean(record.enabled),
-    triggerType: record.trigger_type,
-    triggerConfig: parsedObject(record.trigger_config_json),
-    actionType: record.action_type,
-    actionConfig,
-    createdBy: record.created_by,
-    updatedBy: record.updated_by,
-    createdAt: Number(record.created_at),
-    updatedAt: Number(record.updated_at),
-  };
-}
-
 function automationRunSummary(record: AutomationRunRecord): DatabaseAutomationRunSummary {
   return {
     id: record.id,
     databaseId: record.database_id,
     automationId: record.automation_id,
     rowId: record.row_id,
-    triggerType: record.trigger_type,
+    triggerType: record.trigger_type as DatabaseAutomationRunSummary['triggerType'],
     status: record.status,
     attempt: Number(record.attempt),
     responseCode: record.response_code === null ? null : Number(record.response_code),
@@ -1973,321 +1951,857 @@ function safeWebhookUrl(raw: JsonValue | undefined): URL | null {
   }
 }
 
-async function runDatabaseAutomationAction(
+// ── Automations: when <trigger>, if <conditions>, do <actions> ────────────
+
+interface AutomationRunContext {
+  rowId: string | null;
+  triggerType: string;
+  triggerUserId: string | null;
+  eventKey: string;
+}
+
+interface AutomationExecution {
+  env: Env;
+  automation: AutomationRecord;
+  definition: AutomationDefinition;
+  authorization: DatabaseAuthorization;
+  actor: AuthUserSummary;
+  context: AutomationRunContext;
+  values: AutomationValueContext;
+}
+
+const AUTOMATION_ACTION_LABELS: Record<AutomationActionType, string> = {
+  set_property: '设置属性',
+  toggle_checkbox: '切换复选框',
+  increment_number: '数字递增',
+  archive_row: '归档记录',
+  create_row: '新建记录',
+  edit_rows: '修改记录',
+  notify: '发送通知',
+  webhook: 'Webhook',
+  notion_create_page: '写入 Notion',
+};
+const MAX_AUTOMATION_EDITED_ROWS = 100;
+const MAX_SCHEDULED_AUTOMATION_ROWS = 50;
+
+function automationRowsQuery(env: Env, databaseId: string): D1PreparedStatement {
+  return env.DB.prepare(
+    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
+            action_type, action_config_json, created_by, updated_by, created_at, updated_at
+       FROM database_automations WHERE database_id = ? ORDER BY created_at ASC LIMIT ?`,
+  ).bind(databaseId, MAX_DATABASE_AUTOMATIONS);
+}
+
+async function findAutomation(
   env: Env,
-  authorization: DatabaseAuthorization,
-  automation: AutomationRecord,
-  rowId: string,
-  triggerType: DatabaseAutomationTrigger,
-  _actor: AuthUserSummary,
-): Promise<number | null> {
-  const config = parsedObject(automation.action_config_json);
-  const executionActorRow = await env.DB.prepare(
+  databaseId: string,
+  automationId: string,
+): Promise<AutomationRecord | null> {
+  return env.DB.prepare(
+    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
+            action_type, action_config_json, created_by, updated_by, created_at, updated_at
+       FROM database_automations WHERE id = ? AND database_id = ?`,
+  )
+    .bind(automationId, databaseId)
+    .first<AutomationRecord>();
+}
+
+async function activeUser(env: Env, userId: string): Promise<AuthUserSummary | null> {
+  const row = await env.DB.prepare(
     `SELECT id, email, display_name, avatar_url FROM users WHERE id = ? AND status = 'active'`,
   )
-    .bind(automation.created_by)
+    .bind(userId)
     .first<{ id: string; email: string; display_name: string; avatar_url: string | null }>();
-  const executionAuthorization = await authorizeDatabase(
-    env,
-    authorization.database.id,
-    automation.created_by,
-    'edit_content',
-  );
-  if (!executionActorRow || !executionAuthorization) {
-    throw new Error('自动化创建者已无权编辑数据库');
+  return row
+    ? { id: row.id, email: row.email, displayName: row.display_name, avatarUrl: row.avatar_url }
+    : null;
+}
+
+async function rowCellValues(env: Env, rowId: string): Promise<Record<string, JsonValue>> {
+  const cells = (
+    await env.DB.prepare('SELECT property_id, value_json FROM database_cells WHERE row_id = ?')
+      .bind(rowId)
+      .all<{ property_id: string; value_json: string }>()
+  ).results;
+  const values: Record<string, JsonValue> = {};
+  for (const cell of cells) values[cell.property_id] = parsedValue(cell.value_json);
+  return values;
+}
+
+/** Turn `$token` values into concrete cell values for the given target properties. */
+function resolvedValues(
+  input: JsonValue | undefined,
+  context: AutomationValueContext,
+): Record<string, JsonValue> {
+  const values: Record<string, JsonValue> = {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return values;
+  for (const [propertyId, value] of Object.entries(input)) {
+    values[propertyId] = resolveAutomationValue(value as JsonValue, context);
   }
-  const executionActor: AuthUserSummary = {
-    id: executionActorRow.id,
-    email: executionActorRow.email,
-    displayName: executionActorRow.display_name,
-    avatarUrl: executionActorRow.avatar_url,
-  };
-  if (automation.action_type === 'webhook') {
-    const url = safeWebhookUrl(config.url);
-    if (!url) throw new Error('Webhook 必须是可公开访问的 HTTPS 地址');
-    const current = await snapshot(env, executionAuthorization, automation.created_by);
-    const row = current.rows.find((candidate) => candidate.id === rowId);
-    if (!row) throw new Error('自动化创建者已无权读取目标记录');
-    const body = JSON.stringify({
-      event: triggerType,
-      automationId: automation.id,
-      databaseId: authorization.database.id,
-      row,
-      occurredAt: Date.now(),
-    });
-    const headers = new Headers({
-      'content-type': 'application/json',
-      'user-agent': 'Rdocs-Automation/1.0',
-      'x-rdocs-event': triggerType,
-    });
-    if (typeof config.secret === 'string' && config.secret.length >= 16) {
-      headers.set('x-rdocs-signature-256', `sha256=${await webhookSignature(config.secret, body)}`);
-    }
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error(`Webhook 返回 ${response.status}`);
-    return response.status;
-  }
-  const targetPropertyId =
-    typeof config.targetPropertyId === 'string' ? config.targetPropertyId : '';
-  let values: Record<string, JsonValue> = {};
-  if (automation.action_type === 'archive_row') {
-    const response = await updateRow(
-      new Request('https://rdocs.internal/api/automation-archive', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ values: {}, archived: true }),
-      }),
-      env,
-      executionAuthorization,
-      rowId,
-      executionActor,
-      { skipAutomations: true },
-    );
-    if (!response.ok) throw new Error('自动化无法归档记录');
-    return null;
-  }
-  const target = await env.DB.prepare(
-    `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
-       FROM database_properties WHERE id = ? AND database_id = ?`,
-  )
-    .bind(targetPropertyId, authorization.database.id)
-    .first<PropertyRecord>();
-  if (!target || isComputedDatabaseProperty(target.type) || target.type === 'button') {
-    throw new Error('自动化目标属性无效');
-  }
-  if (automation.action_type === 'set_property') {
-    values = { [target.id]: config.value ?? null };
-  } else {
-    const cell = await env.DB.prepare(
-      'SELECT value_json FROM database_cells WHERE row_id = ? AND property_id = ?',
-    )
-      .bind(rowId, target.id)
-      .first<{ value_json: string }>();
-    const current = parsedValue(cell?.value_json ?? 'null');
-    if (automation.action_type === 'toggle_checkbox' && target.type === 'checkbox') {
-      values = { [target.id]: current !== true };
-    } else if (automation.action_type === 'increment_number' && target.type === 'number') {
-      const increment = typeof config.increment === 'number' ? config.increment : 1;
-      values = { [target.id]: (typeof current === 'number' ? current : 0) + increment };
-    } else {
-      throw new Error('自动化动作与目标属性不匹配');
-    }
-  }
+  return values;
+}
+
+async function patchRow(
+  env: Env,
+  authorization: DatabaseAuthorization,
+  rowId: string,
+  actor: AuthUserSummary,
+  body: Record<string, JsonValue>,
+): Promise<void> {
   const response = await updateRow(
     new Request('https://rdocs.internal/api/automation-update', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ values }),
+      body: JSON.stringify(body),
     }),
     env,
-    executionAuthorization,
+    authorization,
     rowId,
-    executionActor,
+    actor,
     { skipAutomations: true },
   );
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(payload?.error ?? '自动化属性写入失败');
+    throw new Error(payload?.error ?? '写入记录失败');
   }
-  return null;
+}
+
+/** A database the automation's creator may edit, in the automation's organization. */
+async function automationTargetDatabase(
+  execution: AutomationExecution,
+  databaseId: JsonValue | undefined,
+): Promise<DatabaseAuthorization> {
+  const id =
+    typeof databaseId === 'string' && databaseId ? databaseId : execution.authorization.database.id;
+  if (id === execution.authorization.database.id) return execution.authorization;
+  const target = isPageId(id)
+    ? await authorizeDatabase(execution.env, id, execution.actor.id, 'edit_content')
+    : null;
+  if (
+    !target ||
+    target.database.organization_id !== execution.authorization.database.organization_id
+  ) {
+    throw new Error('目标数据库不存在，或自动化创建者无权编辑');
+  }
+  return target;
+}
+
+async function automationMessage(
+  execution: AutomationExecution,
+  template: string,
+): Promise<{ text: string; pageId: string }> {
+  const database = execution.authorization.database;
+  const properties = await databaseProperties(execution.env, database.id);
+  const rowId = execution.context.rowId;
+  const row = rowId
+    ? await execution.env.DB.prepare('SELECT page_id FROM database_rows WHERE id = ?')
+        .bind(rowId)
+        .first<{ page_id: string }>()
+    : null;
+  const title = properties.find((property) => property.type === 'title');
+  const peopleIds = new Set<string>();
+  for (const property of properties) {
+    if (!['person', 'created_by', 'last_edited_by'].includes(property.type)) continue;
+    const value = execution.values.triggerValues[property.id];
+    for (const id of Array.isArray(value) ? value : [value])
+      if (typeof id === 'string') peopleIds.add(id);
+  }
+  const names = new Map(
+    [...(await emailUsers(execution.env, [...peopleIds])).entries()].map(([id, user]) => [
+      id,
+      user.displayName,
+    ]),
+  );
+  const text = renderAutomationTemplate(template, (name) => {
+    if (name === '标题' || name.toLowerCase() === 'title') {
+      return title ? automationDisplayText(execution.values.triggerValues[title.id]) : '';
+    }
+    if (name === '自动化') return execution.automation.name;
+    const property = properties.find((candidate) => candidate.name === name);
+    return property
+      ? automationDisplayText(execution.values.triggerValues[property.id], names)
+      : null;
+  });
+  return { text: text.slice(0, 1_000), pageId: row?.page_id ?? database.page_id };
+}
+
+async function runAutomationStep(
+  execution: AutomationExecution,
+  step: AutomationActionStep,
+  index: number,
+): Promise<number | null> {
+  const { authorization, actor, context, values } = execution;
+  const config = step.config;
+  const db = execution.env.DB;
+  if (ROW_ACTION_TYPES.has(step.type) && !context.rowId) {
+    throw new Error('这个动作需要一条触发记录');
+  }
+  switch (step.type) {
+    case 'archive_row':
+      await patchRow(execution.env, authorization, context.rowId!, actor, {
+        values: {},
+        archived: true,
+      });
+      return null;
+    case 'set_property':
+    case 'toggle_checkbox':
+    case 'increment_number': {
+      const targetPropertyId =
+        typeof config.targetPropertyId === 'string' ? config.targetPropertyId : '';
+      const target = await db
+        .prepare(
+          `SELECT id, database_id, name, type, config_json, sort_order, created_at, updated_at
+             FROM database_properties WHERE id = ? AND database_id = ?`,
+        )
+        .bind(targetPropertyId, authorization.database.id)
+        .first<PropertyRecord>();
+      if (!target || isComputedDatabaseProperty(target.type) || target.type === 'button') {
+        throw new Error('目标属性无效');
+      }
+      let value: JsonValue;
+      if (step.type === 'set_property') {
+        value = resolveAutomationValue(config.value ?? null, values);
+      } else {
+        const current = (await rowCellValues(execution.env, context.rowId!))[target.id];
+        if (step.type === 'toggle_checkbox' && target.type === 'checkbox') value = current !== true;
+        else if (step.type === 'increment_number' && target.type === 'number') {
+          const increment = typeof config.increment === 'number' ? config.increment : 1;
+          value = (typeof current === 'number' ? current : 0) + increment;
+        } else throw new Error('动作与目标属性类型不匹配');
+      }
+      await patchRow(execution.env, authorization, context.rowId!, actor, {
+        values: { [target.id]: value },
+      });
+      return null;
+    }
+    case 'create_row': {
+      const target = await automationTargetDatabase(execution, config.databaseId);
+      const response = await createRow(
+        new Request('https://rdocs.internal/api/automation-create', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ values: resolvedValues(config.values, values) }),
+        }),
+        execution.env,
+        target,
+        actor,
+        { skipAutomations: true },
+      );
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error ?? '新建记录失败');
+      }
+      return null;
+    }
+    case 'edit_rows': {
+      const target = await automationTargetDatabase(execution, config.databaseId);
+      const filter = normalizeConditions(config.filter);
+      if (!filter.rules.length && config.allRows !== true) throw new Error('请设置要修改哪些记录');
+      const current = await snapshot(execution.env, target, actor.id);
+      const matches = current.rows
+        .filter((row) => conditionsMatch(filter, row.values, values))
+        .slice(0, MAX_AUTOMATION_EDITED_ROWS);
+      const patch = resolvedValues(config.values, values);
+      for (const row of matches) {
+        await patchRow(execution.env, target, row.id, actor, { values: patch });
+      }
+      return matches.length;
+    }
+    case 'notify': {
+      const recipients = new Set<string>();
+      if (Array.isArray(config.userIds)) {
+        for (const id of config.userIds) if (typeof id === 'string') recipients.add(id);
+      }
+      if (Array.isArray(config.personPropertyIds)) {
+        for (const propertyId of config.personPropertyIds) {
+          if (typeof propertyId !== 'string') continue;
+          const value = values.triggerValues[propertyId];
+          for (const id of Array.isArray(value) ? value : [value]) {
+            if (typeof id === 'string') recipients.add(id);
+          }
+        }
+      }
+      if (config.notifyTriggerUser === true && context.triggerUserId)
+        recipients.add(context.triggerUserId);
+      const ids = [...recipients].slice(0, 50);
+      if (!ids.length) return 0;
+      const members = (
+        await db
+          .prepare(
+            `SELECT m.user_id FROM organization_members m JOIN users u ON u.id = m.user_id
+              WHERE m.organization_id = ? AND m.status = 'active' AND u.status = 'active'
+                AND m.user_id IN (${ids.map(() => '?').join(', ')})`,
+          )
+          .bind(authorization.database.organization_id, ...ids)
+          .all<{ user_id: string }>()
+      ).results.map((member) => member.user_id);
+      if (!members.length) return 0;
+      const message = await automationMessage(
+        execution,
+        typeof config.message === 'string' && config.message.trim() ? config.message : '{{标题}}',
+      );
+      const now = Date.now();
+      await db.batch(
+        members.map((userId) =>
+          db
+            .prepare(
+              `INSERT INTO notifications(
+                 id, organization_id, user_id, actor_id, type, page_id, thread_id,
+                 comment_id, metadata_json, event_key, created_at, read_at, archived_at
+               ) VALUES (?, ?, ?, ?, 'reminder', ?, NULL, NULL, ?, ?, ?, NULL, NULL)
+               ON CONFLICT(user_id, event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+            )
+            .bind(
+              crypto.randomUUID(),
+              authorization.database.organization_id,
+              userId,
+              actor.id,
+              message.pageId,
+              JSON.stringify({
+                source: 'automation',
+                automationId: execution.automation.id,
+                automationName: execution.automation.name,
+                message: message.text,
+              }),
+              `automation:${context.eventKey}:${index}`,
+              now,
+            ),
+        ),
+      );
+      if (config.email === true) {
+        const people = await emailUsers(execution.env, members);
+        for (const [userId, person] of people) {
+          await queueOutboundEmail(execution.env, {
+            organizationId: authorization.database.organization_id,
+            recipientEmail: person.email,
+            recipientUserId: userId,
+            subject: `[Rdocs] ${execution.automation.name}`.slice(0, 200),
+            bodyText: `${message.text}\n\n${appOrigin(execution.env)}/p/${message.pageId}`,
+          });
+        }
+      }
+      return members.length;
+    }
+    case 'webhook': {
+      const url = safeWebhookUrl(config.url);
+      if (!url) throw new Error('Webhook 必须是可公开访问的 HTTPS 地址');
+      let row: DatabaseSnapshot['rows'][number] | null = null;
+      if (context.rowId) {
+        const current = await snapshot(execution.env, authorization, actor.id);
+        row = current.rows.find((candidate) => candidate.id === context.rowId) ?? null;
+        if (!row) throw new Error('自动化创建者已无权读取触发记录');
+      }
+      const body = JSON.stringify({
+        event: context.triggerType,
+        automationId: execution.automation.id,
+        automationName: execution.automation.name,
+        databaseId: authorization.database.id,
+        row,
+        occurredAt: Date.now(),
+      });
+      const headers = new Headers({
+        'content-type': 'application/json',
+        'user-agent': 'Rdocs-Automation/1.0',
+        'x-rdocs-event': context.triggerType,
+      });
+      if (typeof config.secret === 'string' && config.secret.length >= 16) {
+        headers.set(
+          'x-rdocs-signature-256',
+          `sha256=${await webhookSignature(config.secret, body)}`,
+        );
+      }
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error(`Webhook 返回 ${response.status}`);
+      return response.status;
+    }
+    case 'notion_create_page':
+      return runNotionCreatePage(execution.env, {
+        organizationId: authorization.database.organization_id,
+        config,
+        values,
+      });
+  }
+}
+
+/**
+ * Run one automation for one event. Each (automation, event) runs at most once;
+ * the run log records success, a skip when conditions do not match, or the
+ * failing step. Actions run as the automation's creator and never trigger
+ * further automations.
+ */
+async function executeAutomation(
+  environment: Env,
+  automation: AutomationRecord,
+  context: AutomationRunContext,
+): Promise<AutomationRunRecord | null> {
+  const runId = crypto.randomUUID();
+  const inserted = await environment.DB.prepare(
+    `INSERT INTO database_automation_runs(
+       id, organization_id, database_id, automation_id, row_id, event_key,
+       trigger_type, status, attempt, started_at
+     ) SELECT ?, organization_id, database_id, id, ?, ?, ?, 'running', 1, ?
+         FROM database_automations WHERE id = ?
+     ON CONFLICT(automation_id, event_key) DO NOTHING`,
+  )
+    .bind(runId, context.rowId, context.eventKey, context.triggerType, Date.now(), automation.id)
+    .run();
+  if (!inserted.meta.changes) return null;
+  const finish = async (
+    status: 'succeeded' | 'failed' | 'skipped',
+    code: number | null,
+    message: string | null,
+  ) => {
+    await environment.DB.prepare(
+      `UPDATE database_automation_runs
+          SET status = ?, response_code = ?, error_message = ?, completed_at = ? WHERE id = ?`,
+    )
+      .bind(status, code, message, Date.now(), runId)
+      .run();
+  };
+  let stepLabel = '';
+  try {
+    const definition = automationDefinitionFromRecord(automation);
+    const actor = await activeUser(environment, automation.created_by);
+    const authorization = actor
+      ? await authorizeDatabase(environment, automation.database_id, actor.id, 'edit_content')
+      : null;
+    if (!actor || !authorization) throw new Error('自动化创建者已无权编辑数据库');
+    const triggerValues = context.rowId ? await rowCellValues(environment, context.rowId) : {};
+    const values: AutomationValueContext = {
+      now: Date.now(),
+      timezone: definition.timezone,
+      triggerUserId: context.triggerUserId,
+      triggerRowId: context.rowId,
+      triggerValues,
+    };
+    if (!conditionsMatch(definition.conditions, triggerValues, values)) {
+      await finish('skipped', null, null);
+      return findRun(environment, runId);
+    }
+    const execution: AutomationExecution = {
+      env: environment,
+      automation,
+      definition,
+      authorization,
+      actor,
+      context,
+      values,
+    };
+    let code: number | null = null;
+    for (const [index, step] of definition.actions.entries()) {
+      stepLabel = `第 ${index + 1} 步（${AUTOMATION_ACTION_LABELS[step.type]}）`;
+      code = (await runAutomationStep(execution, step, index)) ?? code;
+    }
+    await finish('succeeded', code, null);
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : '自动化执行失败';
+    await finish('failed', null, `${stepLabel ? `${stepLabel}：` : ''}${message}`.slice(0, 500));
+  }
+  return findRun(environment, runId);
+}
+
+async function findRun(env: Env, runId: string): Promise<AutomationRunRecord | null> {
+  return env.DB.prepare(
+    `SELECT id, database_id, automation_id, row_id, trigger_type, status, attempt,
+            response_code, error_message, started_at, completed_at
+       FROM database_automation_runs WHERE id = ?`,
+  )
+    .bind(runId)
+    .first<AutomationRunRecord>();
 }
 
 async function runDatabaseAutomations(
   env: Env,
   authorization: DatabaseAuthorization,
   rowId: string,
-  triggerType: Exclude<DatabaseAutomationTrigger, 'manual'>,
+  triggerType: 'row_created' | 'row_updated' | 'form_submitted',
   actor: AuthUserSummary,
   propertyIds: readonly string[] = [],
 ): Promise<void> {
-  const triggerTypes =
-    triggerType === 'row_updated' ? ['row_updated', 'property_changed'] : [triggerType];
-  const placeholders = triggerTypes.map(() => '?').join(', ');
   const automations = (
-    await env.DB.prepare(
-      `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-              action_type, action_config_json, created_by, updated_by, created_at, updated_at
-         FROM database_automations
-        WHERE database_id = ? AND enabled = 1 AND trigger_type IN (${placeholders})
-        ORDER BY created_at ASC LIMIT ?`,
-    )
-      .bind(authorization.database.id, ...triggerTypes, MAX_DATABASE_AUTOMATIONS)
-      .all<AutomationRecord>()
-  ).results.filter((automation) => {
-    if (automation.trigger_type !== 'property_changed') return true;
-    const propertyId = parsedObject(automation.trigger_config_json).propertyId;
-    return typeof propertyId === 'string' && propertyIds.includes(propertyId);
-  });
+    await automationRowsQuery(env, authorization.database.id).all<AutomationRecord>()
+  ).results;
   const eventKey = crypto.randomUUID();
   for (const automation of automations) {
-    const runId = crypto.randomUUID();
-    const startedAt = Date.now();
-    const inserted = await env.DB.prepare(
-      `INSERT INTO database_automation_runs(
-         id, organization_id, database_id, automation_id, row_id, event_key,
-         trigger_type, status, attempt, started_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 1, ?)
-       ON CONFLICT(automation_id, event_key) DO NOTHING`,
-    )
-      .bind(
-        runId,
-        authorization.database.organization_id,
-        authorization.database.id,
-        automation.id,
-        rowId,
-        eventKey,
-        triggerType,
-        startedAt,
-      )
-      .run();
-    if (!inserted.meta.changes) continue;
-    try {
-      const condition = parsedObject(automation.trigger_config_json).condition;
-      if (condition && typeof condition === 'object' && !Array.isArray(condition)) {
-        const cells = (
-          await env.DB.prepare(
-            'SELECT property_id, value_json FROM database_cells WHERE row_id = ?',
-          )
-            .bind(rowId)
-            .all<{ property_id: string; value_json: string }>()
-        ).results;
-        const values: Record<string, JsonValue> = {};
-        for (const cell of cells) values[cell.property_id] = parsedValue(cell.value_json);
-        const propertyId = (condition as Record<string, JsonValue>).propertyId;
-        const op = (condition as Record<string, JsonValue>).op;
-        const expected = (condition as Record<string, JsonValue>).value;
-        const current = typeof propertyId === 'string' ? values[propertyId] : undefined;
-        const matches =
-          op === 'is_empty'
-            ? current === null || current === undefined || current === '' || current === false
-            : op === 'not_empty'
-              ? !(current === null || current === undefined || current === '' || current === false)
-              : op === 'neq'
-                ? JSON.stringify(current) !== JSON.stringify(expected ?? null)
-                : op === 'contains'
-                  ? typeof current === 'string' && typeof expected === 'string'
-                    ? current.includes(expected)
-                    : Array.isArray(current) && current.includes(expected as never)
-                  : JSON.stringify(current) === JSON.stringify(expected ?? null);
-        if (!matches) {
-          await env.DB.prepare(
-            `UPDATE database_automation_runs
-                SET status = 'skipped', completed_at = ? WHERE id = ?`,
-          )
-            .bind(Date.now(), runId)
-            .run();
-          continue;
-        }
-      }
-      const extraSteps = parsedObject(automation.action_config_json).steps;
-      if (Array.isArray(extraSteps)) {
-        for (const step of extraSteps) {
-          if (!step || typeof step !== 'object' || Array.isArray(step)) continue;
-          const stepType = (step as Record<string, JsonValue>).type;
-          const stepConfig = (step as Record<string, JsonValue>).config;
-          if (typeof stepType !== 'string' || !AUTOMATION_ACTIONS.has(stepType as never)) continue;
-          await runDatabaseAutomationAction(
-            env,
-            authorization,
-            {
-              ...automation,
-              action_type: stepType as DatabaseAutomationAction,
-              action_config_json: JSON.stringify(
-                stepConfig && typeof stepConfig === 'object' && !Array.isArray(stepConfig)
-                  ? stepConfig
-                  : {},
-              ),
-            },
-            rowId,
-            triggerType,
-            actor,
-          );
-        }
-      }
-      const responseCode = await runDatabaseAutomationAction(
-        env,
-        authorization,
-        automation,
-        rowId,
-        triggerType,
-        actor,
-      );
-      await env.DB.prepare(
-        `UPDATE database_automation_runs
-            SET status = 'succeeded', response_code = ?, completed_at = ? WHERE id = ?`,
-      )
-        .bind(responseCode, Date.now(), runId)
-        .run();
-    } catch (reason) {
-      await env.DB.prepare(
-        `UPDATE database_automation_runs
-            SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?`,
-      )
-        .bind(
-          (reason instanceof Error ? reason.message : '自动化执行失败').slice(0, 500),
-          Date.now(),
-          runId,
-        )
-        .run();
-    }
+    if (!automation.enabled) continue;
+    const trigger = automationDefinitionFromRecord(automation).trigger;
+    const fires =
+      trigger.type === triggerType ||
+      (triggerType === 'row_updated' &&
+        trigger.type === 'property_changed' &&
+        trigger.propertyIds.some((id) => propertyIds.includes(id)));
+    if (!fires) continue;
+    await executeAutomation(env, automation, {
+      rowId,
+      triggerType,
+      triggerUserId: actor.id,
+      eventKey,
+    });
   }
 }
 
-async function validateAutomationConfiguration(
+/** Keep exactly one pending job for an enabled schedule automation. */
+async function scheduleAutomation(
   env: Env,
-  databaseId: string,
-  triggerType: DatabaseAutomationTrigger,
-  triggerConfig: Record<string, JsonValue>,
-  actionType: DatabaseAutomationAction,
-  actionConfig: Record<string, JsonValue>,
-): Promise<string | null> {
-  if (triggerType === 'property_changed') {
-    const propertyId = triggerConfig.propertyId;
-    if (typeof propertyId !== 'string') return '请选择触发属性';
-    const property = await env.DB.prepare(
-      'SELECT 1 AS found FROM database_properties WHERE id = ? AND database_id = ?',
-    )
-      .bind(propertyId, databaseId)
-      .first<{ found: number }>();
-    if (!property) return '触发属性不存在';
-  }
-  if (actionType === 'webhook') {
-    if (!safeWebhookUrl(actionConfig.url)) return 'Webhook 必须是可公开访问的 HTTPS 地址';
-    if (
-      actionConfig.secret !== undefined &&
-      (typeof actionConfig.secret !== 'string' || actionConfig.secret.length < 16)
-    ) {
-      return 'Webhook 签名密钥至少需要 16 个字符';
-    }
+  automation: AutomationRecord,
+  from = Date.now(),
+): Promise<number | null> {
+  await env.DB.prepare(
+    `UPDATE scheduled_jobs SET status = 'cancelled', completed_at = ?
+      WHERE kind = 'automation' AND status = 'pending'
+        AND json_extract(payload_json, '$.automationId') = ?`,
+  )
+    .bind(Date.now(), automation.id)
+    .run();
+  const definition = automationDefinitionFromRecord(automation);
+  if (
+    !automation.enabled ||
+    definition.trigger.type !== 'schedule' ||
+    !definition.trigger.schedule
+  ) {
     return null;
   }
-  if (actionType === 'archive_row') return null;
-  const targetPropertyId = actionConfig.targetPropertyId;
-  if (typeof targetPropertyId !== 'string') return '请选择目标属性';
-  const target = await env.DB.prepare(
-    'SELECT type FROM database_properties WHERE id = ? AND database_id = ?',
+  const next = nextScheduleRun(definition.trigger.schedule, definition.timezone, from);
+  if (!next) return null;
+  await env.DB.prepare(
+    `INSERT INTO scheduled_jobs(
+       id, organization_id, kind, payload_json, run_at, status, attempts, created_at
+     ) SELECT ?, organization_id, 'automation', ?, ?, 'pending', 0, ?
+         FROM database_automations WHERE id = ?`,
   )
-    .bind(targetPropertyId, databaseId)
-    .first<{ type: DatabasePropertyType }>();
-  if (!target || isComputedDatabaseProperty(target.type) || target.type === 'button') {
-    return '目标属性不存在或不可写';
+    .bind(
+      crypto.randomUUID(),
+      JSON.stringify({ automationId: automation.id, databaseId: automation.database_id }),
+      next,
+      Date.now(),
+      automation.id,
+    )
+    .run();
+  return next;
+}
+
+/** One scheduled firing: each matching record when the automation needs records, else once. */
+async function fireScheduledAutomation(
+  env: Env,
+  automation: AutomationRecord,
+  firedAt: number,
+): Promise<number> {
+  const definition = automationDefinitionFromRecord(automation);
+  const needsRows =
+    definition.conditions.rules.length > 0 ||
+    definition.actions.some((action) => ROW_ACTION_TYPES.has(action.type));
+  if (!needsRows) {
+    await executeAutomation(env, automation, {
+      rowId: null,
+      triggerType: 'schedule',
+      triggerUserId: null,
+      eventKey: `schedule:${firedAt}`,
+    });
+    return 1;
   }
-  if (actionType === 'toggle_checkbox' && target.type !== 'checkbox') {
-    return '切换动作只能用于复选框';
+  const authorization = await authorizeDatabase(
+    env,
+    automation.database_id,
+    automation.created_by,
+    'edit_content',
+  );
+  if (!authorization) throw new Error('自动化创建者已无权编辑数据库');
+  const current = await snapshot(env, authorization, automation.created_by);
+  const context: AutomationValueContext = {
+    now: firedAt,
+    timezone: definition.timezone,
+    triggerUserId: null,
+    triggerRowId: null,
+    triggerValues: {},
+  };
+  const rows = current.rows
+    .filter((row) =>
+      conditionsMatch(definition.conditions, row.values, {
+        ...context,
+        triggerRowId: row.id,
+        triggerValues: row.values,
+      }),
+    )
+    .slice(0, MAX_SCHEDULED_AUTOMATION_ROWS);
+  for (const row of rows) {
+    await executeAutomation(env, automation, {
+      rowId: row.id,
+      triggerType: 'schedule',
+      triggerUserId: null,
+      eventKey: `schedule:${firedAt}:${row.id}`,
+    });
   }
-  if (actionType === 'increment_number' && target.type !== 'number') {
-    return '递增动作只能用于数字属性';
+  return rows.length;
+}
+
+export async function runScheduledAutomation(
+  env: Env,
+  input: { automationId: string; databaseId: string; rowId?: string | null },
+): Promise<void> {
+  if (!isPageId(input.automationId) || !isPageId(input.databaseId)) {
+    throw new Error('定时自动化参数无效');
   }
-  if (actionType === 'set_property') {
-    const normalized = normalizeDatabaseCellValue(target.type, actionConfig.value ?? null);
-    return normalized.ok ? null : (normalized.error ?? '自动化设置值无效');
+  const automation = await findAutomation(env, input.databaseId, input.automationId);
+  if (!automation || !automation.enabled) return;
+  const firedAt = Date.now();
+  try {
+    await fireScheduledAutomation(env, automation, firedAt);
+  } finally {
+    // Reschedule even when this firing failed, so one error does not stop the schedule.
+    await scheduleAutomation(env, automation, firedAt);
+  }
+}
+
+// ── Automation configuration ─────────────────────────────────────────────
+
+function redactedDefinition(definition: AutomationDefinition): AutomationDefinition {
+  return {
+    ...definition,
+    actions: definition.actions.map((action) => {
+      if (typeof action.config.secret !== 'string') return action;
+      const { secret: _secret, ...config } = action.config;
+      return { ...action, config: { ...config, hasSecret: true } };
+    }),
+  };
+}
+
+/** Keep stored webhook secrets when a client saves a redacted definition back. */
+function withStoredSecrets(
+  next: AutomationDefinition,
+  previous: AutomationDefinition | null,
+): AutomationDefinition {
+  if (!previous) return next;
+  return {
+    ...next,
+    actions: next.actions.map((action) => {
+      if (
+        action.type !== 'webhook' ||
+        typeof action.config.secret === 'string' ||
+        action.config.hasSecret !== true
+      ) {
+        return action;
+      }
+      const match = previous.actions.find(
+        (candidate) =>
+          candidate.type === 'webhook' &&
+          candidate.config.url === action.config.url &&
+          typeof candidate.config.secret === 'string',
+      );
+      const { hasSecret: _hasSecret, ...config } = action.config;
+      const secret = match?.config.secret;
+      return {
+        type: action.type,
+        config: typeof secret === 'string' ? { ...config, secret } : config,
+      } satisfies AutomationActionStep;
+    }),
+  };
+}
+
+function automationSummary(record: AutomationRecord): DatabaseAutomationSummary {
+  const definition = automationDefinitionFromRecord(record);
+  const actionConfig = parsedObject(record.action_config_json);
+  if (typeof actionConfig.secret === 'string') {
+    delete actionConfig.secret;
+    actionConfig.hasSecret = true;
+  }
+  const triggerConfig = parsedObject(record.trigger_config_json);
+  delete triggerConfig.definition;
+  return {
+    id: record.id,
+    databaseId: record.database_id,
+    name: record.name,
+    enabled: Boolean(record.enabled),
+    triggerType: definition.trigger.type,
+    triggerConfig,
+    actionType: definition.actions[0]?.type ?? (record.action_type as AutomationActionType),
+    actionConfig,
+    definition: redactedDefinition(definition),
+    nextRunAt:
+      record.enabled && definition.trigger.schedule
+        ? nextScheduleRun(definition.trigger.schedule, definition.timezone, Date.now())
+        : null,
+    createdBy: record.created_by,
+    updatedBy: record.updated_by,
+    createdAt: Number(record.created_at),
+    updatedAt: Number(record.updated_at),
+  };
+}
+
+async function validatePropertyValues(
+  env: Env,
+  databaseId: string,
+  input: JsonValue | undefined,
+): Promise<string | null> {
+  if (input === undefined) return null;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '字段值格式无效';
+  const properties = await databaseProperties(env, databaseId);
+  for (const [propertyId, value] of Object.entries(input)) {
+    const property = properties.find((candidate) => candidate.id === propertyId);
+    if (!property || isComputedDatabaseProperty(property.type) || property.type === 'button') {
+      return '要写入的字段不存在或不可写';
+    }
+    const isToken =
+      value && typeof value === 'object' && !Array.isArray(value) && '$token' in value;
+    if (isToken) continue;
+    const normalized = normalizeDatabaseCellValue(property.type, value as JsonValue);
+    if (!normalized.ok) return `${property.name}：${normalized.error ?? '值无效'}`;
   }
   return null;
+}
+
+async function validateAutomationDefinition(
+  env: Env,
+  authorization: DatabaseAuthorization,
+  actor: AuthUserSummary,
+  definition: AutomationDefinition,
+): Promise<string | null> {
+  const databaseId = authorization.database.id;
+  const properties = await databaseProperties(env, databaseId);
+  const propertyIds = new Set(properties.map((property) => property.id));
+  const { trigger } = definition;
+  if (trigger.type === 'property_changed') {
+    if (!trigger.propertyIds.length) return '请选择触发属性';
+    if (trigger.propertyIds.some((id) => !propertyIds.has(id))) return '触发属性不存在';
+  }
+  if (trigger.type === 'schedule' && !trigger.schedule) return '请设置运行时间';
+  if (definition.conditions.rules.some((rule) => !propertyIds.has(rule.propertyId))) {
+    return '条件中的属性不存在';
+  }
+  if (!definition.actions.length) return '至少添加一个动作';
+  for (const [index, action] of definition.actions.entries()) {
+    const label = `第 ${index + 1} 步：`;
+    const config = action.config;
+    switch (action.type) {
+      case 'archive_row':
+        break;
+      case 'set_property':
+      case 'toggle_checkbox':
+      case 'increment_number': {
+        const target = properties.find((property) => property.id === config.targetPropertyId);
+        if (!target || isComputedDatabaseProperty(target.type) || target.type === 'button') {
+          return `${label}目标属性不存在或不可写`;
+        }
+        if (action.type === 'toggle_checkbox' && target.type !== 'checkbox')
+          return `${label}切换动作只能用于复选框`;
+        if (action.type === 'increment_number' && target.type !== 'number')
+          return `${label}递增动作只能用于数字属性`;
+        if (action.type === 'set_property') {
+          const problem = await validatePropertyValues(env, databaseId, {
+            [target.id]: config.value ?? null,
+          });
+          if (problem) return `${label}${problem}`;
+        }
+        break;
+      }
+      case 'create_row':
+      case 'edit_rows': {
+        const targetId =
+          typeof config.databaseId === 'string' && config.databaseId
+            ? config.databaseId
+            : databaseId;
+        const target =
+          targetId === databaseId
+            ? authorization
+            : isPageId(targetId)
+              ? await authorizeDatabase(env, targetId, actor.id, 'edit_content')
+              : null;
+        if (!target || target.database.organization_id !== authorization.database.organization_id) {
+          return `${label}目标数据库不存在或你无权编辑`;
+        }
+        const problem = await validatePropertyValues(env, target.database.id, config.values);
+        if (problem) return `${label}${problem}`;
+        if (action.type === 'edit_rows') {
+          const filter = normalizeConditions(config.filter);
+          const targetProperties = new Set(
+            (await databaseProperties(env, target.database.id)).map((p) => p.id),
+          );
+          if (!filter.rules.length && config.allRows !== true)
+            return `${label}请设置要修改哪些记录`;
+          if (filter.rules.some((rule) => !targetProperties.has(rule.propertyId)))
+            return `${label}筛选属性不存在`;
+          if (
+            !config.values ||
+            typeof config.values !== 'object' ||
+            !Object.keys(config.values).length
+          ) {
+            return `${label}请设置要修改的字段`;
+          }
+        }
+        break;
+      }
+      case 'notify': {
+        const hasRecipients =
+          (Array.isArray(config.userIds) && config.userIds.length > 0) ||
+          (Array.isArray(config.personPropertyIds) && config.personPropertyIds.length > 0) ||
+          config.notifyTriggerUser === true;
+        if (!hasRecipients) return `${label}请选择通知对象`;
+        if (typeof config.message === 'string' && config.message.length > 1_000)
+          return `${label}通知内容过长`;
+        if (Array.isArray(config.personPropertyIds)) {
+          for (const id of config.personPropertyIds) {
+            const property = properties.find((candidate) => candidate.id === id);
+            if (!property || !['person', 'created_by', 'last_edited_by'].includes(property.type)) {
+              return `${label}人员属性不存在`;
+            }
+          }
+        }
+        break;
+      }
+      case 'webhook':
+        if (!safeWebhookUrl(config.url)) return `${label}Webhook 必须是可公开访问的 HTTPS 地址`;
+        if (
+          config.secret !== undefined &&
+          (typeof config.secret !== 'string' || config.secret.length < 16)
+        ) {
+          return `${label}Webhook 签名密钥至少需要 16 个字符`;
+        }
+        break;
+      case 'notion_create_page': {
+        const problem = await validateNotionCreatePage(
+          env,
+          authorization.database.organization_id,
+          config,
+        );
+        if (problem) return `${label}${problem}`;
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+/** Accept a definition, or the older triggerType/actionType fields. */
+function definitionFromInput(input: Record<string, unknown>): AutomationDefinition | null {
+  if (input.definition !== undefined) return normalizeAutomationDefinition(input.definition);
+  const triggerConfig = jsonObject(input.triggerConfig ?? {});
+  const actionConfig = jsonObject(input.actionConfig ?? {});
+  if (typeof input.triggerType !== 'string' || typeof input.actionType !== 'string') return null;
+  if (!triggerConfig || !actionConfig) return null;
+  if (!(AUTOMATION_TRIGGER_TYPES as readonly string[]).includes(input.triggerType)) return null;
+  if (!(AUTOMATION_ACTION_TYPES as readonly string[]).includes(input.actionType)) return null;
+  return automationDefinitionFromRecord({
+    trigger_type: input.triggerType,
+    trigger_config_json: JSON.stringify(triggerConfig),
+    action_type: input.actionType,
+    action_config_json: JSON.stringify(actionConfig),
+  });
+}
+
+function storedColumns(definition: AutomationDefinition): {
+  triggerType: string;
+  triggerConfig: string;
+  actionType: string;
+} {
+  return {
+    triggerType: definition.trigger.type,
+    triggerConfig: JSON.stringify({ definition }),
+    actionType: definition.actions[0]?.type ?? 'set_property',
+  };
 }
 
 async function listDatabaseAutomations(
@@ -2295,13 +2809,7 @@ async function listDatabaseAutomations(
   authorization: DatabaseAuthorization,
 ): Promise<Response> {
   const [automations, runs] = await Promise.all([
-    env.DB.prepare(
-      `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-              action_type, action_config_json, created_by, updated_by, created_at, updated_at
-         FROM database_automations WHERE database_id = ? ORDER BY created_at ASC LIMIT ?`,
-    )
-      .bind(authorization.database.id, MAX_DATABASE_AUTOMATIONS)
-      .all<AutomationRecord>(),
+    automationRowsQuery(env, authorization.database.id).all<AutomationRecord>(),
     env.DB.prepare(
       `SELECT id, database_id, automation_id, row_id, trigger_type, status, attempt,
               response_code, error_message, started_at, completed_at
@@ -2326,27 +2834,11 @@ async function createDatabaseAutomation(
   if (authorization.database.is_locked) return error('数据库已锁定，不能创建自动化', 409);
   const input = await requestBody(request);
   const name = entityName(input?.name, 100);
-  const triggerType = input?.triggerType;
-  const actionType = input?.actionType;
-  const triggerConfig = jsonObject(input?.triggerConfig ?? {});
-  const actionConfig = jsonObject(input?.actionConfig ?? {});
   if (!name) return error('自动化名称无效', 400);
-  if (typeof triggerType !== 'string' || !AUTOMATION_TRIGGERS.has(triggerType as never)) {
-    return error('自动化触发器无效', 400);
-  }
-  if (typeof actionType !== 'string' || !AUTOMATION_ACTIONS.has(actionType as never)) {
-    return error('自动化动作无效', 400);
-  }
-  if (!triggerConfig || !actionConfig) return error('自动化配置无效', 400);
-  const configurationError = await validateAutomationConfiguration(
-    env,
-    authorization.database.id,
-    triggerType as DatabaseAutomationTrigger,
-    triggerConfig,
-    actionType as DatabaseAutomationAction,
-    actionConfig,
-  );
-  if (configurationError) return error(configurationError, 400);
+  const definition = input ? definitionFromInput(input) : null;
+  if (!definition) return error('自动化配置无效', 400);
+  const problem = await validateAutomationDefinition(env, authorization, actor, definition);
+  if (problem) return error(problem, 400);
   const count = await env.DB.prepare(
     'SELECT COUNT(*) AS count FROM database_automations WHERE database_id = ?',
   )
@@ -2357,22 +2849,22 @@ async function createDatabaseAutomation(
   }
   const id = crypto.randomUUID();
   const now = Date.now();
+  const columns = storedColumns(definition);
   try {
     await env.DB.prepare(
       `INSERT INTO database_automations(
          id, organization_id, database_id, name, enabled, trigger_type, trigger_config_json,
          action_type, action_config_json, created_by, updated_by, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, '{}', ?, ?, ?, ?)`,
     )
       .bind(
         id,
         authorization.database.organization_id,
         authorization.database.id,
         name,
-        triggerType,
-        JSON.stringify(triggerConfig),
-        actionType,
-        JSON.stringify(actionConfig),
+        columns.triggerType,
+        columns.triggerConfig,
+        columns.actionType,
         actor.id,
         actor.id,
         now,
@@ -2382,14 +2874,9 @@ async function createDatabaseAutomation(
   } catch {
     return error('已有同名自动化', 409);
   }
-  const automation = await env.DB.prepare(
-    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-            action_type, action_config_json, created_by, updated_by, created_at, updated_at
-       FROM database_automations WHERE id = ?`,
-  )
-    .bind(id)
-    .first<AutomationRecord>();
+  const automation = await findAutomation(env, authorization.database.id, id);
   if (!automation) return error('自动化创建失败', 500);
+  await scheduleAutomation(env, automation);
   await databaseAudit(
     env,
     authorization.database,
@@ -2399,27 +2886,6 @@ async function createDatabaseAutomation(
     authorization.database.id,
     { automationId: id },
   );
-  const cron = typeof triggerConfig.cron === 'string' ? triggerConfig.cron.trim() : '';
-  const nextRun = cron ? parseSimpleCron(cron, now) : null;
-  if (nextRun) {
-    await env.DB.prepare(
-      `INSERT INTO scheduled_jobs(
-         id, organization_id, kind, payload_json, run_at, status, attempts, created_at
-       ) VALUES (?, ?, 'automation', ?, ?, 'pending', 0, ?)`,
-    )
-      .bind(
-        crypto.randomUUID(),
-        authorization.database.organization_id,
-        JSON.stringify({
-          automationId: id,
-          cron,
-          databaseId: authorization.database.id,
-        }),
-        nextRun,
-        now,
-      )
-      .run();
-  }
   return json({ automation: automationSummary(automation) }, { status: 201 });
 }
 
@@ -2431,37 +2897,51 @@ async function updateDatabaseAutomation(
   actor: AuthUserSummary,
 ): Promise<Response> {
   if (authorization.database.is_locked) return error('数据库已锁定，不能修改自动化', 409);
-  const current = await env.DB.prepare(
-    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-            action_type, action_config_json, created_by, updated_by, created_at, updated_at
-       FROM database_automations WHERE id = ? AND database_id = ?`,
-  )
-    .bind(automationId, authorization.database.id)
-    .first<AutomationRecord>();
+  const current = await findAutomation(env, authorization.database.id, automationId);
   if (!current) return error('自动化不存在', 404);
   const input = await requestBody(request);
   if (!input) return error('请求格式无效', 400);
   const name = input.name === undefined ? current.name : entityName(input.name, 100);
   const enabled = input.enabled === undefined ? Boolean(current.enabled) : input.enabled;
   if (!name || typeof enabled !== 'boolean') return error('自动化设置无效', 400);
+  let columns: ReturnType<typeof storedColumns> | null = null;
+  if (input.definition !== undefined) {
+    const next = normalizeAutomationDefinition(input.definition);
+    if (!next) return error('自动化配置无效', 400);
+    const definition = withStoredSecrets(next, automationDefinitionFromRecord(current));
+    const problem = await validateAutomationDefinition(env, authorization, actor, definition);
+    if (problem) return error(problem, 400);
+    columns = storedColumns(definition);
+  }
   try {
     await env.DB.prepare(
-      `UPDATE database_automations SET name = ?, enabled = ?, updated_by = ?, updated_at = ?
+      `UPDATE database_automations
+          SET name = ?, enabled = ?, updated_by = ?, updated_at = ?,
+              trigger_type = COALESCE(?, trigger_type),
+              trigger_config_json = COALESCE(?, trigger_config_json),
+              action_type = COALESCE(?, action_type),
+              action_config_json = CASE WHEN ? IS NULL THEN action_config_json ELSE '{}' END
         WHERE id = ? AND database_id = ?`,
     )
-      .bind(name, enabled ? 1 : 0, actor.id, Date.now(), automationId, authorization.database.id)
+      .bind(
+        name,
+        enabled ? 1 : 0,
+        actor.id,
+        Date.now(),
+        columns?.triggerType ?? null,
+        columns?.triggerConfig ?? null,
+        columns?.actionType ?? null,
+        columns?.triggerType ?? null,
+        automationId,
+        authorization.database.id,
+      )
       .run();
   } catch {
     return error('已有同名自动化', 409);
   }
-  const updated = await env.DB.prepare(
-    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-            action_type, action_config_json, created_by, updated_by, created_at, updated_at
-       FROM database_automations WHERE id = ?`,
-  )
-    .bind(automationId)
-    .first<AutomationRecord>();
+  const updated = await findAutomation(env, authorization.database.id, automationId);
   if (!updated) return error('自动化不存在', 404);
+  await scheduleAutomation(env, updated);
   return json({ automation: automationSummary(updated) });
 }
 
@@ -2478,6 +2958,13 @@ async function deleteDatabaseAutomation(
     .bind(automationId, authorization.database.id)
     .run();
   if (!result.meta.changes) return error('自动化不存在', 404);
+  await env.DB.prepare(
+    `UPDATE scheduled_jobs SET status = 'cancelled', completed_at = ?
+      WHERE kind = 'automation' AND status = 'pending'
+        AND json_extract(payload_json, '$.automationId') = ?`,
+  )
+    .bind(Date.now(), automationId)
+    .run();
   await databaseAudit(
     env,
     authorization.database,
@@ -2490,6 +2977,7 @@ async function deleteDatabaseAutomation(
   return json({ ok: true });
 }
 
+/** Run a manual automation on a record, or fire a scheduled one now. */
 async function runManualDatabaseAutomation(
   request: Request,
   env: Env,
@@ -2498,177 +2986,44 @@ async function runManualDatabaseAutomation(
   actor: AuthUserSummary,
 ): Promise<Response> {
   const input = await requestBody(request);
+  const automation = await findAutomation(env, authorization.database.id, automationId);
+  if (!automation || !automation.enabled) return error('自动化不存在或已停用', 404);
+  const definition = automationDefinitionFromRecord(automation);
   const rowId = typeof input?.rowId === 'string' ? input.rowId : '';
+  if (definition.trigger.type === 'schedule' && !rowId) {
+    if (!(await requirePageAction(env, authorization.database.page_id, actor.id, 'edit_content'))) {
+      return error('无权运行自动化', 403);
+    }
+    const count = await fireScheduledAutomation(env, automation, Date.now());
+    const runs = (
+      await env.DB.prepare(
+        `SELECT id, database_id, automation_id, row_id, trigger_type, status, attempt,
+                response_code, error_message, started_at, completed_at
+           FROM database_automation_runs WHERE automation_id = ?
+          ORDER BY started_at DESC LIMIT ?`,
+      )
+        .bind(automation.id, Math.max(1, count))
+        .all<AutomationRunRecord>()
+    ).results;
+    return json({ run: runs[0] ? automationRunSummary(runs[0]) : null, count });
+  }
+  if (definition.trigger.type !== 'manual') return error('只有手动或定时自动化可以直接运行', 400);
   if (!isPageId(rowId)) return error('请选择要运行自动化的记录', 400);
-  const automation = await env.DB.prepare(
-    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-            action_type, action_config_json, created_by, updated_by, created_at, updated_at
-       FROM database_automations
-      WHERE id = ? AND database_id = ? AND enabled = 1 AND trigger_type = 'manual'`,
-  )
-    .bind(automationId, authorization.database.id)
-    .first<AutomationRecord>();
   const row = await env.DB.prepare(
     'SELECT page_id FROM database_rows WHERE id = ? AND database_id = ? AND archived_at IS NULL',
   )
     .bind(rowId, authorization.database.id)
     .first<{ page_id: string }>();
-  if (
-    !automation ||
-    !row ||
-    !(await requirePageAction(env, row.page_id, actor.id, 'edit_content'))
-  ) {
+  if (!row || !(await requirePageAction(env, row.page_id, actor.id, 'edit_content'))) {
     return error('自动化或记录不存在，或无权运行', 404);
   }
-  const runId = crypto.randomUUID();
-  const startedAt = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO database_automation_runs(
-       id, organization_id, database_id, automation_id, row_id, event_key,
-       trigger_type, status, attempt, started_at
-     ) VALUES (?, ?, ?, ?, ?, ?, 'manual', 'running', 1, ?)`,
-  )
-    .bind(
-      runId,
-      authorization.database.organization_id,
-      authorization.database.id,
-      automationId,
-      rowId,
-      crypto.randomUUID(),
-      startedAt,
-    )
-    .run();
-  try {
-    const responseCode = await runDatabaseAutomationAction(
-      env,
-      authorization,
-      automation,
-      rowId,
-      'manual',
-      actor,
-    );
-    await env.DB.prepare(
-      `UPDATE database_automation_runs
-          SET status = 'succeeded', response_code = ?, completed_at = ? WHERE id = ?`,
-    )
-      .bind(responseCode, Date.now(), runId)
-      .run();
-  } catch (reason) {
-    await env.DB.prepare(
-      `UPDATE database_automation_runs
-          SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?`,
-    )
-      .bind(
-        (reason instanceof Error ? reason.message : '自动化执行失败').slice(0, 500),
-        Date.now(),
-        runId,
-      )
-      .run();
-  }
-  const run = await env.DB.prepare(
-    `SELECT id, database_id, automation_id, row_id, trigger_type, status, attempt,
-            response_code, error_message, started_at, completed_at
-       FROM database_automation_runs WHERE id = ?`,
-  )
-    .bind(runId)
-    .first<AutomationRunRecord>();
+  const run = await executeAutomation(env, automation, {
+    rowId,
+    triggerType: 'manual',
+    triggerUserId: actor.id,
+    eventKey: crypto.randomUUID(),
+  });
   return run ? json({ run: automationRunSummary(run) }) : error('自动化运行记录丢失', 500);
-}
-
-export async function runScheduledAutomation(
-  env: Env,
-  input: { automationId: string; databaseId: string; rowId?: string | null },
-): Promise<void> {
-  if (!isPageId(input.automationId) || !isPageId(input.databaseId)) {
-    throw new Error('定时自动化参数无效');
-  }
-  const automation = await env.DB.prepare(
-    `SELECT id, database_id, name, enabled, trigger_type, trigger_config_json,
-            action_type, action_config_json, created_by, updated_by, created_at, updated_at
-       FROM database_automations WHERE id = ? AND database_id = ? AND enabled = 1`,
-  )
-    .bind(input.automationId, input.databaseId)
-    .first<AutomationRecord>();
-  if (!automation) throw new Error('自动化不存在或已停用');
-  const authorization = await authorizeDatabase(
-    env,
-    input.databaseId,
-    automation.created_by,
-    'edit_content',
-  );
-  if (!authorization) throw new Error('自动化创建者已无权编辑数据库');
-  const actorRow = await env.DB.prepare(
-    `SELECT id, email, display_name, avatar_url FROM users WHERE id = ? AND status = 'active'`,
-  )
-    .bind(automation.created_by)
-    .first<{ avatar_url: string | null; display_name: string; email: string; id: string }>();
-  if (!actorRow) throw new Error('自动化创建者不可用');
-  const actor: AuthUserSummary = {
-    avatarUrl: actorRow.avatar_url,
-    displayName: actorRow.display_name,
-    email: actorRow.email,
-    id: actorRow.id,
-  };
-  const current = await snapshot(env, authorization, actor.id);
-  const condition = parsedObject(automation.trigger_config_json).condition;
-  const conditionObject =
-    condition && typeof condition === 'object' && !Array.isArray(condition)
-      ? (condition as Record<string, JsonValue>)
-      : null;
-  const rows = input.rowId
-    ? current.rows.filter((row) => row.id === input.rowId)
-    : current.rows
-        .filter((row) => automationConditionMatches(row.values, conditionObject))
-        .slice(0, 20);
-  if (!rows.length) return;
-  for (const row of rows) {
-    const runId = crypto.randomUUID();
-    const startedAt = Date.now();
-    await env.DB.prepare(
-      `INSERT INTO database_automation_runs(
-         id, organization_id, database_id, automation_id, row_id, event_key,
-         trigger_type, status, attempt, started_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 1, ?)`,
-    )
-      .bind(
-        runId,
-        authorization.database.organization_id,
-        authorization.database.id,
-        automation.id,
-        row.id,
-        `schedule:${automation.id}:${row.id}:${startedAt}`,
-        automation.trigger_type,
-        startedAt,
-      )
-      .run();
-    try {
-      const responseCode = await runDatabaseAutomationAction(
-        env,
-        authorization,
-        automation,
-        row.id,
-        automation.trigger_type,
-        actor,
-      );
-      await env.DB.prepare(
-        `UPDATE database_automation_runs
-            SET status = 'succeeded', response_code = ?, completed_at = ? WHERE id = ?`,
-      )
-        .bind(responseCode, Date.now(), runId)
-        .run();
-    } catch (reason) {
-      await env.DB.prepare(
-        `UPDATE database_automation_runs
-            SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?`,
-      )
-        .bind(
-          (reason instanceof Error ? reason.message : '自动化执行失败').slice(0, 500),
-          Date.now(),
-          runId,
-        )
-        .run();
-    }
-  }
 }
 
 async function createRow(
@@ -2676,7 +3031,12 @@ async function createRow(
   env: Env,
   authorization: DatabaseAuthorization,
   actor: AuthUserSummary,
-  options: { triggerType?: 'row_created' | 'form_submitted' } = {},
+  options: {
+    triggerType?: 'row_created' | 'form_submitted';
+    skipAutomations?: boolean;
+    /** Skip reading the whole database back; for bulk imports. */
+    minimal?: boolean;
+  } = {},
 ): Promise<Response> {
   const input = (await requestBody(request)) ?? {};
   const normalized = await normalizedRowValues(
@@ -2753,13 +3113,15 @@ async function createRow(
     ),
   ];
   await env.DB.batch(statements);
-  await runDatabaseAutomations(
-    env,
-    authorization,
-    rowId,
-    options.triggerType ?? 'row_created',
-    actor,
-  );
+  if (!options.skipAutomations) {
+    await runDatabaseAutomations(
+      env,
+      authorization,
+      rowId,
+      options.triggerType ?? 'row_created',
+      actor,
+    );
+  }
   await databaseAudit(
     env,
     authorization.database,
@@ -2771,6 +3133,7 @@ async function createRow(
       pageId,
     },
   );
+  if (options.minimal) return json({ row: { id: rowId, pageId } }, { status: 201 });
   const latest = await findDatabase(env, authorization.database.id);
   if (!latest) throw new Error('database_row_create_result_missing');
   const current = await snapshot(env, { database: latest, role: authorization.role }, actor.id);
@@ -4413,4 +4776,38 @@ export async function handleDatabasesApi(
   }
 
   return null;
+}
+
+/**
+ * Create many rows without running automations, for imports. Returns how many
+ * were created; stops at the first row the database refuses.
+ */
+export async function bulkCreateDatabaseRows(
+  env: Env,
+  databaseId: string,
+  actor: AuthUserSummary,
+  rows: ReadonlyArray<Record<string, JsonValue>>,
+): Promise<number> {
+  const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
+  if (!authorization) throw new Error('无权写入目标数据库');
+  let created = 0;
+  for (const values of rows) {
+    const response = await createRow(
+      new Request('https://rdocs.internal/api/import-row', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values }),
+      }),
+      env,
+      authorization,
+      actor,
+      { skipAutomations: true, minimal: true },
+    );
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(payload?.error ?? `第 ${created + 1} 条记录导入失败`);
+    }
+    created += 1;
+  }
+  return created;
 }

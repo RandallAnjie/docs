@@ -64,19 +64,21 @@ export const AGGREGATION_LABELS: Record<DatabaseAggregation, string> = {
 export interface OptionSwatch {
   background: string;
   color: string;
+  /** Dot color for status pills. */
+  dot: string;
 }
 
-/** Distinct, readable tag colors: blue, green, yellow, orange, purple, pink, red, brown, gray. */
+/** Tag colors in the order options are colored: blue, green, yellow, orange, purple, pink, red, brown, gray. */
 const OPTION_PALETTE: readonly OptionSwatch[] = [
-  { background: '#e1ecf8', color: '#1d5a91' },
-  { background: '#dff0e5', color: '#2b6a40' },
-  { background: '#f9eec9', color: '#775807' },
-  { background: '#fce4d3', color: '#974a14' },
-  { background: '#ebe3f7', color: '#5d3e98' },
-  { background: '#f8e0eb', color: '#913a63' },
-  { background: '#fbe1dd', color: '#a1362a' },
-  { background: '#f0e5dc', color: '#714a2c' },
-  { background: '#ebeae7', color: '#55534e' },
+  { background: 'rgb(211 229 239)', color: 'rgb(24 51 71)', dot: 'rgb(91 151 189)' },
+  { background: 'rgb(219 237 219)', color: 'rgb(28 56 41)', dot: 'rgb(108 155 125)' },
+  { background: 'rgb(253 236 200)', color: 'rgb(64 44 27)', dot: 'rgb(203 148 52)' },
+  { background: 'rgb(250 222 201)', color: 'rgb(73 41 14)', dot: 'rgb(217 115 13)' },
+  { background: 'rgb(232 222 238)', color: 'rgb(65 36 84)', dot: 'rgb(154 109 215)' },
+  { background: 'rgb(245 224 233)', color: 'rgb(76 35 55)', dot: 'rgb(193 76 138)' },
+  { background: 'rgb(255 226 221)', color: 'rgb(93 23 21)', dot: 'rgb(205 60 58)' },
+  { background: 'rgb(238 224 218)', color: 'rgb(68 42 30)', dot: 'rgb(140 46 0)' },
+  { background: 'rgb(227 226 224)', color: 'rgb(50 48 44)', dot: 'rgb(145 145 142)' },
 ];
 
 const BLUE = 0;
@@ -216,23 +218,198 @@ function comparable(value: JsonValue | undefined): number | string {
   return valueText(value).toLocaleLowerCase();
 }
 
-function filterMatches(row: DatabaseRowSummary, filter: DatabaseViewFilter): boolean {
+export interface DatabaseFilterContext {
+  /** The signed-in member, for "is me" person filters. */
+  userId?: string | null;
+  now?: number;
+}
+
+export const RELATIVE_DATE_LABELS = {
+  today: '今天',
+  tomorrow: '明天',
+  yesterday: '昨天',
+  this_week: '本周',
+  last_week: '上周',
+  next_week: '下周',
+  this_month: '本月',
+  past_7_days: '过去 7 天',
+  next_7_days: '未来 7 天',
+} as const;
+export type RelativeDateToken = keyof typeof RELATIVE_DATE_LABELS;
+
+function localDayKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function shiftDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+/** Inclusive local-day range ["YYYY-MM-DD", "YYYY-MM-DD"] for a relative date; weeks start on Monday. */
+export function relativeDateRange(token: RelativeDateToken, now = Date.now()): [string, string] {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const monday = shiftDays(today, -((today.getDay() + 6) % 7));
+  switch (token) {
+    case 'today':
+      return [localDayKey(today), localDayKey(today)];
+    case 'tomorrow':
+      return [localDayKey(shiftDays(today, 1)), localDayKey(shiftDays(today, 1))];
+    case 'yesterday':
+      return [localDayKey(shiftDays(today, -1)), localDayKey(shiftDays(today, -1))];
+    case 'this_week':
+      return [localDayKey(monday), localDayKey(shiftDays(monday, 6))];
+    case 'last_week':
+      return [localDayKey(shiftDays(monday, -7)), localDayKey(shiftDays(monday, -1))];
+    case 'next_week':
+      return [localDayKey(shiftDays(monday, 7)), localDayKey(shiftDays(monday, 13))];
+    case 'this_month': {
+      const first = new Date(today.getFullYear(), today.getMonth(), 1);
+      const last = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      return [localDayKey(first), localDayKey(last)];
+    }
+    case 'past_7_days':
+      return [localDayKey(shiftDays(today, -6)), localDayKey(today)];
+    case 'next_7_days':
+      return [localDayKey(today), localDayKey(shiftDays(today, 6))];
+  }
+}
+
+/** Local calendar day of a date cell; date-only values keep the stored day. */
+export function cellDayKey(value: JsonValue | undefined): string {
+  const start =
+    typeof value === 'string'
+      ? value
+      : value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          typeof value.start === 'string'
+        ? value.start
+        : '';
+  if (!start) return '';
+  const includeTime =
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    typeof value.includeTime === 'boolean'
+      ? value.includeTime
+      : !/T00:00(?::00(?:\.0+)?)?Z$/.test(start) && start.includes('T');
+  if (!includeTime && /^\d{4}-\d{2}-\d{2}/.test(start)) return start.slice(0, 10);
+  const date = new Date(start);
+  return Number.isNaN(date.getTime()) ? start.slice(0, 10) : localDayKey(date);
+}
+
+function relativeToken(value: JsonValue): RelativeDateToken | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const token = value.$relative;
+  return typeof token === 'string' && token in RELATIVE_DATE_LABELS
+    ? (token as RelativeDateToken)
+    : null;
+}
+
+function isMeToken(value: JsonValue): boolean {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && value.$me === true);
+}
+
+/** Text for a filter value in chips: relative dates and "me" read as words. */
+export function filterValueLabel(value: JsonValue): string {
+  const relative = relativeToken(value);
+  if (relative) return RELATIVE_DATE_LABELS[relative];
+  if (isMeToken(value)) return '我';
+  if (value === true) return '已勾选';
+  if (value === false) return '未勾选';
+  if (
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    typeof value.start === 'string'
+  ) {
+    return cellDayKey(value);
+  }
+  return valueText(value);
+}
+
+function filterMatches(
+  row: DatabaseRowSummary,
+  filter: DatabaseViewFilter,
+  context: DatabaseFilterContext = {},
+): boolean {
   const value = row.values[filter.propertyId];
+  if (filter.operator === 'is_empty') return isEmpty(value);
+  if (filter.operator === 'is_not_empty') return !isEmpty(value);
+
+  if (isMeToken(filter.value)) {
+    const people = Array.isArray(value)
+      ? value
+      : value === undefined || value === null
+        ? []
+        : [value];
+    const includesMe = Boolean(context.userId) && people.includes(context.userId!);
+    return filter.operator === 'not_equals' || filter.operator === 'not_contains'
+      ? !includesMe
+      : includesMe;
+  }
+
+  const relative = relativeToken(filter.value);
+  const isDateFilter =
+    relative !== null ||
+    (filter.value !== null &&
+      typeof filter.value === 'object' &&
+      !Array.isArray(filter.value) &&
+      typeof filter.value.start === 'string') ||
+    (value !== null && typeof value === 'object' && !Array.isArray(value) && 'start' in value);
+  if (isDateFilter) {
+    const day = cellDayKey(value);
+    if (!day) return filter.operator === 'not_equals';
+    const [from, to] = relative
+      ? relativeDateRange(relative, context.now)
+      : [
+          cellDayKey(filter.value) || valueText(filter.value).slice(0, 10),
+          cellDayKey(filter.value) || valueText(filter.value).slice(0, 10),
+        ];
+    if (!from) return true;
+    switch (filter.operator) {
+      case 'equals':
+      case 'contains':
+        return day >= from && day <= to;
+      case 'not_equals':
+      case 'not_contains':
+        return day < from || day > to;
+      case 'on_or_before':
+        return day <= to;
+      case 'on_or_after':
+        return day >= from;
+      case 'less_than':
+        return day < from;
+      case 'greater_than':
+        return day > to;
+    }
+  }
+
   const text = valueText(value).toLocaleLowerCase();
   const expected = valueText(filter.value).toLocaleLowerCase();
+  const list = Array.isArray(value)
+    ? value.map((item) => valueText(item).toLocaleLowerCase())
+    : null;
   switch (filter.operator) {
     case 'equals':
       return (
-        JSON.stringify(value ?? null) === JSON.stringify(filter.value ?? null) || text === expected
+        JSON.stringify(value ?? null) === JSON.stringify(filter.value ?? null) ||
+        text === expected ||
+        Boolean(list?.includes(expected))
       );
     case 'not_equals':
       return (
-        JSON.stringify(value ?? null) !== JSON.stringify(filter.value ?? null) && text !== expected
+        JSON.stringify(value ?? null) !== JSON.stringify(filter.value ?? null) &&
+        text !== expected &&
+        !list?.includes(expected)
       );
     case 'contains':
-      return text.includes(expected);
+      return list ? list.some((item) => item.includes(expected)) : text.includes(expected);
     case 'not_contains':
-      return !text.includes(expected);
+      return list ? !list.some((item) => item.includes(expected)) : !text.includes(expected);
     case 'greater_than':
       return comparable(value) > comparable(filter.value);
     case 'less_than':
@@ -241,11 +418,209 @@ function filterMatches(row: DatabaseRowSummary, filter: DatabaseViewFilter): boo
       return Boolean(text && expected && text.slice(0, 10) <= expected.slice(0, 10));
     case 'on_or_after':
       return Boolean(text && expected && text.slice(0, 10) >= expected.slice(0, 10));
-    case 'is_empty':
-      return isEmpty(value);
-    case 'is_not_empty':
-      return !isEmpty(value);
   }
+  return true;
+}
+
+/** Filter operators that make sense for a field type, in menu order. */
+export function filterOperatorsFor(type: string): DatabaseFilterOperator[] {
+  switch (type) {
+    case 'checkbox':
+      return ['equals'];
+    case 'number':
+    case 'unique_id':
+      return ['equals', 'not_equals', 'greater_than', 'less_than', 'is_empty', 'is_not_empty'];
+    case 'date':
+    case 'created_time':
+    case 'last_edited_time':
+      return [
+        'equals',
+        'less_than',
+        'greater_than',
+        'on_or_before',
+        'on_or_after',
+        'is_empty',
+        'is_not_empty',
+      ];
+    case 'select':
+    case 'status':
+      return ['equals', 'not_equals', 'is_empty', 'is_not_empty'];
+    case 'multi_select':
+    case 'person':
+    case 'created_by':
+    case 'last_edited_by':
+    case 'relation':
+    case 'files':
+      return ['contains', 'not_contains', 'is_empty', 'is_not_empty'];
+    default:
+      return ['contains', 'not_contains', 'equals', 'not_equals', 'is_empty', 'is_not_empty'];
+  }
+}
+
+/** Operator wording that reads naturally for dates. */
+export function filterOperatorLabel(operator: DatabaseFilterOperator, type: string): string {
+  if (['date', 'created_time', 'last_edited_time'].includes(type)) {
+    const dateLabels: Partial<Record<DatabaseFilterOperator, string>> = {
+      equals: '是',
+      less_than: '早于',
+      greater_than: '晚于',
+      on_or_before: '不晚于',
+      on_or_after: '不早于',
+    };
+    return dateLabels[operator] ?? FILTER_OPERATOR_LABELS[operator];
+  }
+  if (type === 'checkbox' && operator === 'equals') return '是';
+  return FILTER_OPERATOR_LABELS[operator];
+}
+
+// ── Clipboard ─────────────────────────────────────────────────────────────
+
+/** Parse clipboard text from a spreadsheet: tabs between cells, quoted cells may hold newlines. */
+export function parseClipboardGrid(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  const normalized = text.replace(/\r\n?/g, '\n').replace(/\n$/, '');
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index]!;
+    if (quoted) {
+      if (char === '"' && normalized[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+    } else if (char === '"' && cell === '') {
+      quoted = true;
+    } else if (char === '\t') {
+      row.push(cell);
+      cell = '';
+    } else if (char === '\n') {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+function parseDayText(text: string): string | null {
+  const match =
+    /^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/.exec(text.trim()) ??
+    /^(\d{4})(\d{2})(\d{2})$/.exec(text.trim());
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Turn pasted text into a value for a field, or undefined when the text does
+ * not fit (that cell is skipped). Empty text clears the field.
+ */
+export function parseCellText(
+  property: Pick<DatabasePropertySummary, 'type' | 'config'>,
+  raw: string,
+): JsonValue | undefined {
+  const text = raw.trim();
+  switch (property.type) {
+    case 'title':
+    case 'text':
+    case 'url':
+    case 'email':
+    case 'phone':
+      return property.type === 'title' || property.type === 'text'
+        ? raw.replace(/\s+$/, '')
+        : text || null;
+    case 'number': {
+      if (!text) return null;
+      const cleaned = text.replace(/[,，\s¥￥$€%]/g, '');
+      const number = Number(cleaned);
+      if (!Number.isFinite(number)) return undefined;
+      return text.endsWith('%') ? number / 100 : number;
+    }
+    case 'checkbox':
+      return /^(true|yes|y|1|是|已完成|完成|✓|✔|☑|勾选|checked)$/i.test(text);
+    case 'select':
+    case 'status': {
+      if (!text) return null;
+      const options = optionNamesOf(property.config);
+      return options.find((option) => option.toLowerCase() === text.toLowerCase()) ?? text;
+    }
+    case 'multi_select': {
+      if (!text) return [];
+      const options = optionNamesOf(property.config);
+      return [
+        ...new Set(
+          text
+            .split(/[,，、;；\n]/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .map(
+              (item) =>
+                options.find((option) => option.toLowerCase() === item.toLowerCase()) ?? item,
+            ),
+        ),
+      ];
+    }
+    case 'date': {
+      if (!text) return null;
+      const [startText, endText] = text.split(/\s*(?:→|~|～|至|到)\s*/);
+      const start = parseDayText(startText ?? '');
+      if (!start) return undefined;
+      const end = endText ? parseDayText(endText) : null;
+      return {
+        start: `${start}T00:00:00.000Z`,
+        end: end ? `${end}T00:00:00.000Z` : null,
+        includeTime: false,
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
+function optionNamesOf(config: Readonly<Record<string, JsonValue>>): string[] {
+  const options = config.options;
+  if (!Array.isArray(options)) return [];
+  return options
+    .map((option) =>
+      typeof option === 'string'
+        ? option
+        : option &&
+            typeof option === 'object' &&
+            !Array.isArray(option) &&
+            typeof option.name === 'string'
+          ? option.name
+          : '',
+    )
+    .filter(Boolean);
+}
+
+/** Plain text of a cell for copying; dates as YYYY-MM-DD so they paste back. */
+export function cellCopyText(value: JsonValue | undefined): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'boolean') return value ? '是' : '';
+  if (Array.isArray(value))
+    return value
+      .map((item) => cellCopyText(item))
+      .filter(Boolean)
+      .join(', ');
+  if (typeof value === 'object' && typeof value.start === 'string') {
+    const start = cellDayKey(value);
+    const end =
+      typeof value.end === 'string' && value.end ? cellDayKey({ ...value, start: value.end }) : '';
+    return end ? `${start} → ${end}` : start;
+  }
+  return valueText(value);
 }
 
 function viewFilters(config: Readonly<Record<string, JsonValue>>): DatabaseViewFilter[] {
@@ -308,6 +683,7 @@ export function applyDatabaseView(
   rows: readonly DatabaseRowSummary[],
   properties: readonly DatabasePropertySummary[],
   config: Readonly<Record<string, JsonValue>>,
+  context: DatabaseFilterContext = {},
 ): DatabaseRowSummary[] {
   const propertyIds = new Set(properties.map((property) => property.id));
   const filters = viewFilters(config).filter((filter) => propertyIds.has(filter.propertyId));
@@ -316,8 +692,8 @@ export function applyDatabaseView(
   const filtered = filters.length
     ? rows.filter((row) =>
         matchAny
-          ? filters.some((filter) => filterMatches(row, filter))
-          : filters.every((filter) => filterMatches(row, filter)),
+          ? filters.some((filter) => filterMatches(row, filter, context))
+          : filters.every((filter) => filterMatches(row, filter, context)),
       )
     : [...rows];
   if (!sorts.length) return filtered;

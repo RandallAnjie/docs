@@ -116,6 +116,8 @@ const MIGRATIONS = [
   '0032_workspace_extras.sql',
   '0033_share_link_editor.sql',
   '0034_randallflare_sign_in.sql',
+  '0035_automation_definitions.sql',
+  '0036_notion_connections.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {
@@ -2897,6 +2899,604 @@ describe('Notion parity platform', () => {
     expect(
       database.prepare(`SELECT COUNT(*) AS total FROM spaces WHERE created_by = ?`).get(user.id),
     ).toMatchObject({ total: 1 });
+    database.close();
+  });
+});
+
+describe('database automations v2', () => {
+  const tasksPageId = '33333333-3333-4333-8333-333333333331';
+  const logPageId = '33333333-3333-4333-8333-333333333332';
+
+  function seedDatabasePage(
+    database: DatabaseSync,
+    owner: AuthUserSummary,
+    id: string,
+    title: string,
+  ) {
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO pages(
+           id, organization_id, space_id, parent_id, title, sort_key,
+           created_by, updated_by, created_at, updated_at
+         ) VALUES (?, 'org_auto', 'spc_auto', NULL, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, title, id, owner.id, owner.id, now, now);
+    database
+      .prepare(
+        `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+         VALUES (?, 1, 1, 'inherit', ?)`,
+      )
+      .run(id, now);
+    database
+      .prepare(
+        `INSERT INTO page_search_projection(
+           page_id, organization_id, space_id, generation, collab_seq, title, normalized_body, updated_at
+         ) VALUES (?, 'org_auto', 'spc_auto', 1, 0, ?, '', ?)`,
+      )
+      .run(id, title, now);
+  }
+
+  async function api(
+    env: Env,
+    actor: AuthUserSummary,
+    path: string,
+    method = 'GET',
+    body?: unknown,
+  ) {
+    const response = await handleDatabasesApi(
+      new Request(`https://docs.test${path}`, {
+        method,
+        ...(body === undefined
+          ? {}
+          : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      }),
+      env,
+      actor,
+    );
+    return { status: response?.status, body: (await response?.json()) as Record<string, any> };
+  }
+
+  async function setup() {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'auto');
+    seedDatabasePage(database, owner, tasksPageId, 'Tasks');
+    seedDatabasePage(database, owner, logPageId, 'Log');
+    const env = testEnv(database);
+    const tasks = await api(env, owner, `/api/pages/${tasksPageId}/database`, 'POST', {
+      titlePropertyName: '任务',
+    });
+    const log = await api(env, owner, `/api/pages/${logPageId}/database`, 'POST', {
+      titlePropertyName: '事件',
+    });
+    const tasksId = tasks.body.database.id as string;
+    const logId = log.body.database.id as string;
+    const property = async (databaseId: string, name: string, type: string, config?: unknown) =>
+      (
+        await api(env, owner, `/api/databases/${databaseId}/properties`, 'POST', {
+          name,
+          type,
+          config,
+        })
+      ).body.property.id as string;
+    const ids = {
+      title: tasks.body.properties.find((p: { type: string }) => p.type === 'title').id as string,
+      status: await property(tasksId, '状态', 'status', {
+        options: ['未开始', '进行中', '已完成'],
+      }),
+      done: await property(tasksId, '已验收', 'checkbox'),
+      owner: await property(tasksId, '负责人', 'person'),
+      logTitle: log.body.properties.find((p: { type: string }) => p.type === 'title').id as string,
+      logTask: await property(logId, '任务', 'relation', { targetDatabaseId: tasksId }),
+      logFlag: await property(logId, '已处理', 'checkbox'),
+    };
+    return { database, owner, env, tasksId, logId, ids };
+  }
+
+  it('runs several actions in order when conditions match', async () => {
+    const { database, owner, env, tasksId, logId, ids } = await setup();
+    const created = await api(env, owner, `/api/databases/${tasksId}/automations`, 'POST', {
+      name: '完成后归档到日志',
+      definition: {
+        trigger: { type: 'property_changed', propertyIds: [ids.status] },
+        conditions: {
+          match: 'all',
+          rules: [{ propertyId: ids.status, op: 'eq', value: '已完成' }],
+        },
+        actions: [
+          { type: 'set_property', config: { targetPropertyId: ids.done, value: true } },
+          {
+            type: 'create_row',
+            config: {
+              databaseId: logId,
+              values: {
+                [ids.logTitle]: { $token: 'copy', propertyId: ids.title },
+                [ids.logTask]: { $token: 'trigger_row' },
+              },
+            },
+          },
+          {
+            type: 'notify',
+            config: { personPropertyIds: [ids.owner], message: '{{标题}} 已完成（{{状态}}）' },
+          },
+        ],
+        timezone: 'Asia/Shanghai',
+      },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.automation.definition.actions).toHaveLength(3);
+
+    const row = await api(env, owner, `/api/databases/${tasksId}/rows`, 'POST', {
+      values: { [ids.title]: '发布 v2', [ids.status]: '进行中', [ids.owner]: [owner.id] },
+    });
+    const rowId = row.body.row.id as string;
+    // Not done yet: the property changed, but the condition does not match.
+    await api(env, owner, `/api/databases/${tasksId}/rows/${rowId}`, 'PATCH', {
+      values: { [ids.status]: '进行中' },
+    });
+    let listed = await api(env, owner, `/api/databases/${tasksId}/automations`);
+    expect(listed.body.runs[0]).toMatchObject({ status: 'skipped' });
+
+    await api(env, owner, `/api/databases/${tasksId}/rows/${rowId}`, 'PATCH', {
+      values: { [ids.status]: '已完成' },
+    });
+    listed = await api(env, owner, `/api/databases/${tasksId}/automations`);
+    expect(listed.body.runs[0]).toMatchObject({ status: 'succeeded', rowId });
+
+    const tasksSnapshot = await api(env, owner, `/api/databases/${tasksId}`);
+    expect(tasksSnapshot.body.rows[0].values[ids.done]).toBe(true);
+    const logSnapshot = await api(env, owner, `/api/databases/${logId}`);
+    expect(logSnapshot.body.rows).toHaveLength(1);
+    expect(logSnapshot.body.rows[0].values[ids.logTitle]).toBe('发布 v2');
+    expect(logSnapshot.body.rows[0].values[ids.logTask]).toEqual([rowId]);
+
+    const notification = database
+      .prepare(`SELECT user_id, type, metadata_json FROM notifications WHERE user_id = ?`)
+      .get(owner.id) as { type: string; metadata_json: string };
+    expect(notification.type).toBe('reminder');
+    expect(JSON.parse(notification.metadata_json)).toMatchObject({
+      source: 'automation',
+      message: '发布 v2 已完成（已完成）',
+    });
+    database.close();
+  });
+
+  it('edits matching rows in another database and stops at the failing step', async () => {
+    const { database, owner, env, tasksId, logId, ids } = await setup();
+    for (const title of ['A', 'B']) {
+      await api(env, owner, `/api/databases/${logId}/rows`, 'POST', {
+        values: { [ids.logTitle]: title },
+      });
+    }
+    const created = await api(env, owner, `/api/databases/${tasksId}/automations`, 'POST', {
+      name: '标记日志',
+      definition: {
+        trigger: { type: 'manual' },
+        actions: [
+          {
+            type: 'edit_rows',
+            config: {
+              databaseId: logId,
+              filter: { match: 'all', rules: [{ propertyId: ids.logTitle, op: 'eq', value: 'A' }] },
+              values: { [ids.logFlag]: true },
+            },
+          },
+          { type: 'webhook', config: { url: 'https://hooks.invalid.example/x' } },
+        ],
+      },
+    });
+    expect(created.status).toBe(201);
+    const row = await api(env, owner, `/api/databases/${tasksId}/rows`, 'POST', {
+      values: { [ids.title]: 'run' },
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('nope', { status: 500 });
+    try {
+      const run = await api(
+        env,
+        owner,
+        `/api/databases/${tasksId}/automations/${created.body.automation.id}/run`,
+        'POST',
+        { rowId: row.body.row.id },
+      );
+      expect(run.body.run).toMatchObject({ status: 'failed' });
+      expect(run.body.run.errorMessage).toContain('第 2 步（Webhook）');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const logRows = (await api(env, owner, `/api/databases/${logId}`)).body.rows as Array<{
+      values: Record<string, unknown>;
+    }>;
+    expect(logRows.find((r) => r.values[ids.logTitle] === 'A')?.values[ids.logFlag]).toBe(true);
+    expect(logRows.find((r) => r.values[ids.logTitle] === 'B')?.values[ids.logFlag] ?? false).toBe(
+      false,
+    );
+    database.close();
+  });
+
+  it('keeps one pending job for a schedule and reschedules after a failure', async () => {
+    const { database, owner, env, tasksId, ids } = await setup();
+    const created = await api(env, owner, `/api/databases/${tasksId}/automations`, 'POST', {
+      name: '每天生成例会',
+      definition: {
+        trigger: {
+          type: 'schedule',
+          schedule: { frequency: 'daily', time: '09:00' },
+        },
+        actions: [{ type: 'create_row', config: { values: { [ids.title]: '每日例会' } } }],
+        timezone: 'Asia/Shanghai',
+      },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.automation.nextRunAt).toBeGreaterThan(Date.now());
+    const pending = () =>
+      database
+        .prepare(
+          `SELECT COUNT(*) AS total FROM scheduled_jobs
+            WHERE kind = 'automation' AND status = 'pending'
+              AND json_extract(payload_json, '$.automationId') = ?`,
+        )
+        .get(created.body.automation.id) as { total: number };
+    expect(pending().total).toBe(1);
+    // Editing the schedule replaces the pending job instead of adding one.
+    await api(
+      env,
+      owner,
+      `/api/databases/${tasksId}/automations/${created.body.automation.id}`,
+      'PATCH',
+      {
+        definition: {
+          ...created.body.automation.definition,
+          trigger: {
+            type: 'schedule',
+            schedule: { frequency: 'weekly', time: '10:00', weekdays: [1] },
+          },
+        },
+      },
+    );
+    expect(pending().total).toBe(1);
+
+    const runNow = await api(
+      env,
+      owner,
+      `/api/databases/${tasksId}/automations/${created.body.automation.id}/run`,
+      'POST',
+      {},
+    );
+    expect(runNow.body.run).toMatchObject({ status: 'succeeded' });
+    expect((await api(env, owner, `/api/databases/${tasksId}`)).body.rows).toHaveLength(1);
+
+    // A failing scheduled firing still leaves the next run queued.
+    database.prepare(`UPDATE scheduled_jobs SET run_at = 0 WHERE status = 'pending'`).run();
+    database.prepare(`DELETE FROM database_properties WHERE id = ?`).run(ids.title);
+    const { processDueScheduledJobs } = await import('../apps/worker/src/enterprise-protocol');
+    await processDueScheduledJobs(env);
+    expect(pending().total).toBe(1);
+
+    await api(
+      env,
+      owner,
+      `/api/databases/${tasksId}/automations/${created.body.automation.id}`,
+      'PATCH',
+      {
+        enabled: false,
+      },
+    );
+    expect(pending().total).toBe(0);
+    database.close();
+  });
+
+  it('keeps a webhook secret when a redacted definition is saved back', async () => {
+    const { database, owner, env, tasksId } = await setup();
+    const created = await api(env, owner, `/api/databases/${tasksId}/automations`, 'POST', {
+      name: '推送',
+      definition: {
+        trigger: { type: 'row_created' },
+        actions: [
+          {
+            type: 'webhook',
+            config: { url: 'https://example.com/hook', secret: 'a-secret-of-16-chars!' },
+          },
+        ],
+      },
+    });
+    const definition = created.body.automation.definition;
+    expect(definition.actions[0].config).toEqual({
+      url: 'https://example.com/hook',
+      hasSecret: true,
+    });
+    await api(
+      env,
+      owner,
+      `/api/databases/${tasksId}/automations/${created.body.automation.id}`,
+      'PATCH',
+      {
+        definition,
+      },
+    );
+    const stored = database
+      .prepare('SELECT trigger_config_json FROM database_automations WHERE id = ?')
+      .get(created.body.automation.id) as { trigger_config_json: string };
+    expect(JSON.parse(stored.trigger_config_json).definition.actions[0].config.secret).toBe(
+      'a-secret-of-16-chars!',
+    );
+    database.close();
+  });
+});
+
+describe('Notion connector', () => {
+  const token = 'ntn_' + 'a'.repeat(40);
+
+  type FetchCall = { url: string; method: string; body: unknown; auth: string | null };
+
+  function mockNotion(routes: Record<string, unknown>) {
+    const calls: FetchCall[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url, method, body, auth: new Headers(init?.headers).get('authorization') });
+      const key = `${method} ${url.replace('https://api.notion.com/v1', '').split('?')[0]}`;
+      if (!(key in routes))
+        return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+      return new Response(JSON.stringify(routes[key]), { status: 200 });
+    }) as typeof fetch;
+    return { calls, restore: () => (globalThis.fetch = original) };
+  }
+
+  async function setup() {
+    const database = migratedDatabase();
+    const owner = seedTenant(database, 'notion');
+    const member = seedTenant(database, 'notion-member');
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO organization_members(organization_id, user_id, role, status, joined_at, updated_at)
+         VALUES ('org_notion', ?, 'member', 'active', ?, ?)`,
+      )
+      .run(member.id, now, now);
+    database.prepare(`UPDATE spaces SET visibility = 'organization' WHERE id = 'spc_notion'`).run();
+    const env = testEnv(database);
+    const markdowns: string[] = [];
+    const { handleNotionApi } = await import('../apps/worker/src/notion');
+    const { bulkCreateDatabaseRows } = await import('../apps/worker/src/databases');
+    const deps = {
+      createMarkdownPage: async (input: {
+        actorId: string;
+        spaceId: string;
+        title: string;
+        markdown: string;
+      }) => {
+        const id = crypto.randomUUID();
+        markdowns.push(input.markdown);
+        database
+          .prepare(
+            `INSERT INTO pages(id, organization_id, space_id, parent_id, title, sort_key, created_by, updated_by, created_at, updated_at)
+             VALUES (?, 'org_notion', ?, NULL, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(id, input.spaceId, input.title, id, input.actorId, input.actorId, now, now);
+        database
+          .prepare(
+            `INSERT INTO page_access_state(page_id, collaboration_enabled, acl_version, access_mode, updated_at)
+             VALUES (?, 1, 1, 'inherit', ?)`,
+          )
+          .run(id, now);
+        database
+          .prepare(
+            `INSERT INTO page_search_projection(page_id, organization_id, space_id, generation, collab_seq, title, normalized_body, updated_at)
+             VALUES (?, 'org_notion', ?, 1, 0, ?, '', ?)`,
+          )
+          .run(id, input.spaceId, input.title, now);
+        return {
+          id,
+          organizationId: 'org_notion',
+          spaceId: input.spaceId,
+          title: input.title,
+        } as never;
+      },
+      databasesApi: handleDatabasesApi,
+      bulkCreateRows: bulkCreateDatabaseRows,
+    };
+    const call = async (actor: AuthUserSummary, path: string, method = 'GET', body?: unknown) => {
+      const response = await handleNotionApi(
+        new Request(`https://docs.test/api/organizations/org_notion/notion${path}`, {
+          method,
+          ...(body === undefined
+            ? {}
+            : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+        }),
+        env,
+        actor,
+        deps,
+      );
+      return { status: response?.status, body: (await response?.json()) as Record<string, any> };
+    };
+    return { database, owner, member, env, call, markdowns };
+  }
+
+  it('stores the token encrypted and only lets admins manage it', async () => {
+    const { database, owner, member, call } = await setup();
+    const notion = mockNotion({
+      'GET /users/me': { name: 'Rdocs', bot: { workspace_name: 'Acme' } },
+    });
+    try {
+      expect((await call(member, '', 'PUT', { token })).status).toBe(403);
+      expect((await call(owner, '', 'PUT', { token: 'not-a-token' })).status).toBe(400);
+      const connected = await call(owner, '', 'PUT', { token });
+      expect(connected.body).toMatchObject({ connected: true, workspaceName: 'Acme' });
+      expect(JSON.stringify(connected.body)).not.toContain(token);
+      expect(notion.calls[0]?.auth).toBe(`Bearer ${token}`);
+      const stored = database.prepare('SELECT token_ciphertext FROM notion_connections').get() as {
+        token_ciphertext: string;
+      };
+      expect(stored.token_ciphertext).not.toContain('ntn_');
+      expect((await call(member, '')).body).toMatchObject({ connected: true, canManage: false });
+    } finally {
+      notion.restore();
+    }
+    database.close();
+  });
+
+  it('imports a Notion database with mapped fields and rows', async () => {
+    const { database, owner, call } = await setup();
+    const notionDb = '11112222333344445555666677778888';
+    const notion = mockNotion({
+      'GET /users/me': { name: 'Rdocs', bot: {} },
+      [`GET /databases/11112222-3333-4444-5555-666677778888`]: {
+        title: [{ plain_text: '任务' }],
+        properties: {
+          名称: { type: 'title', title: {} },
+          状态: { type: 'status', status: { options: [{ name: '未开始' }, { name: '完成' }] } },
+          工时: { type: 'number', number: {} },
+          截止: { type: 'date', date: {} },
+          按钮: { type: 'button', button: {} },
+        },
+      },
+      [`POST /databases/11112222-3333-4444-5555-666677778888/query`]: {
+        has_more: false,
+        next_cursor: null,
+        results: [
+          {
+            properties: {
+              名称: { type: 'title', title: [{ plain_text: '写文档' }] },
+              状态: { type: 'status', status: { name: '完成' } },
+              工时: { type: 'number', number: 3 },
+              截止: { type: 'date', date: { start: '2026-12-01' } },
+            },
+          },
+          {
+            properties: {
+              名称: { type: 'title', title: [{ plain_text: '发布' }] },
+              状态: { type: 'status', status: null },
+            },
+          },
+        ],
+      },
+    });
+    try {
+      await call(owner, '', 'PUT', { token });
+      const imported = await call(owner, '/import', 'POST', {
+        notionId: `https://www.notion.so/acme/Tasks-${notionDb}?v=${'f'.repeat(32)}`,
+        kind: 'database',
+        spaceId: 'spc_notion',
+      });
+      expect(imported.status).toBe(201);
+      expect(imported.body).toMatchObject({
+        kind: 'database',
+        imported: 2,
+        truncated: false,
+        skippedProperties: ['按钮'],
+      });
+      const snapshot = await handleDatabasesApi(
+        new Request(`https://docs.test/api/databases/${imported.body.databaseId}`),
+        testEnv(database),
+        owner,
+      );
+      const data = (await snapshot?.json()) as {
+        properties: Array<{
+          id: string;
+          name: string;
+          type: string;
+          config: Record<string, unknown>;
+        }>;
+        rows: Array<{ values: Record<string, unknown> }>;
+      };
+      const field = (name: string) => data.properties.find((property) => property.name === name)!;
+      expect(field('状态')).toMatchObject({
+        type: 'status',
+        config: { options: ['未开始', '完成'] },
+      });
+      const first = data.rows.find((row) => row.values[field('名称').id] === '写文档')!;
+      expect(first.values[field('状态').id]).toBe('完成');
+      expect(first.values[field('工时').id]).toBe(3);
+      expect(first.values[field('截止').id]).toMatchObject({
+        start: '2026-12-01T00:00:00.000Z',
+        includeTime: false,
+      });
+      // Importing never runs automations or writes past the space the member may use.
+      expect(
+        database.prepare('SELECT COUNT(*) AS total FROM database_automation_runs').get(),
+      ).toEqual({ total: 0 });
+    } finally {
+      notion.restore();
+    }
+    database.close();
+  });
+
+  it('imports a page as Markdown and writes automation rows to Notion', async () => {
+    const { database, owner, call, markdowns } = await setup();
+    const pageId = 'aaaabbbbccccddddeeeeffff00001111';
+    const notionDb = '99998888777766665555444433332222';
+    const notion = mockNotion({
+      'GET /users/me': { name: 'Rdocs', bot: {} },
+      [`GET /pages/aaaabbbb-cccc-dddd-eeee-ffff00001111`]: {
+        properties: { title: { type: 'title', title: [{ plain_text: '周报' }] } },
+      },
+      [`GET /blocks/aaaabbbb-cccc-dddd-eeee-ffff00001111/children`]: {
+        has_more: false,
+        next_cursor: null,
+        results: [{ type: 'heading_1', heading_1: { rich_text: [{ plain_text: '本周' }] } }],
+      },
+      [`GET /databases/99998888-7777-6666-5555-444433332222`]: {
+        title: [{ plain_text: '外部任务' }],
+        properties: {
+          Name: { type: 'title', title: {} },
+          Status: { type: 'status', status: { options: [{ name: 'Done' }] } },
+        },
+      },
+      'POST /pages': { id: 'created' },
+    });
+    try {
+      await call(owner, '', 'PUT', { token });
+      const page = await call(owner, '/import', 'POST', {
+        notionId: pageId,
+        kind: 'page',
+        spaceId: 'spc_notion',
+      });
+      expect(page.status).toBe(201);
+      expect(markdowns.at(-1)).toBe('# 周报\n\n## 本周\n');
+
+      const { validateNotionCreatePage, runNotionCreatePage } =
+        await import('../apps/worker/src/notion');
+      const config = {
+        notionDatabaseId: notionDb,
+        properties: [
+          { name: 'Name', type: 'title', value: { $token: 'copy', propertyId: 'p_title' } },
+          { name: 'Status', type: 'status', value: 'Done' },
+        ],
+      };
+      expect(await validateNotionCreatePage(testEnv(database), 'org_notion', config)).toBeNull();
+      expect(
+        await validateNotionCreatePage(testEnv(database), 'org_notion', {
+          ...config,
+          properties: [{ name: 'Missing', type: 'title', value: 'x' }],
+        }),
+      ).toContain('不存在');
+      await runNotionCreatePage(testEnv(database), {
+        organizationId: 'org_notion',
+        config,
+        values: {
+          now: Date.now(),
+          timezone: 'UTC',
+          triggerUserId: owner.id,
+          triggerRowId: 'r1',
+          triggerValues: { p_title: '发布 v2' },
+        },
+      });
+      const created = notion.calls.find(
+        (entry) => entry.method === 'POST' && entry.url.endsWith('/pages'),
+      );
+      expect(created?.body).toEqual({
+        parent: { database_id: '99998888-7777-6666-5555-444433332222' },
+        properties: {
+          Name: { title: [{ type: 'text', text: { content: '发布 v2' } }] },
+          Status: { status: { name: 'Done' } },
+        },
+      });
+    } finally {
+      notion.restore();
+    }
     database.close();
   });
 });

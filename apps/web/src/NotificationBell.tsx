@@ -16,6 +16,7 @@ import {
   Shield,
   Trash2,
   UserRoundPlus,
+  Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
@@ -73,6 +74,9 @@ function notificationText(notification: NotificationSummary): string {
     case 'invitation_accepted':
       return `${actor} 接受了组织邀请`;
     case 'reminder':
+      if (notification.metadata.source === 'automation') {
+        return `${String(notification.metadata.automationName ?? '自动化')}：${String(notification.metadata.message ?? notification.pageTitle ?? '')}`;
+      }
       return `提醒：${String(notification.metadata.message ?? notification.pageTitle ?? '查看页面')}`;
     default:
       return `${actor} 向你分享了页面`;
@@ -83,6 +87,9 @@ function NotificationIcon({ notification }: { notification: NotificationSummary 
   if (notification.type === 'permission_changed') return <Shield size={15} />;
   if (notification.type === 'invitation_accepted') return <UserRoundPlus size={15} />;
   if (notification.type === 'page_updated') return <BellRing size={15} />;
+  if (notification.type === 'reminder' && notification.metadata.source === 'automation') {
+    return <Zap size={15} />;
+  }
   if (notification.type === 'reminder') return <Clock3 size={15} />;
   return <MessageSquare size={15} />;
 }

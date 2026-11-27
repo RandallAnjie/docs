@@ -50,6 +50,16 @@ import {
   User,
   Zap,
   X,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  Pin,
+  WrapText,
+  ListFilter,
+  Upload,
+  MoreHorizontal,
+  GripVertical,
+  PanelRightOpen,
+  ChevronsRight,
 } from 'lucide-react';
 import {
   Fragment,
@@ -67,10 +77,6 @@ import { createPortal } from 'react-dom';
 import type {
   AttachmentSummary,
   DatabaseFormLinkSummary,
-  DatabaseAutomationAction,
-  DatabaseAutomationRunSummary,
-  DatabaseAutomationSummary,
-  DatabaseAutomationTrigger,
   DatabasePropertySummary,
   DatabasePropertyType,
   DatabaseRowSummary,
@@ -84,14 +90,12 @@ import type {
 
 import {
   createDatabaseProperty,
-  createDatabaseAutomation,
   createDatabaseFormLink,
   createDatabaseRow,
   createDatabaseRowFromTemplate,
   createDatabaseTemplate,
   createDatabaseView,
   deleteDatabaseProperty,
-  deleteDatabaseAutomation,
   deleteDatabaseRow,
   deleteDatabaseTemplate,
   deleteDatabaseView,
@@ -100,7 +104,6 @@ import {
   getArchivedDatabaseRows,
   getDatabase,
   listAttachments,
-  listDatabaseAutomations,
   listDatabaseFormLinks,
   listDatabasePropertyGrants,
   listGroups,
@@ -108,13 +111,11 @@ import {
   listOrganizationMembers,
   putDatabasePropertyGrant,
   updateDatabase,
-  updateDatabaseAutomation,
   updateDatabaseProperty,
   updateDatabaseRow,
   updateDatabaseTemplate,
   updateDatabaseView,
   uploadAttachment,
-  runDatabaseAutomation,
   revokeDatabaseFormLink,
   importDatabaseCsv,
 } from './api';
@@ -122,7 +123,8 @@ import {
   AGGREGATION_LABELS,
   applyDatabaseView,
   databaseAggregationValue,
-  FILTER_OPERATOR_LABELS,
+  filterOperatorLabel,
+  filterValueLabel,
   databaseCalendarDays,
   databaseDateRange,
   databaseViewFilters,
@@ -132,13 +134,20 @@ import {
   orderedVisibleDatabaseProperties,
   resizeDatabaseDate,
   optionSwatch,
+  cellCopyText,
   compactUrl,
   defaultColumnWidth,
+  parseCellText,
+  parseClipboardGrid,
   formatDatabaseDate,
   formatDatabaseNumber,
   type DatabaseAggregation,
   type DatabaseFilterOperator,
 } from './database-view';
+import { DatabaseAutomationDialog } from './AutomationBuilder';
+import { Floating } from './floating';
+import { matchesMediaQuery } from './sidebar-chrome';
+import { DatabaseFilterPanel, DatabaseSortPanel } from './DatabaseViewControls';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
 import { autofillDatabaseProperty } from './api';
 import { datePart, fromDateParts, parseDateCell } from './date-value';
@@ -234,21 +243,12 @@ const VIEW_META: Record<
   map: { label: '地图', icon: MapPinned },
 };
 
-const AUTOMATION_TRIGGER_LABELS: Record<DatabaseAutomationTrigger, string> = {
-  row_created: '新增记录时',
-  row_updated: '记录更新时',
-  property_changed: '指定属性变化时',
-  form_submitted: '表单提交时',
-  manual: '手动运行',
-};
-
-const AUTOMATION_ACTION_LABELS: Record<DatabaseAutomationAction, string> = {
-  set_property: '设置属性',
-  toggle_checkbox: '切换复选框',
-  increment_number: '增加数字',
-  archive_row: '归档记录',
-  webhook: '发送 Webhook',
-};
+function emptyCellValue(property: DatabasePropertySummary): JsonValue {
+  if (property.type === 'checkbox') return false;
+  if (property.type === 'title' || property.type === 'text') return '';
+  if (['multi_select', 'person', 'relation', 'files'].includes(property.type)) return [];
+  return null;
+}
 
 const EDITABLE_PROPERTY_TYPES = new Set<DatabasePropertyType>([
   'title',
@@ -909,7 +909,7 @@ function OptionChip({
       className={`database-option-chip${status ? ' is-status' : ''}`}
       style={{ background: swatch.background, color: swatch.color }}
     >
-      {status ? <i aria-hidden="true" /> : null}
+      {status ? <i aria-hidden="true" style={{ background: swatch.dot }} /> : null}
       {name}
     </span>
   );
@@ -1098,34 +1098,44 @@ function MultiSelectChips({
   value: string[];
 }) {
   const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   return (
     <div className="database-multi-chips">
-      <button type="button" disabled={disabled} onClick={() => setOpen((current) => !current)}>
+      <button
+        ref={setAnchor}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
         {value.length ? (
           value.map((item) => <OptionChip key={item} name={item} options={options} />)
         ) : (
           <span>添加</span>
         )}
       </button>
-      {open ? (
-        <div className="database-relation-picker">
-          {options.map((option) => {
-            const checked = value.includes(option);
-            return (
-              <label key={option}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() =>
-                    onChange(checked ? value.filter((item) => item !== option) : [...value, option])
-                  }
-                />
-                <OptionChip name={option} options={options} />
-              </label>
-            );
-          })}
-        </div>
-      ) : null}
+      <Floating
+        anchor={anchor}
+        open={open}
+        onClose={() => setOpen(false)}
+        className="database-relation-picker"
+        role="listbox"
+      >
+        {options.map((option) => {
+          const checked = value.includes(option);
+          return (
+            <label key={option}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() =>
+                  onChange(checked ? value.filter((item) => item !== option) : [...value, option])
+                }
+              />
+              <OptionChip name={option} options={options} />
+            </label>
+          );
+        })}
+      </Floating>
     </div>
   );
 }
@@ -1511,6 +1521,12 @@ function TableFieldHeader({
   onSort,
   onHide,
   onDelete,
+  onInsert,
+  onDuplicate,
+  frozen,
+  onFreeze,
+  wrapped,
+  onToggleWrap,
 }: {
   property: DatabasePropertySummary;
   selected: boolean;
@@ -1526,8 +1542,15 @@ function TableFieldHeader({
   onSort: (direction: 'ascending' | 'descending') => void;
   onHide: () => void;
   onDelete: () => void;
+  onInsert?: (side: 'left' | 'right') => void;
+  onDuplicate?: () => void;
+  frozen: boolean;
+  onFreeze: () => void;
+  wrapped: boolean;
+  onToggleWrap: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (renaming) inputRef.current?.select();
   }, [renaming]);
@@ -1570,6 +1593,7 @@ function TableFieldHeader({
       {canEdit ? (
         <div className="database-field-menu-wrap">
           <button
+            ref={setMenuAnchor}
             type="button"
             className="database-field-menu"
             aria-label={`${property.name}字段菜单`}
@@ -1581,39 +1605,66 @@ function TableFieldHeader({
           >
             <ChevronDown size={13} />
           </button>
-          {menuOpen ? (
-            <div className="database-field-menu-pop" role="menu">
-              <button type="button" role="menuitem" onClick={() => onSort('ascending')}>
-                <ArrowUp size={14} /> 升序
-              </button>
-              <button type="button" role="menuitem" onClick={() => onSort('descending')}>
-                <ArrowDown size={14} /> 降序
-              </button>
-              <hr />
-              <button type="button" role="menuitem" onClick={onConfigure}>
-                <Settings2 size={14} /> 字段配置
-              </button>
-              {property.type !== 'title' ? (
-                <button type="button" role="menuitem" onClick={onHide}>
-                  <EyeOff size={14} /> 隐藏字段
+          <Floating
+            anchor={menuAnchor}
+            open={menuOpen}
+            onClose={onToggleMenu}
+            align="end"
+            className="database-field-menu-pop"
+          >
+            <button type="button" role="menuitem" onClick={() => onSort('ascending')}>
+              <ArrowUp size={14} /> 升序
+            </button>
+            <button type="button" role="menuitem" onClick={() => onSort('descending')}>
+              <ArrowDown size={14} /> 降序
+            </button>
+            <hr />
+            <button type="button" role="menuitem" onClick={onConfigure}>
+              <Settings2 size={14} /> 字段配置
+            </button>
+            {onInsert ? (
+              <>
+                <button type="button" role="menuitem" onClick={() => onInsert('left')}>
+                  <ArrowLeftToLine size={14} /> 在左侧插入字段
                 </button>
-              ) : null}
-              {property.type !== 'title' ? (
-                <button type="button" role="menuitem" className="danger" onClick={onDelete}>
-                  <Trash2 size={14} /> 删除字段
+                <button type="button" role="menuitem" onClick={() => onInsert('right')}>
+                  <ArrowRightToLine size={14} /> 在右侧插入字段
                 </button>
-              ) : null}
-            </div>
-          ) : null}
+              </>
+            ) : null}
+            {onDuplicate && property.type !== 'title' ? (
+              <button type="button" role="menuitem" onClick={onDuplicate}>
+                <Copy size={14} /> 复制字段
+              </button>
+            ) : null}
+            <hr />
+            <button type="button" role="menuitem" aria-pressed={frozen} onClick={onFreeze}>
+              <Pin size={14} /> {frozen ? '取消冻结' : '冻结到此列'}
+            </button>
+            <button type="button" role="menuitem" aria-pressed={wrapped} onClick={onToggleWrap}>
+              <WrapText size={14} /> {wrapped ? '取消自动换行' : '自动换行'}
+            </button>
+            <hr />
+            {property.type !== 'title' ? (
+              <button type="button" role="menuitem" onClick={onHide}>
+                <EyeOff size={14} /> 隐藏字段
+              </button>
+            ) : null}
+            {property.type !== 'title' ? (
+              <button type="button" role="menuitem" className="danger" onClick={onDelete}>
+                <Trash2 size={14} /> 删除字段
+              </button>
+            ) : null}
+          </Floating>
         </div>
       ) : null}
     </div>
   );
 }
 
-const TABLE_LEADING_WIDTH = 72;
+const TABLE_LEADING_WIDTH = 56;
+const TABLE_LEADING_TOUCH_WIDTH = 8;
 const TABLE_ADD_COLUMN_WIDTH = 40;
-const TABLE_ACTIONS_WIDTH = 92;
 
 function TableDatabaseView({
   organizationId,
@@ -1636,6 +1687,8 @@ function TableDatabaseView({
   onAddProperty,
   renameProperty,
   deleteProperty,
+  createRow,
+  createProperty,
 }: DatabaseViewProps & { openProperty: (property: DatabasePropertySummary) => void }) {
   const groupPropertyId =
     typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : null;
@@ -1660,7 +1713,27 @@ function TableDatabaseView({
   const grouped = Boolean(groupPropertyId);
   const selected = selectedRowIds ?? new Set<string>();
   const allSelected = Boolean(rows.length && rows.every((row) => selected.has(row.id)));
-  const extraColumns = 2 + (canEdit ? 1 : 0) + (onAddProperty ? 1 : 0);
+  const extraColumns = 1 + (onAddProperty && canEdit ? 1 : 0);
+  const [rowMenu, setRowMenu] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+  const rowMenuId = rowMenu?.id ?? null;
+  const [wrapWidth, setWrapWidth] = useState(1200);
+  // Touch screens have no hover to reveal the row handle, so the gutter only holds the checkbox.
+  const [leadingWidth] = useState(() =>
+    matchesMediaQuery('(hover: none)') ? TABLE_LEADING_TOUCH_WIDTH : TABLE_LEADING_WIDTH,
+  );
+  const setRowMenuId = (id: string | null) => {
+    if (!id) setRowMenu(null);
+  };
+  useEffect(() => {
+    if (!rowMenu) return;
+    const close = () => setRowMenu(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [rowMenu]);
   const columnWidths = properties.map((property) =>
     typeof propertyWidths[property.id] === 'number'
       ? Number(propertyWidths[property.id])
@@ -1668,10 +1741,39 @@ function TableDatabaseView({
   );
   // Fixed layout spreads spare width over every column, so size the table to its columns.
   const tableWidth =
-    TABLE_LEADING_WIDTH +
+    leadingWidth +
     columnWidths.reduce((total, width) => total + width, 0) +
     (onAddProperty && canEdit ? TABLE_ADD_COLUMN_WIDTH : 0) +
-    (canEdit ? TABLE_ACTIONS_WIDTH : 0);
+    0;
+  const frozenPropertyId =
+    typeof view.config.frozenPropertyId === 'string' ? view.config.frozenPropertyId : null;
+  const configuredFrozenIndex = frozenPropertyId
+    ? properties.findIndex((property) => property.id === frozenPropertyId)
+    : -1;
+  const frozenWidth =
+    leadingWidth +
+    columnWidths.slice(0, configuredFrozenIndex + 1).reduce((total, width) => total + width, 0);
+  // Frozen columns that would cover most of a narrow screen are not frozen there.
+  const frozenIndex =
+    configuredFrozenIndex >= 0 && frozenWidth <= wrapWidth * 0.6 ? configuredFrozenIndex : -1;
+  const stickyStyle = (index: number): React.CSSProperties | undefined =>
+    index <= frozenIndex
+      ? {
+          position: 'sticky',
+          left:
+            leadingWidth + columnWidths.slice(0, index).reduce((total, width) => total + width, 0),
+          zIndex: 3,
+        }
+      : undefined;
+  const frozenClass = (index: number) =>
+    index <= frozenIndex
+      ? ` database-col-frozen${index === frozenIndex ? ' database-col-frozen-edge' : ''}`
+      : '';
+  const wrappedIds = new Set(
+    Array.isArray(view.config.wrappedPropertyIds)
+      ? view.config.wrappedPropertyIds.filter((id): id is string => typeof id === 'string')
+      : [],
+  );
   const resizeColumn = (propertyId: string, width: number) => {
     void updateViewConfig({
       ...view.config,
@@ -1691,7 +1793,10 @@ function TableDatabaseView({
   useEffect(() => {
     const node = wrap.current;
     if (!node) return;
-    const update = () => setViewportHeight(node.clientHeight || 480);
+    const update = () => {
+      setViewportHeight(node.clientHeight || 480);
+      setWrapWidth(node.clientWidth || 1200);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(node);
@@ -1704,6 +1809,11 @@ function TableDatabaseView({
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
+      if (!(
+        target instanceof Element && target.closest('.database-row-menu, .database-row-handle')
+      )) {
+        setRowMenuId(null);
+      }
       if (wrap.current?.contains(target)) return;
       if (
         target instanceof Element &&
@@ -1748,6 +1858,65 @@ function TableDatabaseView({
     });
     setFieldMenuId(null);
   };
+  const insertProperty = async (
+    anchor: DatabasePropertySummary,
+    side: 'left' | 'right',
+    input: { name: string; type: DatabasePropertyType; config: Record<string, JsonValue> },
+  ) => {
+    const created = await createProperty?.(input);
+    if (!created) return;
+    const order = properties.map((property) => property.id);
+    order.splice(order.indexOf(anchor.id) + (side === 'right' ? 1 : 0), 0, created.id);
+    const visible = Array.isArray(view.config.visiblePropertyIds)
+      ? [
+          ...view.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string'),
+          created.id,
+        ]
+      : null;
+    await updateViewConfig({
+      ...view.config,
+      propertyOrder: order,
+      ...(visible ? { visiblePropertyIds: visible } : {}),
+    });
+    if (input.type === 'text') {
+      setSelectedColumnId(created.id);
+      setRenamingId(created.id);
+    }
+  };
+  /** Text to copy: the focused cell, or the checked rows as tab-separated lines. */
+  const copyText = (): string | null => {
+    if (focus) {
+      const row = flatRows.find((candidate) => candidate.id === focus.rowId);
+      return row ? cellCopyText(row.values[focus.propertyId]) : null;
+    }
+    const chosen = flatRows.filter((row) => selected.has(row.id));
+    if (!chosen.length) return null;
+    return chosen
+      .map((row) => properties.map((property) => cellCopyText(row.values[property.id])).join('\t'))
+      .join('\n');
+  };
+  const pasteGrid = async (text: string) => {
+    if (!focus || !canEdit) return;
+    const grid = parseClipboardGrid(text);
+    const startRow = flatRows.findIndex((row) => row.id === focus.rowId);
+    const startColumn = properties.findIndex((property) => property.id === focus.propertyId);
+    if (startRow < 0 || startColumn < 0) return;
+    const created: Array<Record<string, JsonValue>> = [];
+    for (const [rowOffset, cells] of grid.entries()) {
+      const row = flatRows[startRow + rowOffset];
+      const values: Record<string, JsonValue> = {};
+      for (const [columnOffset, cellText] of cells.entries()) {
+        const property = properties[startColumn + columnOffset];
+        if (!property || !EDITABLE_PROPERTY_TYPES.has(property.type)) continue;
+        const value = parseCellText(property, cellText);
+        if (value === undefined) continue;
+        if (row) await saveCell(row, property, value);
+        else values[property.id] = value;
+      }
+      if (!row && Object.keys(values).length) created.push(values);
+    }
+    for (const values of created.slice(0, 100)) await createRow(values);
+  };
   const onGridKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (renamingId) return;
     if (editing) {
@@ -1783,7 +1952,24 @@ function TableDatabaseView({
       }
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
+      const text = copyText();
+      if (text !== null) {
+        event.preventDefault();
+        void navigator.clipboard?.writeText(text).catch(() => undefined);
+      }
+      return;
+    }
     if (!focus) return;
+    if ((event.key === 'Delete' || event.key === 'Backspace') && canEdit) {
+      const row = flatRows.find((candidate) => candidate.id === focus.rowId);
+      const property = properties.find((candidate) => candidate.id === focus.propertyId);
+      if (row && property && EDITABLE_PROPERTY_TYPES.has(property.type)) {
+        event.preventDefault();
+        void saveCell(row, property, emptyCellValue(property));
+      }
+      return;
+    }
     if (event.key === 'Enter' || event.key === 'F2') {
       event.preventDefault();
       setEditing(true);
@@ -1810,11 +1996,18 @@ function TableDatabaseView({
   };
   return (
     <div
-      className="database-table-wrap"
+      className={`database-table-wrap${virtualize ? ' is-virtual' : ''}`}
       ref={wrap}
       tabIndex={0}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       onKeyDown={onGridKeyDown}
+      onPaste={(event) => {
+        if (!focus || editing || !canEdit) return;
+        const text = event.clipboardData.getData('text/plain');
+        if (!text) return;
+        event.preventDefault();
+        void pasteGrid(text);
+      }}
     >
       <table className="database-table database-table-grid" style={{ width: tableWidth }}>
         <thead>
@@ -1828,14 +2021,17 @@ function TableDatabaseView({
                 onChange={() => onToggleAllRows?.()}
               />
             </th>
-            <th className="database-col-index">#</th>
             {properties.map((property, index) => {
               const width = columnWidths[index] ?? defaultColumnWidth(property.type);
               return (
                 <th
                   key={property.id}
-                  className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}`}
-                  style={{ width }}
+                  className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${selectedColumnId === property.id ? 'database-col-picked' : ''}${frozenClass(index)}`}
+                  style={{
+                    width,
+                    ...stickyStyle(index),
+                    ...(fieldMenuId === property.id ? { zIndex: 30 } : {}),
+                  }}
                 >
                   <TableFieldHeader
                     property={property}
@@ -1870,6 +2066,46 @@ function TableDatabaseView({
                     onDelete={() => {
                       setFieldMenuId(null);
                       void deleteProperty?.(property);
+                    }}
+                    onInsert={
+                      createProperty
+                        ? (side) => {
+                            setFieldMenuId(null);
+                            void insertProperty(property, side, {
+                              name: '新字段',
+                              type: 'text',
+                              config: {},
+                            });
+                          }
+                        : undefined
+                    }
+                    onDuplicate={
+                      createProperty
+                        ? () => {
+                            setFieldMenuId(null);
+                            void insertProperty(property, 'right', {
+                              name: `${property.name} 副本`,
+                              type: property.type,
+                              config: property.config,
+                            });
+                          }
+                        : undefined
+                    }
+                    frozen={index === configuredFrozenIndex}
+                    onFreeze={() => {
+                      setFieldMenuId(null);
+                      void updateViewConfig({
+                        ...view.config,
+                        frozenPropertyId: index === configuredFrozenIndex ? null : property.id,
+                      });
+                    }}
+                    wrapped={wrappedIds.has(property.id)}
+                    onToggleWrap={() => {
+                      setFieldMenuId(null);
+                      const next = new Set(wrappedIds);
+                      if (next.has(property.id)) next.delete(property.id);
+                      else next.add(property.id);
+                      void updateViewConfig({ ...view.config, wrappedPropertyIds: [...next] });
                     }}
                   />
                   <i
@@ -1911,7 +2147,6 @@ function TableDatabaseView({
                 </button>
               </th>
             ) : null}
-            {canEdit ? <th className="database-row-actions-heading" /> : null}
           </tr>
         </thead>
         {virtualize ? (
@@ -1954,17 +2189,80 @@ function TableDatabaseView({
                 {group.rows.map((row, rowIndex) => (
                   <tr key={row.id} className={selected.has(row.id) ? 'selected' : undefined}>
                     <td className="database-col-check">
-                      <input
-                        type="checkbox"
-                        aria-label={`选择${rowTitle(row, properties)}`}
-                        checked={selected.has(row.id)}
-                        onChange={() => onToggleRow?.(row.id)}
-                      />
+                      <span className="database-row-gutter">
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            className="database-row-handle"
+                            aria-label={`${rowTitle(row, properties)}的操作`}
+                            aria-expanded={rowMenuId === row.id}
+                            title="打开菜单"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const anchor = event.currentTarget;
+                              setRowMenu((current) =>
+                                current?.id === row.id ? null : { id: row.id, anchor },
+                              );
+                            }}
+                          >
+                            <GripVertical size={14} />
+                          </button>
+                        ) : null}
+                        <input
+                          type="checkbox"
+                          aria-label={`选择${rowTitle(row, properties)}`}
+                          checked={selected.has(row.id)}
+                          onChange={() => onToggleRow?.(row.id)}
+                        />
+                      </span>
+                      <Floating
+                        anchor={rowMenuId === row.id ? (rowMenu?.anchor ?? null) : null}
+                        open={rowMenuId === row.id}
+                        onClose={() => setRowMenu(null)}
+                        className="database-menu database-row-menu"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setRowMenuId(null);
+                            onExpandRow?.(row);
+                          }}
+                        >
+                          <PanelRightOpen size={15} /> 在侧边预览打开
+                        </button>
+                        <a
+                          role="menuitem"
+                          href={`/p/${encodeURIComponent(row.pageId)}`}
+                          onClick={() => setRowMenuId(null)}
+                        >
+                          <Maximize2 size={15} /> 以完整页面打开
+                        </a>
+                        <hr />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setRowMenuId(null);
+                            duplicateRow(row);
+                          }}
+                        >
+                          <Copy size={15} /> 创建副本
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="danger"
+                          onClick={() => {
+                            setRowMenuId(null);
+                            removeRow(row);
+                          }}
+                        >
+                          <Archive size={15} /> 归档
+                        </button>
+                      </Floating>
                     </td>
-                    <td className="database-col-index">
-                      {(virtualize ? windowed.start : 0) + rowIndex + 1}
-                    </td>
-                    {properties.map((property) => {
+                    {properties.map((property, index) => {
                       const selectedCell =
                         focus?.rowId === row.id && focus.propertyId === property.id;
                       const columnPicked = selectedColumnId === property.id;
@@ -1975,8 +2273,17 @@ function TableDatabaseView({
                       return (
                         <td
                           key={property.id}
-                          className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}`}
+                          className={`database-col-type-${property.type} ${property.type === 'title' ? 'database-col-title' : ''} ${columnPicked ? 'database-col-picked' : ''} ${selectedCell ? 'database-cell-selected' : ''}${frozenClass(index)}${wrappedIds.has(property.id) ? ' database-cell-wrap' : ''}`}
+                          style={stickyStyle(index)}
                           onClick={() => {
+                            if (
+                              property.type === 'title' &&
+                              leadingWidth === TABLE_LEADING_TOUCH_WIDTH &&
+                              onExpandRow
+                            ) {
+                              onExpandRow(row);
+                              return;
+                            }
                             setFocus({ rowId: row.id, propertyId: property.id });
                             setSelectedColumnId(property.id);
                             setEditing(false);
@@ -2014,7 +2321,10 @@ function TableDatabaseView({
                               className={`database-cell-display ${property.type === 'title' ? 'is-title' : ''}`}
                             >
                               {property.type === 'title' ? (
-                                <span>{valueText(row.values[property.id]) || '无标题'}</span>
+                                <span className="database-title-text">
+                                  <FileText size={15} className="database-title-icon" />
+                                  <span>{valueText(row.values[property.id]) || '无标题'}</span>
+                                </span>
                               ) : (
                                 <DatabaseValueDisplay
                                   property={property}
@@ -2022,16 +2332,19 @@ function TableDatabaseView({
                                   organizationId={organizationId}
                                 />
                               )}
-                              {property.type === 'title' && row.pageId ? (
-                                <a
+                              {property.type === 'title' && onExpandRow ? (
+                                <button
+                                  type="button"
                                   className="database-title-open-link"
-                                  href={`/p/${encodeURIComponent(row.pageId)}`}
                                   aria-label={`打开${rowTitle(row, properties)}`}
-                                  title="打开为页面"
-                                  onClick={(event) => event.stopPropagation()}
+                                  title="在侧边预览打开"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    onExpandRow(row);
+                                  }}
                                 >
-                                  <ExternalLink size={13} />
-                                </a>
+                                  <PanelRightOpen size={13} /> 打开
+                                </button>
                               ) : null}
                             </span>
                           )}
@@ -2039,39 +2352,10 @@ function TableDatabaseView({
                       );
                     })}
                     {onAddProperty && canEdit ? <td className="database-col-add" /> : null}
-                    {canEdit ? (
-                      <td className="database-row-actions">
-                        <button
-                          type="button"
-                          title="展开记录"
-                          aria-label={`展开${rowTitle(row, properties)}`}
-                          onClick={() => onExpandRow?.(row)}
-                        >
-                          <Maximize2 size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          title="复制记录"
-                          aria-label={`复制${rowTitle(row, properties)}`}
-                          onClick={() => duplicateRow(row)}
-                        >
-                          <Copy size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          title="归档记录"
-                          aria-label={`归档${rowTitle(row, properties)}`}
-                          onClick={() => removeRow(row)}
-                        >
-                          <Archive size={14} />
-                        </button>
-                      </td>
-                    ) : null}
                   </tr>
                 ))}
                 <tr className="database-table-aggregations">
                   <td className="database-col-check" />
-                  <td className="database-col-index" />
                   {properties.map((property) => {
                     const aggregation =
                       typeof aggregations[property.id] === 'string'
@@ -2111,7 +2395,6 @@ function TableDatabaseView({
                     );
                   })}
                   {onAddProperty && canEdit ? <td /> : null}
-                  {canEdit ? <td /> : null}
                 </tr>
               </tbody>
             ) : null}
@@ -2170,225 +2453,11 @@ interface DatabaseViewProps {
   onAddProperty?: () => void;
   renameProperty?: (property: DatabasePropertySummary, name: string) => Promise<void>;
   deleteProperty?: (property: DatabasePropertySummary) => Promise<void>;
-}
-
-function DatabaseViewBar({
-  view,
-  properties,
-  canEdit,
-  onUpdate,
-}: {
-  view: DatabaseViewSummary;
-  properties: DatabasePropertySummary[];
-  canEdit: boolean;
-  onUpdate: (config: Record<string, JsonValue>) => Promise<void>;
-}) {
-  const [panel, setPanel] = useState<'fields' | 'filter' | 'group' | 'sort' | null>(null);
-  const [filterPropertyId, setFilterPropertyId] = useState(properties[0]?.id ?? '');
-  const [filterOperator, setFilterOperator] = useState<DatabaseFilterOperator>('equals');
-  const [filterValue, setFilterValue] = useState('');
-  const filters = databaseViewFilters(view.config);
-  const sorts = databaseViewSorts(view.config);
-  const groupPropertyId =
-    typeof view.config.groupPropertyId === 'string' ? view.config.groupPropertyId : '';
-  const visibleIds = new Set(
-    Array.isArray(view.config.visiblePropertyIds)
-      ? view.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string')
-      : properties.map((property) => property.id),
-  );
-  const togglePanel = (next: typeof panel) =>
-    setPanel((current) => (current === next ? null : next));
-  return (
-    <div className="database-view-bar">
-      <button
-        className={filters.length || panel === 'filter' ? 'active' : undefined}
-        type="button"
-        onClick={() => togglePanel('filter')}
-      >
-        <Filter size={14} /> 筛选{filters.length ? ` ${filters.length}` : ''}
-      </button>
-      <button
-        className={sorts.length || panel === 'sort' ? 'active' : undefined}
-        type="button"
-        onClick={() => togglePanel('sort')}
-      >
-        <ArrowUpDown size={14} /> 排序{sorts.length ? ` ${sorts.length}` : ''}
-      </button>
-      <button
-        className={groupPropertyId || panel === 'group' ? 'active' : undefined}
-        type="button"
-        onClick={() => togglePanel('group')}
-      >
-        <Layers size={14} /> 分组
-      </button>
-      <button
-        className={panel === 'fields' ? 'active' : undefined}
-        type="button"
-        onClick={() => togglePanel('fields')}
-      >
-        <Eye size={14} /> 字段
-      </button>
-      <div className="database-view-chips">
-        {filters.map((filter, index) => (
-          <span key={`${filter.propertyId}:${index}`}>
-            {properties.find((property) => property.id === filter.propertyId)?.name ?? '字段'}{' '}
-            {FILTER_OPERATOR_LABELS[filter.operator]}
-            {filter.value !== null && filter.value !== '' ? ` ${valueText(filter.value)}` : ''}
-            {canEdit ? (
-              <button
-                type="button"
-                aria-label="移除筛选"
-                onClick={() =>
-                  void onUpdate({
-                    ...view.config,
-                    filters: filters
-                      .filter((_, candidate) => candidate !== index)
-                      .map(({ propertyId, operator, value }) => ({ propertyId, operator, value })),
-                  })
-                }
-              >
-                ×
-              </button>
-            ) : null}
-          </span>
-        ))}
-      </div>
-      {panel === 'filter' ? (
-        <div className="database-view-popover">
-          <select
-            value={filterPropertyId}
-            onChange={(event) => setFilterPropertyId(event.target.value)}
-          >
-            {properties.map((property) => (
-              <option key={property.id} value={property.id}>
-                {property.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={filterOperator}
-            onChange={(event) => setFilterOperator(event.target.value as DatabaseFilterOperator)}
-          >
-            {Object.entries(FILTER_OPERATOR_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          {filterOperator !== 'is_empty' && filterOperator !== 'is_not_empty' ? (
-            <input
-              value={filterValue}
-              onChange={(event) => setFilterValue(event.target.value)}
-              placeholder="值"
-            />
-          ) : null}
-          <button
-            type="button"
-            disabled={!canEdit || !filterPropertyId}
-            onClick={() => {
-              void onUpdate({
-                ...view.config,
-                filters: [
-                  ...filters.map(({ propertyId, operator, value }) => ({
-                    propertyId,
-                    operator,
-                    value,
-                  })),
-                  {
-                    propertyId: filterPropertyId,
-                    operator: filterOperator,
-                    value:
-                      filterOperator === 'is_empty' || filterOperator === 'is_not_empty'
-                        ? null
-                        : filterValue,
-                  },
-                ],
-              });
-              setFilterValue('');
-            }}
-          >
-            添加
-          </button>
-        </div>
-      ) : null}
-      {panel === 'sort' ? (
-        <div className="database-view-popover">
-          {properties.map((property) => {
-            const current = sorts.find((sort) => sort.propertyId === property.id);
-            return (
-              <label key={property.id}>
-                {property.name}
-                <select
-                  disabled={!canEdit}
-                  value={current?.direction ?? ''}
-                  onChange={(event) => {
-                    const direction = event.target.value;
-                    const next = sorts.filter((sort) => sort.propertyId !== property.id);
-                    if (direction === 'ascending' || direction === 'descending') {
-                      next.push({ propertyId: property.id, direction });
-                    }
-                    void onUpdate({
-                      ...view.config,
-                      sorts: next.map(({ propertyId, direction: value }) => ({
-                        propertyId,
-                        direction: value,
-                      })),
-                    });
-                  }}
-                >
-                  <option value="">不排序</option>
-                  <option value="ascending">升序</option>
-                  <option value="descending">降序</option>
-                </select>
-              </label>
-            );
-          })}
-        </div>
-      ) : null}
-      {panel === 'group' ? (
-        <div className="database-view-popover">
-          <select
-            disabled={!canEdit}
-            value={groupPropertyId}
-            onChange={(event) =>
-              void onUpdate({ ...view.config, groupPropertyId: event.target.value || null })
-            }
-          >
-            <option value="">不分组</option>
-            {properties
-              .filter((property) =>
-                ['status', 'select', 'person', 'checkbox', 'multi_select'].includes(property.type),
-              )
-              .map((property) => (
-                <option key={property.id} value={property.id}>
-                  {property.name}
-                </option>
-              ))}
-          </select>
-        </div>
-      ) : null}
-      {panel === 'fields' ? (
-        <div className="database-view-popover">
-          {properties.map((property) => (
-            <label key={property.id} className="database-dialog-checkbox">
-              <input
-                type="checkbox"
-                checked={property.type === 'title' || visibleIds.has(property.id)}
-                disabled={!canEdit || property.type === 'title'}
-                onChange={(event) => {
-                  const next = new Set(visibleIds);
-                  if (event.target.checked) next.add(property.id);
-                  else next.delete(property.id);
-                  void onUpdate({ ...view.config, visiblePropertyIds: [...next] });
-                }}
-              />
-              {property.name}
-            </label>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
+  createProperty?: (input: {
+    name: string;
+    type: DatabasePropertyType;
+    config: Record<string, JsonValue>;
+  }) => Promise<DatabasePropertySummary | null>;
 }
 
 function RecordDrawer({
@@ -2428,35 +2497,56 @@ function RecordDrawer({
         onClick={onClose}
       />
       <div className="database-record-drawer" role="dialog" aria-modal="true" aria-label="记录详情">
-        <header>
-          <strong>{rowTitle(row, properties)}</strong>
-          <a href={`/p/${encodeURIComponent(row.pageId)}`}>
-            <ExternalLink size={13} /> 打开为页面
-          </a>
+        <header className="database-peek-bar">
           <button type="button" onClick={onClose} aria-label="关闭记录" title="关闭">
-            <X size={16} />
+            <ChevronsRight size={18} />
           </button>
+          <a href={`/p/${encodeURIComponent(row.pageId)}`} title="以完整页面打开">
+            <Maximize2 size={15} /> 以完整页面打开
+          </a>
         </header>
-        <div>
-          {properties.map((property) => (
-            <div key={property.id} className="database-record-field">
-              <span title={PROPERTY_LABELS[property.type]}>
-                {propertyTypeIcon(property.type, 13)}
-                {property.name}
-              </span>
+        <div className="database-peek-body">
+          {titleProperty(properties) ? (
+            <div className="database-peek-title">
               <DatabaseCell
                 actorId={actorId}
                 disabled={!canEdit}
-                onSave={(value) => onSave(row, property, value)}
-                openPage={property.type === 'title' ? row.pageId : undefined}
+                onSave={(value) => onSave(row, titleProperty(properties)!, value)}
                 organizationId={organizationId}
-                property={property}
-                reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
+                property={titleProperty(properties)!}
                 rowPageId={row.pageId}
-                value={row.values[property.id]}
+                value={row.values[titleProperty(properties)!.id]}
+                forceEdit
               />
             </div>
-          ))}
+          ) : null}
+          <div className="database-peek-properties">
+            {properties
+              .filter((property) => property.type !== 'title')
+              .map((property) => (
+                <div key={property.id} className="database-record-field">
+                  <span title={PROPERTY_LABELS[property.type]}>
+                    {propertyTypeIcon(property.type, 15)}
+                    <span>{property.name}</span>
+                  </span>
+                  <DatabaseCell
+                    actorId={actorId}
+                    disabled={!canEdit}
+                    onSave={(value) => onSave(row, property, value)}
+                    organizationId={organizationId}
+                    property={property}
+                    reminderSourceId={`${row.databaseId}:${row.id}:${property.id}`}
+                    rowPageId={row.pageId}
+                    value={row.values[property.id]}
+                  />
+                </div>
+              ))}
+          </div>
+          <p className="database-peek-hint">
+            正文、评论和历史版本请
+            <a href={`/p/${encodeURIComponent(row.pageId)}`}>以完整页面打开</a>
+            后编辑。
+          </p>
         </div>
       </div>
     </>,
@@ -2546,6 +2636,14 @@ function BoardDatabaseView(props: DatabaseViewProps) {
         {[...groups].map(([name, group]) => (
           <section
             key={name}
+            style={
+              {
+                '--group-tint':
+                  name === '未分组'
+                    ? 'rgb(247 247 245)'
+                    : optionSwatch(name, optionNames(groupProperty)).background,
+              } as React.CSSProperties
+            }
             onDragOver={(event) => {
               if (!props.canEdit) return;
               event.preventDefault();
@@ -5046,416 +5144,6 @@ function ViewDialog({
   );
 }
 
-function DatabaseAutomationDialog({
-  snapshot,
-  onChanged,
-  onClose,
-}: {
-  snapshot: DatabaseSnapshot;
-  onChanged: () => Promise<void>;
-  onClose: () => void;
-}) {
-  const [automations, setAutomations] = useState<DatabaseAutomationSummary[]>([]);
-  const [runs, setRuns] = useState<DatabaseAutomationRunSummary[]>([]);
-  const [name, setName] = useState('新自动化');
-  const [triggerType, setTriggerType] = useState<DatabaseAutomationTrigger>('property_changed');
-  const [triggerPropertyId, setTriggerPropertyId] = useState(snapshot.properties[0]?.id ?? '');
-  const [actionType, setActionType] = useState<DatabaseAutomationAction>('set_property');
-  const [targetPropertyId, setTargetPropertyId] = useState(snapshot.properties[0]?.id ?? '');
-  const [actionValue, setActionValue] = useState('');
-  const [increment, setIncrement] = useState('1');
-  const [webhookUrl, setWebhookUrl] = useState('https://');
-  const [webhookSecret, setWebhookSecret] = useState('');
-  const [conditionPropertyId, setConditionPropertyId] = useState('');
-  const [conditionOp, setConditionOp] = useState('eq');
-  const [conditionValue, setConditionValue] = useState('');
-  const [cron, setCron] = useState('');
-  const [manualRowId, setManualRowId] = useState(snapshot.rows[0]?.id ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    const result = await listDatabaseAutomations(snapshot.database.id);
-    setAutomations(result.automations);
-    setRuns(result.runs);
-  }, [snapshot.database.id]);
-
-  useEffect(() => {
-    let active = true;
-    void load().catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : '无法读取自动化');
-    });
-    return () => {
-      active = false;
-    };
-  }, [load]);
-
-  const create = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    const triggerConfig: Record<string, JsonValue> =
-      triggerType === 'property_changed' ? { propertyId: triggerPropertyId } : {};
-    if (conditionPropertyId) {
-      triggerConfig.condition = {
-        propertyId: conditionPropertyId,
-        op: conditionOp,
-        value: conditionValue,
-      };
-    }
-    if (cron.trim()) triggerConfig.cron = cron.trim();
-    const targetProperty = snapshot.properties.find((property) => property.id === targetPropertyId);
-    let actionConfig: Record<string, JsonValue> = {};
-    if (actionType === 'webhook') {
-      actionConfig = {
-        url: webhookUrl,
-        ...(webhookSecret ? { secret: webhookSecret } : {}),
-      };
-    } else if (actionType !== 'archive_row') {
-      actionConfig.targetPropertyId = targetPropertyId;
-      if (actionType === 'increment_number') actionConfig.increment = Number(increment) || 1;
-      if (actionType === 'set_property') {
-        actionConfig.value =
-          targetProperty?.type === 'number'
-            ? Number(actionValue)
-            : targetProperty?.type === 'checkbox'
-              ? actionValue === 'true'
-              : targetProperty?.type === 'multi_select'
-                ? actionValue
-                    .split(',')
-                    .map((item) => item.trim())
-                    .filter(Boolean)
-                : actionValue;
-      }
-    }
-    try {
-      await createDatabaseAutomation(snapshot.database.id, {
-        name,
-        triggerType,
-        triggerConfig,
-        actionType,
-        actionConfig,
-      });
-      await load();
-      setName('新自动化');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法创建自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggle = async (automation: DatabaseAutomationSummary) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await updateDatabaseAutomation(snapshot.database.id, automation.id, {
-        enabled: !automation.enabled,
-      });
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法更新自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (automation: DatabaseAutomationSummary) => {
-    if (busy) return;
-    if (
-      !(await confirmDialog({
-        title: '删除自动化',
-        message: `删除自动化“${automation.name}”及其运行记录？`,
-        confirmLabel: '删除',
-        danger: true,
-      }))
-    )
-      return;
-    setBusy(true);
-    try {
-      await deleteDatabaseAutomation(snapshot.database.id, automation.id);
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法删除自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runManual = async (automation: DatabaseAutomationSummary) => {
-    if (busy || !manualRowId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await runDatabaseAutomation(snapshot.database.id, automation.id, manualRowId);
-      setRuns((current) => [result.run, ...current]);
-      await onChanged();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '无法运行自动化');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const targetCandidates = snapshot.properties.filter((property) => {
-    if (actionType === 'toggle_checkbox') return property.type === 'checkbox';
-    if (actionType === 'increment_number') return property.type === 'number';
-    return FORM_PROPERTY_TYPES.has(property.type);
-  });
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <section className="rdocs-dialog database-automation-dialog" role="dialog" aria-modal="true">
-        <header>
-          <div>
-            <h2>自动化</h2>
-            <p>触发器和动作在服务端运行，每次执行都有幂等记录与结果。</p>
-          </div>
-          <button type="button" aria-label="关闭" onClick={onClose}>
-            ×
-          </button>
-        </header>
-        <div className="database-automation-list">
-          {automations.map((automation) => (
-            <article key={automation.id}>
-              <span className={automation.enabled ? 'enabled' : ''}>
-                <Zap size={14} />
-              </span>
-              <div>
-                <strong>{automation.name}</strong>
-                <small>
-                  {AUTOMATION_TRIGGER_LABELS[automation.triggerType]} →{' '}
-                  {AUTOMATION_ACTION_LABELS[automation.actionType]}
-                </small>
-              </div>
-              {automation.triggerType === 'manual' ? (
-                <button
-                  type="button"
-                  disabled={busy || !manualRowId}
-                  onClick={() => void runManual(automation)}
-                >
-                  运行
-                </button>
-              ) : null}
-              <button type="button" disabled={busy} onClick={() => void toggle(automation)}>
-                {automation.enabled ? '暂停' : '启用'}
-              </button>
-              <button
-                className="danger"
-                type="button"
-                aria-label={`删除自动化${automation.name}`}
-                disabled={busy}
-                onClick={() => void remove(automation)}
-              >
-                <Trash2 size={14} />
-              </button>
-            </article>
-          ))}
-          {!automations.length ? <p>还没有自动化。</p> : null}
-        </div>
-        <form onSubmit={(event) => void create(event)}>
-          <h3>新建自动化</h3>
-          <div className="database-automation-grid">
-            <label>
-              名称
-              <input
-                value={name}
-                required
-                maxLength={100}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <label>
-              触发器
-              <select
-                value={triggerType}
-                onChange={(event) =>
-                  setTriggerType(event.target.value as DatabaseAutomationTrigger)
-                }
-              >
-                {Object.entries(AUTOMATION_TRIGGER_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              仅当属性
-              <select
-                value={conditionPropertyId}
-                onChange={(event) => setConditionPropertyId(event.target.value)}
-              >
-                <option value="">不限制</option>
-                {snapshot.properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {conditionPropertyId ? (
-              <>
-                <label>
-                  条件
-                  <select
-                    value={conditionOp}
-                    onChange={(event) => setConditionOp(event.target.value)}
-                  >
-                    <option value="eq">等于</option>
-                    <option value="neq">不等于</option>
-                    <option value="contains">包含</option>
-                    <option value="is_empty">为空</option>
-                    <option value="not_empty">不为空</option>
-                  </select>
-                </label>
-                <label>
-                  值
-                  <input
-                    value={conditionValue}
-                    onChange={(event) => setConditionValue(event.target.value)}
-                  />
-                </label>
-              </>
-            ) : null}
-            <label>
-              定时（UTC cron，可选）
-              <input
-                value={cron}
-                placeholder="0 9 * * *"
-                onChange={(event) => setCron(event.target.value)}
-              />
-            </label>
-            {triggerType === 'property_changed' ? (
-              <label>
-                触发属性
-                <select
-                  value={triggerPropertyId}
-                  onChange={(event) => setTriggerPropertyId(event.target.value)}
-                >
-                  {snapshot.properties.map((property) => (
-                    <option key={property.id} value={property.id}>
-                      {property.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            <label>
-              动作
-              <select
-                value={actionType}
-                onChange={(event) => setActionType(event.target.value as DatabaseAutomationAction)}
-              >
-                {Object.entries(AUTOMATION_ACTION_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {!['archive_row', 'webhook'].includes(actionType) ? (
-              <label>
-                目标属性
-                <select
-                  value={targetPropertyId}
-                  onChange={(event) => setTargetPropertyId(event.target.value)}
-                >
-                  <option value="">请选择</option>
-                  {targetCandidates.map((property) => (
-                    <option key={property.id} value={property.id}>
-                      {property.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {actionType === 'set_property' ? (
-              <label>
-                设置为
-                <input
-                  value={actionValue}
-                  onChange={(event) => setActionValue(event.target.value)}
-                />
-              </label>
-            ) : null}
-            {actionType === 'increment_number' ? (
-              <label>
-                增加
-                <input
-                  type="number"
-                  value={increment}
-                  onChange={(event) => setIncrement(event.target.value)}
-                />
-              </label>
-            ) : null}
-            {actionType === 'webhook' ? (
-              <>
-                <label>
-                  HTTPS Webhook
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(event) => setWebhookUrl(event.target.value)}
-                  />
-                </label>
-                <label>
-                  签名密钥（可选）
-                  <input
-                    type="password"
-                    value={webhookSecret}
-                    minLength={16}
-                    onChange={(event) => setWebhookSecret(event.target.value)}
-                  />
-                </label>
-              </>
-            ) : null}
-            {triggerType === 'manual' ? (
-              <label>
-                手动运行记录
-                <select
-                  value={manualRowId}
-                  onChange={(event) => setManualRowId(event.target.value)}
-                >
-                  <option value="">请选择</option>
-                  {snapshot.rows.map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {rowTitle(row, snapshot.properties)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-          </div>
-          {error ? <p className="dialog-error">{error}</p> : null}
-          <div className="dialog-actions">
-            <button type="button" disabled={busy} onClick={onClose}>
-              完成
-            </button>
-            <button className="primary-button" type="submit" disabled={busy}>
-              {busy ? '保存中…' : '创建自动化'}
-            </button>
-          </div>
-        </form>
-        <details className="database-automation-runs">
-          <summary>
-            <Activity size={14} /> 最近运行 · {runs.length}
-          </summary>
-          {runs.slice(0, 20).map((run) => (
-            <div key={run.id}>
-              <span className={run.status}>{run.status}</span>
-              <time>{new Date(run.startedAt).toLocaleString()}</time>
-              <small>
-                {run.errorMessage || (run.responseCode ? `HTTP ${run.responseCode}` : '完成')}
-              </small>
-            </div>
-          ))}
-        </details>
-      </section>
-    </div>
-  );
-}
-
 function DatabaseTemplateDialog({
   snapshot,
   onChanged,
@@ -5708,6 +5396,11 @@ export function DatabaseCanvas({
   );
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [viewPanel, setViewPanel] = useState<
+    'filter' | 'sort' | 'group' | 'fields' | 'more' | null
+  >(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [automationDialogOpen, setAutomationDialogOpen] = useState(false);
@@ -5778,7 +5471,9 @@ export function DatabaseCanvas({
   }, [refresh]);
 
   const filteredRows = useMemo(() => {
-    const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {});
+    const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {}, {
+      userId: actorId,
+    });
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return viewed;
     return viewed.filter((row) =>
@@ -5786,7 +5481,7 @@ export function DatabaseCanvas({
         valueText(row.values[property.id]).toLocaleLowerCase().includes(normalized),
       ),
     );
-  }, [activeView?.config, query, snapshot.properties, snapshot.rows]);
+  }, [activeView?.config, actorId, query, snapshot.properties, snapshot.rows]);
 
   useEffect(() => {
     setSelectedRowIds((current) => {
@@ -6048,6 +5743,24 @@ export function DatabaseCanvas({
     }
   };
 
+  useEffect(() => {
+    if (!viewPanel) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.database-toolbar, .database-conditions'))
+        return;
+      setViewPanel(null);
+    };
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setViewPanel(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [viewPanel]);
   if (!activeView)
     return <ViewRequirement icon={<Table2 size={24} />} text="数据库没有可用视图。" />;
   const viewProps: DatabaseViewProps = {
@@ -6083,6 +5796,18 @@ export function DatabaseCanvas({
     },
     onExpandRow: (row) => setExpandedRowId(row.id),
     onAddProperty: editable ? () => setPropertyDialog('new') : undefined,
+    createProperty: editable
+      ? async (input) => {
+          try {
+            const result = await createDatabaseProperty(snapshot.database.id, input);
+            await refresh();
+            return result.property;
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : '无法新建字段');
+            return null;
+          }
+        }
+      : undefined,
     renameProperty: editable
       ? async (property, name) => {
           try {
@@ -6121,6 +5846,19 @@ export function DatabaseCanvas({
   );
   const expandedRow = snapshot.rows.find((row) => row.id === expandedRowId) ?? null;
 
+  const viewFilters = activeView ? databaseViewFilters(activeView.config) : [];
+  const viewSorts = activeView ? databaseViewSorts(activeView.config) : [];
+  const viewGroupProperty = snapshot.properties.find(
+    (property) => property.id === activeView?.config.groupPropertyId,
+  );
+  const viewVisibleIds = new Set(
+    activeView && Array.isArray(activeView.config.visiblePropertyIds)
+      ? activeView.config.visiblePropertyIds.filter((id): id is string => typeof id === 'string')
+      : snapshot.properties.map((property) => property.id),
+  );
+  const toggleViewPanel = (next: Exclude<typeof viewPanel, null>) =>
+    setViewPanel((current) => (current === next ? null : next));
+
   return (
     <section className="database-canvas">
       <div className="database-tabs-row">
@@ -6153,51 +5891,103 @@ export function DatabaseCanvas({
           ) : null}
         </div>
         <div className="database-toolbar">
-          <label>
-            <Search size={14} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索"
-              aria-label="搜索数据库"
-            />
-          </label>
           {snapshot.database.isLocked ? (
             <span className="database-locked">
               <Lock size={13} /> 已锁定
             </span>
           ) : null}
+          <button
+            type="button"
+            className={`database-tool${viewFilters.length || viewPanel === 'filter' ? ' active' : ''}`}
+            aria-label="筛选"
+            title="筛选"
+            aria-expanded={viewPanel === 'filter'}
+            onClick={() => toggleViewPanel('filter')}
+          >
+            <ListFilter size={16} />
+          </button>
+          <button
+            type="button"
+            className={`database-tool${viewSorts.length || viewPanel === 'sort' ? ' active' : ''}`}
+            aria-label="排序"
+            title="排序"
+            aria-expanded={viewPanel === 'sort'}
+            onClick={() => toggleViewPanel('sort')}
+          >
+            <ArrowUpDown size={16} />
+          </button>
           {editable ? (
-            <>
-              <input
-                ref={csvInput}
-                type="file"
-                accept=".csv,text/csv"
-                hidden
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  setBusy(true);
-                  void importDatabaseCsv(snapshot.database.id, file)
-                    .then(() => refresh())
-                    .catch((reason: unknown) =>
-                      setError(reason instanceof Error ? reason.message : '无法导入 CSV'),
-                    )
-                    .finally(() => {
-                      setBusy(false);
-                      if (csvInput.current) csvInput.current.value = '';
-                    });
-                }}
-              />
-              <button type="button" onClick={() => csvInput.current?.click()}>
-                导入 CSV
-              </button>
-            </>
-          ) : null}
-          {editable ? (
-            <button type="button" onClick={() => setPropertyDialog('new')}>
-              <Plus size={14} /> 属性
+            <button
+              type="button"
+              className="database-tool"
+              title="自动化"
+              aria-label="自动化"
+              onClick={() => setAutomationDialogOpen(true)}
+            >
+              <Zap size={16} />
             </button>
+          ) : null}
+          <label className={`database-tool-search${searchOpen || query ? ' open' : ''}`}>
+            <button
+              type="button"
+              className="database-tool"
+              aria-label="搜索数据库"
+              title="搜索"
+              onClick={() => {
+                setSearchOpen(true);
+                window.setTimeout(() => searchInput.current?.focus(), 0);
+              }}
+            >
+              <Search size={16} />
+            </button>
+            <input
+              ref={searchInput}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onBlur={() => {
+                if (!query) setSearchOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setQuery('');
+                  setSearchOpen(false);
+                }
+              }}
+              placeholder="输入关键词…"
+              aria-label="搜索内容"
+            />
+          </label>
+          <button
+            type="button"
+            className={`database-tool${viewPanel === 'more' ? ' active' : ''}`}
+            aria-label="更多视图选项"
+            title="更多"
+            aria-expanded={viewPanel === 'more'}
+            onClick={() => toggleViewPanel('more')}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {editable ? (
+            <input
+              ref={csvInput}
+              type="file"
+              accept=".csv,text/csv"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                setBusy(true);
+                void importDatabaseCsv(snapshot.database.id, file)
+                  .then(() => refresh())
+                  .catch((reason: unknown) =>
+                    setError(reason instanceof Error ? reason.message : '无法导入 CSV'),
+                  )
+                  .finally(() => {
+                    setBusy(false);
+                    if (csvInput.current) csvInput.current.value = '';
+                  });
+              }}
+            />
           ) : null}
           {editable ? (
             <div className="database-new-split">
@@ -6251,34 +6041,149 @@ export function DatabaseCanvas({
               ) : null}
             </div>
           ) : null}
-          {editable ? (
-            <button
-              type="button"
-              title="已归档记录"
-              aria-label="已归档记录"
-              onClick={() => void openTrash()}
-            >
-              <Archive size={14} />
-            </button>
+          {viewPanel === 'more' ? (
+            <div className="database-menu database-more-menu" role="menu">
+              <button type="button" role="menuitem" onClick={() => setViewPanel('fields')}>
+                <Eye size={15} /> 显示的字段
+              </button>
+              <button type="button" role="menuitem" onClick={() => setViewPanel('group')}>
+                <Layers size={15} /> 分组
+                {viewGroupProperty ? <small>{viewGroupProperty.name}</small> : null}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setViewPanel(null);
+                  setViewMenuOpen(true);
+                }}
+              >
+                <Settings2 size={15} /> 视图设置
+              </button>
+              {editable ? (
+                <>
+                  <hr />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setViewPanel(null);
+                      setPropertyDialog('new');
+                    }}
+                  >
+                    <Plus size={15} /> 新建字段
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setViewPanel(null);
+                      csvInput.current?.click();
+                    }}
+                  >
+                    <Upload size={15} /> 导入 CSV
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setViewPanel(null);
+                      void openTrash();
+                    }}
+                  >
+                    <Archive size={15} /> 已归档的记录
+                  </button>
+                </>
+              ) : null}
+            </div>
           ) : null}
-          {editable ? (
-            <button
-              type="button"
-              title="自动化"
-              aria-label="自动化"
-              onClick={() => setAutomationDialogOpen(true)}
-            >
-              <Zap size={14} />
-            </button>
+          {viewPanel === 'filter' ? (
+            <DatabaseFilterPanel
+              filters={viewFilters}
+              mode={activeView.config.filterMode === 'or' ? 'or' : 'and'}
+              properties={snapshot.properties}
+              organizationId={snapshot.database.organizationId}
+              canEdit={editable}
+              onChange={(next, mode) =>
+                void updateViewConfig({
+                  ...activeView.config,
+                  filterMode: mode,
+                  filters: next.map(({ propertyId, operator, value }) => ({
+                    propertyId,
+                    operator,
+                    value,
+                  })),
+                })
+              }
+            />
           ) : null}
-          <button
-            type="button"
-            aria-label="视图设置"
-            title="视图设置"
-            onClick={() => setViewMenuOpen((open) => !open)}
-          >
-            <Settings2 size={15} />
-          </button>
+          {viewPanel === 'sort' ? (
+            <DatabaseSortPanel
+              sorts={viewSorts}
+              properties={snapshot.properties}
+              canEdit={editable}
+              onChange={(next) =>
+                void updateViewConfig({
+                  ...activeView.config,
+                  sorts: next.map(({ propertyId, direction }) => ({ propertyId, direction })),
+                })
+              }
+            />
+          ) : null}
+          {viewPanel === 'group' ? (
+            <div className="database-view-popover database-menu-panel">
+              <strong>分组</strong>
+              <select
+                disabled={!editable}
+                value={viewGroupProperty?.id ?? ''}
+                aria-label="分组字段"
+                onChange={(event) =>
+                  void updateViewConfig({
+                    ...activeView.config,
+                    groupPropertyId: event.target.value || null,
+                  })
+                }
+              >
+                <option value="">不分组</option>
+                {snapshot.properties
+                  .filter((property) =>
+                    ['status', 'select', 'person', 'checkbox', 'multi_select'].includes(
+                      property.type,
+                    ),
+                  )
+                  .map((property) => (
+                    <option key={property.id} value={property.id}>
+                      {property.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          ) : null}
+          {viewPanel === 'fields' ? (
+            <div className="database-view-popover database-menu-panel">
+              <strong>显示的字段</strong>
+              {snapshot.properties.map((property) => (
+                <label key={property.id} className="database-field-toggle">
+                  {propertyTypeIcon(property.type, 14)}
+                  <span>{property.name}</span>
+                  <input
+                    type="checkbox"
+                    checked={property.type === 'title' || viewVisibleIds.has(property.id)}
+                    disabled={!editable || property.type === 'title'}
+                    onChange={(event) => {
+                      const next = new Set(viewVisibleIds);
+                      if (event.target.checked) next.add(property.id);
+                      else next.delete(property.id);
+                      void updateViewConfig({
+                        ...activeView.config,
+                        visiblePropertyIds: [...next],
+                      });
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+          ) : null}
           {viewMenuOpen ? (
             <ViewOptionsPanel
               view={activeView}
@@ -6296,13 +6201,56 @@ export function DatabaseCanvas({
           ) : null}
         </div>
       </div>
-      {activeView ? (
-        <DatabaseViewBar
-          canEdit={editable}
-          properties={snapshot.properties}
-          view={activeView}
-          onUpdate={updateViewConfig}
-        />
+      {viewSorts.length || viewFilters.length ? (
+        <div className="database-conditions">
+          {viewSorts.length ? (
+            <button
+              type="button"
+              className="database-condition"
+              onClick={() => toggleViewPanel('sort')}
+            >
+              <ArrowUpDown size={13} />
+              {snapshot.properties.find((property) => property.id === viewSorts[0]!.propertyId)
+                ?.name ?? '字段'}
+              {viewSorts[0]!.direction === 'ascending' ? ' ↑' : ' ↓'}
+              {viewSorts.length > 1 ? ` 等 ${viewSorts.length} 条` : ''}
+              <ChevronDown size={12} />
+            </button>
+          ) : null}
+          {viewSorts.length && viewFilters.length ? (
+            <span className="database-conditions-divider" />
+          ) : null}
+          {viewFilters.map((filter, index) => {
+            const property = snapshot.properties.find(
+              (candidate) => candidate.id === filter.propertyId,
+            );
+            return (
+              <button
+                key={`${filter.propertyId}:${index}`}
+                type="button"
+                className="database-condition"
+                onClick={() => toggleViewPanel('filter')}
+              >
+                {property ? propertyTypeIcon(property.type, 13) : null}
+                {property?.name ?? '字段'}:{' '}
+                {filterOperatorLabel(filter.operator, property?.type ?? 'text')}
+                {filter.value !== null && filter.value !== ''
+                  ? ` ${filterValueLabel(filter.value)}`
+                  : ''}
+                <ChevronDown size={12} />
+              </button>
+            );
+          })}
+          {editable && viewFilters.length ? (
+            <button
+              type="button"
+              className="database-condition-add"
+              onClick={() => toggleViewPanel('filter')}
+            >
+              <Plus size={13} /> 添加筛选
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {selectedRows.length ? (
         <div className="database-batch-bar">
