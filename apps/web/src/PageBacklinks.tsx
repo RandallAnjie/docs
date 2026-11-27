@@ -1,13 +1,20 @@
 import { Link2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { PageBacklinkSummary } from '@rdocs/shared';
 
 import { listPageBacklinks } from './api';
+import { useDismissable } from './dismissable';
 
 export function PageBacklinks({ pageId }: { pageId: string }) {
   const [backlinks, setBacklinks] = useState<PageBacklinkSummary[] | null>(null);
   const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useDismissable(
+    open,
+    () => setOpen(false),
+    () => [root.current],
+  );
 
   useEffect(() => {
     let active = true;
@@ -38,7 +45,7 @@ export function PageBacklinks({ pageId }: { pageId: string }) {
 
   if (!backlinks?.length) return null;
   return (
-    <div className="page-backlinks">
+    <div className="page-backlinks" ref={root}>
       <button type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
         <Link2 size={13} /> {backlinks.length} 个反向链接
       </button>

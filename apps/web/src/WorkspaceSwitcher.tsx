@@ -1,6 +1,8 @@
 import { Check, ChevronDown, Link2, LogOut, Plus, Settings, Users, X } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
+import { useDismissable } from './dismissable';
+
 import type { OrganizationSummary, SpaceSummary } from '@rdocs/shared';
 
 import { acceptInvitation, createOrganization } from './api';
@@ -58,21 +60,11 @@ export function WorkspaceSwitcher({
     (organization) => organization.id === activeOrganizationId,
   );
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const closeMenu = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', closeMenu);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('pointerdown', closeMenu);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [menuOpen]);
+  useDismissable(
+    menuOpen,
+    () => setMenuOpen(false),
+    () => [root.current],
+  );
 
   const openDialog = (nextDialog: 'create' | 'join') => {
     setMenuOpen(false);

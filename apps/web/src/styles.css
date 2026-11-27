@@ -15357,3 +15357,24 @@ button.page-icon-display:hover {
   background: rgb(35 131 226 / 10%);
   pointer-events: none;
 }
+
+/* ══ Block handle and editor layers ═══════════════════════════════════════ */
+/* The left gutter belongs to the editor, so moving from a block to its
+   handle never leaves the editor and the handle stays on that block. */
+@media (hover: hover) and (min-width: 768px) {
+  .rdocs-editor.ProseMirror {
+    margin-left: -96px;
+    padding-left: 96px;
+  }
+}
+/* Placed to the left of its block; the right padding is the gap before the
+   text (the gutter itself belongs to the editor). */
+.rdocs-drag-handle-portal {
+  padding: 0 12px 0 0;
+  margin: 0;
+}
+/* Tiptap sets z-index 10 inline on the handle wrapper; keep the handle (and
+   the table controls) above collaborators' carets and their name bubbles. */
+.editor-frame > div:has(> .rdocs-drag-handle-portal) {
+  z-index: var(--z-editor-float) !important;
+}
