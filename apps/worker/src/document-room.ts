@@ -479,6 +479,10 @@ export class DocumentRoom {
   private readonly sockets = new Set<WebSocket>();
   private readonly attachments = new WeakMap<WebSocket, SocketAttachment>();
   private readonly wsChunks = new WeakMap<WebSocket, ChunkAssembler>();
+  private readonly pendingAwareness = new Map<
+    WebSocket,
+    { update: Uint8Array; timer: ReturnType<typeof setTimeout> }
+  >();
   private readonly httpChunks = createChunkAssembler();
   private messageQueue: Promise<void> = Promise.resolve();
   private maintenanceQueue: Promise<void> = Promise.resolve();
@@ -1104,20 +1108,7 @@ export class DocumentRoom {
       if (messageType === MESSAGE_SYNC) {
         await this.handleSyncMessage(socket, decoder);
       } else if (messageType === MESSAGE_AWARENESS) {
-        const update = decoding.readVarUint8Array(decoder);
-        const attachment = this.attachments.get(socket);
-        const now = Date.now();
-        if (attachment && now - attachment.lastAwarenessAt < MIN_AWARENESS_INTERVAL_MS) return;
-        if (attachment) attachment.lastAwarenessAt = now;
-        const clientIds = awarenessClientIds(update);
-        const knownClients = this.awareness.getStates();
-        const newClientCount = clientIds.filter((clientId) => !knownClients.has(clientId)).length;
-        if (knownClients.size + newClientCount > MAX_COLLABORATORS) {
-          socket.close(4429, 'collaborator_limit_reached');
-          return;
-        }
-        this.rememberAwarenessClients(socket, clientIds);
-        applyAwarenessUpdate(this.awareness, update, socket);
+        this.receiveSocketAwareness(socket, decoding.readVarUint8Array(decoder));
       }
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1823,8 +1814,63 @@ export class DocumentRoom {
     }
   }
 
+  /**
+   * Awareness from one socket is rate limited, but never dropped: an update
+   * that arrives inside the interval waits and replaces any older waiting
+   * one, so the last caret a collaborator publishes (for example the click
+   * that follows the focus event) is always the one others see.
+   */
+  private receiveSocketAwareness(socket: WebSocket, update: Uint8Array): void {
+    const attachment = this.attachments.get(socket);
+    if (!attachment) {
+      this.applySocketAwareness(socket, update);
+      return;
+    }
+    const pending = this.pendingAwareness.get(socket);
+    if (pending) {
+      pending.update = update;
+      return;
+    }
+    const wait = attachment.lastAwarenessAt + MIN_AWARENESS_INTERVAL_MS - Date.now();
+    if (wait <= 0) {
+      attachment.lastAwarenessAt = Date.now();
+      this.applySocketAwareness(socket, update);
+      return;
+    }
+    const entry = {
+      update,
+      timer: setTimeout(() => {
+        this.pendingAwareness.delete(socket);
+        if (!this.sockets.has(socket)) return;
+        attachment.lastAwarenessAt = Date.now();
+        this.applySocketAwareness(socket, entry.update);
+      }, wait),
+    };
+    this.pendingAwareness.set(socket, entry);
+  }
+
+  private applySocketAwareness(socket: WebSocket, update: Uint8Array): void {
+    const clientIds = awarenessClientIds(update);
+    const knownClients = this.awareness.getStates();
+    const newClientCount = clientIds.filter((clientId) => !knownClients.has(clientId)).length;
+    if (knownClients.size + newClientCount > MAX_COLLABORATORS) {
+      socket.close(4429, 'collaborator_limit_reached');
+      return;
+    }
+    this.rememberAwarenessClients(socket, clientIds);
+    applyAwarenessUpdate(this.awareness, update, socket);
+  }
+
+  private dropPendingAwareness(socket: WebSocket): void {
+    const pending = this.pendingAwareness.get(socket);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingAwareness.delete(socket);
+  }
+
   async webSocketClose(socket: WebSocket): Promise<void> {
     this.sockets.delete(socket);
+    this.dropPendingAwareness(socket);
     const attachment = this.attachments.get(socket);
     if (attachment?.awarenessClientIds.length) {
       removeAwarenessStates(this.awareness, attachment.awarenessClientIds, socket);
@@ -1836,6 +1882,7 @@ export class DocumentRoom {
 
   webSocketError(socket: WebSocket): void {
     this.sockets.delete(socket);
+    this.dropPendingAwareness(socket);
     const attachment = this.attachments.get(socket);
     if (attachment?.awarenessClientIds.length) {
       removeAwarenessStates(this.awareness, attachment.awarenessClientIds, socket);
