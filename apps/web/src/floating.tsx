@@ -1,5 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+
+import { useDismissable } from './dismissable';
 
 const MARGIN = 8;
 const GAP = 4;
@@ -86,27 +88,14 @@ export function Floating({
     return () => window.removeEventListener('resize', place);
   }, [align, anchor, open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (box.current?.contains(target) || anchor?.contains(target)) return;
-      onClose();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKey, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKey, true);
-    };
-  }, [anchor, onClose, open]);
+  // Outside pointer down and Escape close it; opening it closes other menus
+  // unless its anchor sits inside one of them (a sub-menu).
+  useDismissable(
+    open,
+    onClose,
+    () => [box.current, anchor],
+    () => anchor,
+  );
 
   if (!open) return null;
   return createPortal(

@@ -151,6 +151,7 @@ import {
 } from './database-view';
 import { DatabaseAutomationDialog } from './AutomationBuilder';
 import { Floating } from './floating';
+import { useDismissable } from './dismissable';
 import { matchesMediaQuery } from './sidebar-chrome';
 import { DatabaseFilterPanel, DatabaseSortPanel } from './DatabaseViewControls';
 import { DatabaseDateReminder } from './DatabaseDateReminder';
@@ -6264,24 +6265,16 @@ export function DatabaseCanvas({
     }
   };
 
-  useEffect(() => {
-    if (!viewPanel) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest('.database-toolbar, .database-conditions'))
-        return;
-      setViewPanel(null);
-    };
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setViewPanel(null);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [viewPanel]);
+  // The open view panel (filter, sort, more…) belongs to this database's own
+  // toolbar; menus opened from inside it stay open with it.
+  useDismissable(
+    Boolean(viewPanel),
+    () => setViewPanel(null),
+    () => [
+      root.current?.querySelector('.database-toolbar'),
+      root.current?.querySelector('.database-conditions'),
+    ],
+  );
   if (!activeView)
     return <ViewRequirement icon={<Table2 size={24} />} text="数据库没有可用视图。" />;
   const viewProps: DatabaseViewProps = {

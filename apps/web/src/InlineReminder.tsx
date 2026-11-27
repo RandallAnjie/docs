@@ -13,6 +13,8 @@ import {
   type CSSProperties,
   type FormEvent,
 } from 'react';
+
+import { useDismissable } from './dismissable';
 import { createPortal } from 'react-dom';
 
 import type { AuthUserSummary } from '@rdocs/shared';
@@ -67,7 +69,14 @@ function InlineReminderNodeView(props: NodeViewProps) {
   const storedReminderId = String(props.node.attrs.reminderId ?? '');
   const createdBy = String(props.node.attrs.createdBy ?? '');
   const storedDueAt = Number(props.node.attrs.dueAt ?? 0);
-  const [open, setOpen] = useState(!storedReminderId);
+  // Only the person who just inserted an unsaved reminder sees it open.
+  const [open, setOpen] = useState(
+    () =>
+      !storedReminderId &&
+      Boolean(context?.canEdit) &&
+      !publicShareToken &&
+      (!createdBy || createdBy === actorId),
+  );
   const [recipients, setRecipients] = useState<AuthUserSummary[]>([]);
   const [recipientId, setRecipientId] = useState(String(props.node.attrs.recipientId ?? ''));
   const [message, setMessage] = useState(String(props.node.attrs.message ?? '查看这里'));
@@ -195,6 +204,13 @@ function InlineReminderNodeView(props: NodeViewProps) {
   const displayDueAt = Number(props.node.attrs.dueAt ?? 0);
   const delivered = displayDueAt > 0 && displayDueAt <= Date.now();
   const chipRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLFormElement>(null);
+  useDismissable(
+    open,
+    () => setOpen(false),
+    () => [chipRef.current, popoverRef.current],
+    () => chipRef.current,
+  );
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
 
   useLayoutEffect(() => {
@@ -239,6 +255,7 @@ function InlineReminderNodeView(props: NodeViewProps) {
       {open && popoverPos
         ? createPortal(
             <form
+              ref={popoverRef}
               className="rdocs-inline-reminder-popover"
               style={
                 {

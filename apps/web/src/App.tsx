@@ -189,6 +189,7 @@ import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell, PageNotificationControl, PageReminderControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
 import { PageInvites } from './PageInvites';
+import { useDismissable } from './dismissable';
 import { ShareLinkSettings } from './ShareLinkSettings';
 import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
@@ -2292,23 +2293,13 @@ function DocumentWorkspace({
     writeSidebarCollapsed(sidebarCollapsed, window.localStorage);
   }, [sidebarCollapsed]);
 
-  useEffect(() => {
-    if (!pageMenuOpen) return;
-    const close = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest('.page-action-menu, .header-actions .icon-button')) return;
-      setPageMenuOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPageMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', close);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [pageMenuOpen]);
+  const pageMenuRef = useRef<HTMLDivElement>(null);
+  const pageMenuButtonRef = useRef<HTMLButtonElement>(null);
+  useDismissable(
+    pageMenuOpen,
+    () => setPageMenuOpen(false),
+    () => [pageMenuButtonRef.current, pageMenuRef.current],
+  );
 
   useEffect(() => {
     if (!onLogout || renewTicket) {
@@ -3236,6 +3227,7 @@ function DocumentWorkspace({
             </button>
             {canEditStructure ? (
               <button
+                ref={pageMenuButtonRef}
                 className="icon-button subtle"
                 aria-label="更多"
                 aria-expanded={pageMenuOpen}
@@ -3245,7 +3237,7 @@ function DocumentWorkspace({
               </button>
             ) : null}
             {pageMenuOpen ? (
-              <div className="page-action-menu">
+              <div className="page-action-menu" ref={pageMenuRef}>
                 <button
                   type="button"
                   onClick={() => {
@@ -3884,14 +3876,11 @@ function PageTreeItem({
   const active = node.id === activePageId;
   const favorited = favoritedPageIds?.has(node.id) ?? false;
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: PointerEvent) => {
-      if (!menu.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
-  }, [menuOpen]);
+  useDismissable(
+    menuOpen,
+    () => setMenuOpen(false),
+    () => [menu.current],
+  );
 
   return (
     <li className="page-tree-node">
@@ -4111,6 +4100,31 @@ function CollaborativeEditor({
   const [mentionMenu, setMentionMenu] = useState<
     (SlashMenuState & { items: Array<{ id: string; kind: 'page' | 'user'; label: string }> }) | null
   >(null);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
+  const mentionMenuRef = useRef<HTMLDivElement>(null);
+  // Menus derived from the text at the cursor are recomputed after every
+  // transaction (including collaborators' syncs); once dismissed, the same
+  // "/" or "@" stays plain text until a new one is typed.
+  const dismissedSlashFrom = useRef<number | null>(null);
+  const dismissedMentionFrom = useRef<number | null>(null);
+  useDismissable(
+    Boolean(slashMenu),
+    () =>
+      setSlashMenu((current) => {
+        if (current) dismissedSlashFrom.current = current.from;
+        return null;
+      }),
+    () => [slashMenuRef.current],
+  );
+  useDismissable(
+    Boolean(mentionMenu),
+    () =>
+      setMentionMenu((current) => {
+        if (current) dismissedMentionFrom.current = current.from;
+        return null;
+      }),
+    () => [mentionMenuRef.current],
+  );
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionKeyRef = useRef({
     isOpen: false,
@@ -4195,9 +4209,11 @@ function CollaborativeEditor({
   const updateSlashMenu = useCallback((currentEditor: Editor) => {
     const context = slashContext(currentEditor);
     if (!context) {
+      dismissedSlashFrom.current = null;
       setSlashMenu(null);
       return;
     }
+    if (dismissedSlashFrom.current === context.from) return;
     try {
       const coordinates = currentEditor.view.coordsAtPos(context.to);
       setSlashMenu({
@@ -4363,7 +4379,10 @@ function CollaborativeEditor({
         if (!slash.isOpen) return false;
         if (event.key === 'Escape') {
           event.preventDefault();
-          setSlashMenu(null);
+          setSlashMenu((current) => {
+            if (current) dismissedSlashFrom.current = current.from;
+            return null;
+          });
           return true;
         }
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -4465,9 +4484,11 @@ function CollaborativeEditor({
       updateSlashMenu(currentEditor);
       const mention = mentionContext(currentEditor);
       if (!mention) {
+        dismissedMentionFrom.current = null;
         setMentionMenu(null);
         return;
       }
+      if (dismissedMentionFrom.current === mention.from) return;
       try {
         const coordinates = currentEditor.view.coordsAtPos(mention.to);
         setMentionMenu((current) => ({
@@ -5247,6 +5268,7 @@ function CollaborativeEditor({
       ) : null}
       {mentionMenu ? (
         <div
+          ref={mentionMenuRef}
           className="slash-menu mention-menu"
           role="listbox"
           aria-label="提及"
@@ -5286,6 +5308,7 @@ function CollaborativeEditor({
       ) : null}
       {slashMenu ? (
         <div
+          ref={slashMenuRef}
           className="slash-menu"
           role="listbox"
           aria-label="插入内容块"
@@ -5469,21 +5492,11 @@ function HeaderAccount({
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const closeMenu = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', closeMenu);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('pointerdown', closeMenu);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [open]);
+  useDismissable(
+    open,
+    () => setOpen(false),
+    () => [root.current],
+  );
 
   return (
     <div className="header-account" ref={root}>

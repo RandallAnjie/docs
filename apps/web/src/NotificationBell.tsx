@@ -18,7 +18,9 @@ import {
   UserRoundPlus,
   Zap,
 } from 'lucide-react';
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+
+import { useDismissable } from './dismissable';
 
 import type {
   AuthUserSummary,
@@ -99,6 +101,12 @@ export function NotificationBell({ organizationId }: { organizationId: string })
   const [unreadCount, setUnreadCount] = useState(0);
   const [view, setView] = useState<NotificationView>('inbox');
   const [open, setOpen] = useState(false);
+  const inboxRoot = useRef<HTMLDivElement>(null);
+  useDismissable(
+    open,
+    () => setOpen(false),
+    () => [inboxRoot.current],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
@@ -200,7 +208,7 @@ export function NotificationBell({ organizationId }: { organizationId: string })
   };
 
   return (
-    <div className="notification-control">
+    <div className="notification-control" ref={inboxRoot}>
       <button
         className="icon-button"
         type="button"
@@ -452,6 +460,12 @@ export function NotificationBell({ organizationId }: { organizationId: string })
 export function PageNotificationControl({ pageId }: { pageId: string }) {
   const [settings, setSettings] = useState<PageNotificationSettings | null>(null);
   const [open, setOpen] = useState(false);
+  const pageNotificationRoot = useRef<HTMLDivElement>(null);
+  useDismissable(
+    open,
+    () => setOpen(false),
+    () => [pageNotificationRoot.current],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -479,7 +493,7 @@ export function PageNotificationControl({ pageId }: { pageId: string }) {
   };
 
   return (
-    <div className="page-notification-control">
+    <div className="page-notification-control" ref={pageNotificationRoot}>
       <button
         className="icon-button subtle"
         type="button"
@@ -548,6 +562,12 @@ export function PageReminderControl({
   canCreate: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const reminderRoot = useRef<HTMLDivElement>(null);
+  useDismissable(
+    open,
+    () => setOpen(false),
+    () => [reminderRoot.current],
+  );
   const [reminders, setReminders] = useState<PageReminderSummary[]>([]);
   const [recipients, setRecipients] = useState<AuthUserSummary[]>([]);
   const [recipientId, setRecipientId] = useState(actorId);
@@ -627,7 +647,7 @@ export function PageReminderControl({
   };
 
   return (
-    <div className="page-reminder-control">
+    <div className="page-reminder-control" ref={reminderRoot}>
       <button
         className="icon-button subtle"
         type="button"
