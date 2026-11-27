@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  strongestInviteRole,
   canManageOrganization,
   canSpace,
   capRoleForMembership,
@@ -85,5 +86,20 @@ describe('organization and space permissions', () => {
     expect(canManageOrganization('admin', 'delete')).toBe(false);
     expect(canManageOrganization('member', 'create_space')).toBe(true);
     expect(canManageOrganization('guest', 'create_space')).toBe(false);
+  });
+});
+
+describe('page invites', () => {
+  it('give the strongest invited role and never take access away', () => {
+    expect(strongestInviteRole([])).toBeNull();
+    expect(strongestInviteRole([{ role: 'viewer' }, { role: 'editor' }])).toBe('editor');
+    expect(strongestInviteRole([{ role: 'none' }, { role: 'commenter' }])).toBe('commenter');
+    expect(strongestInviteRole([{ role: 'none' }])).toBeNull();
+  });
+
+  it('only raise a role on top of the space role', () => {
+    expect(higherSpaceRole('viewer', strongestInviteRole([{ role: 'editor' }]))).toBe('editor');
+    expect(higherSpaceRole('editor', strongestInviteRole([{ role: 'viewer' }]))).toBe('editor');
+    expect(higherSpaceRole(null, strongestInviteRole([{ role: 'viewer' }]))).toBe('viewer');
   });
 });

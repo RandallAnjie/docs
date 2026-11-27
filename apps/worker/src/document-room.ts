@@ -50,6 +50,7 @@ const AUTOMATIC_REVISION_RETRY_MS = 60_000;
 const SEARCH_PROJECTION_INTERVAL_MS = 1_500;
 const MAX_COLLABORATORS = 100;
 const MIN_AWARENESS_INTERVAL_MS = 50;
+const MAX_DATABASE_WATCHERS = 200;
 
 interface SocketAttachment {
   actorId: string;
@@ -477,6 +478,7 @@ export class DocumentRoom {
   private editingEnabled = true;
   private readonly httpAwarenessSeenAt = new Map<number, number>();
   private readonly sockets = new Set<WebSocket>();
+  private readonly watchers = new Map<WebSocket, { id: string; name: string }>();
   private readonly attachments = new WeakMap<WebSocket, SocketAttachment>();
   private readonly wsChunks = new WeakMap<WebSocket, ChunkAssembler>();
   private readonly pendingAwareness = new Map<
@@ -634,11 +636,18 @@ export class DocumentRoom {
   }
 
   private async handleFetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-      return this.acceptCollaborationSocket(request);
+      return url.pathname === '/internal/database-watch'
+        ? this.acceptDatabaseWatcher(request)
+        : this.acceptCollaborationSocket(request);
+    }
+    if (url.pathname === '/internal/database-changed' && request.method === 'POST') {
+      const message = await request.text();
+      for (const socket of this.watchers.keys()) this.sendWatcher(socket, message);
+      return Response.json({ watchers: this.watchers.size });
     }
     await this.ready;
-    const url = new URL(request.url);
 
     if (url.pathname === '/internal/access' && request.method === 'POST') {
       const body = (await request.json()) as {
@@ -759,6 +768,49 @@ export class DocumentRoom {
     }
 
     return new Response('WebSocket upgrade required', { status: 426 });
+  }
+
+  /**
+   * A database watcher only receives "changed" and presence messages; it
+   * never joins the Yjs document. The worker verified the live ticket.
+   */
+  private acceptDatabaseWatcher(request: Request): Response {
+    if (this.watchers.size >= MAX_DATABASE_WATCHERS) {
+      return new Response('Too many viewers', { status: 429 });
+    }
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    server.accept();
+    this.watchers.set(server, {
+      id: request.headers.get('x-rdocs-actor-id') ?? 'unknown',
+      name: request.headers.get('x-rdocs-display-name') ?? '协作者',
+    });
+    const leave = () => {
+      if (this.watchers.delete(server)) this.broadcastPresence();
+    };
+    server.addEventListener('message', (event) => {
+      if (event.data === 'ping') this.sendWatcher(server, 'pong');
+    });
+    server.addEventListener('close', leave);
+    server.addEventListener('error', leave);
+    this.broadcastPresence();
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private broadcastPresence(): void {
+    const viewers = new Map<string, { id: string; name: string }>();
+    for (const viewer of this.watchers.values()) viewers.set(viewer.id, viewer);
+    const message = JSON.stringify({ type: 'presence', viewers: [...viewers.values()] });
+    for (const socket of this.watchers.keys()) this.sendWatcher(socket, message);
+  }
+
+  private sendWatcher(socket: WebSocket, message: string): void {
+    try {
+      socket.send(message);
+    } catch {
+      this.watchers.delete(socket);
+    }
   }
 
   private acceptCollaborationSocket(request: Request): Response {

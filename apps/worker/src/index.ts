@@ -1,3 +1,8 @@
+import {
+  databaseIdFromMutationPath,
+  notifyDatabaseChanged,
+  openDatabaseLiveSocket,
+} from './database-live';
 import * as Y from 'yjs';
 import { webAssets, webHtml } from './generated-web-assets';
 import { documentContentSecurityPolicy } from './security-headers';
@@ -3306,7 +3311,10 @@ async function putPageGrant(
   if (!(await requirePageAction(env, page.id, actorId, 'manage_access'))) {
     return error('无权管理页面权限', 403);
   }
-  const input = (await request.json().catch(() => null)) as { role?: unknown } | null;
+  const input = (await request.json().catch(() => null)) as {
+    role?: unknown;
+    invite?: unknown;
+  } | null;
   if (
     input?.role !== 'none' &&
     input?.role !== 'space_admin' &&
@@ -3338,17 +3346,30 @@ async function putPageGrant(
     .first<{ id: string }>();
   const id = existing?.id ?? crypto.randomUUID();
   const now = Date.now();
+  // An invite adds access; "no access" can only be a restricted-mode grant.
+  const additive = input.invite === true && input.role !== 'none' ? 1 : 0;
   await env.DB.prepare(
     `INSERT INTO page_grants(
-       id, organization_id, page_id, principal_type, principal_id, role, created_by, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       id, organization_id, page_id, principal_type, principal_id, role, created_by, created_at,
+       additive
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(organization_id, page_id, principal_type, principal_id)
      DO UPDATE SET role = excluded.role, created_by = excluded.created_by,
-                   created_at = excluded.created_at`,
+                   created_at = excluded.created_at, additive = excluded.additive`,
   )
-    .bind(id, page.organizationId, page.id, principalType, principalId, input.role, actorId, now)
+    .bind(
+      id,
+      page.organizationId,
+      page.id,
+      principalType,
+      principalId,
+      input.role,
+      actorId,
+      now,
+      additive,
+    )
     .run();
-  await pageAudit(env, page, actorId, 'page.grant.updated', {
+  await pageAudit(env, page, actorId, additive ? 'page.invite.updated' : 'page.grant.updated', {
     principalType,
     principalId,
     role: input.role,
@@ -4318,7 +4339,15 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const commentsResponse = await handleCommentsAndNotificationsApi(request, env, actor);
   if (commentsResponse) return commentsResponse;
   const databasesResponse = await handleDatabasesApi(request, env, actor);
-  if (databasesResponse) return databasesResponse;
+  if (databasesResponse) {
+    const changedDatabaseId = databasesResponse.ok
+      ? databaseIdFromMutationPath(url.pathname, request.method)
+      : null;
+    if (changedDatabaseId) {
+      context.waitUntil(notifyDatabaseChanged(env, changedDatabaseId, actorId));
+    }
+    return databasesResponse;
+  }
   const sitesResponse = await handleSitesApi(request, env, actor);
   if (sitesResponse) return sitesResponse;
   const notionResponse = await handleNotionApi(request, env, actor, {
@@ -4882,7 +4911,13 @@ export default {
         response = await handleApi(request, env, context);
       } else {
         const collabMatch = url.pathname.match(/^\/collab\/([^/]+)$/);
-        if (collabMatch?.[1]) {
+        const databaseLiveMatch = url.pathname.match(/^\/database-live\/([^/]+)$/);
+        if (databaseLiveMatch?.[1]) {
+          const databaseId = decodeURIComponent(databaseLiveMatch[1]);
+          response = isPageId(databaseId)
+            ? await openDatabaseLiveSocket(request, env, databaseId)
+            : error('数据库 ID 无效', 400);
+        } else if (collabMatch?.[1]) {
           const pageId = decodeURIComponent(collabMatch[1]);
           response = isPageId(pageId)
             ? await openCollaborationSocket(request, env, pageId)

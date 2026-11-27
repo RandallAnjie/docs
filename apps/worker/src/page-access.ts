@@ -15,6 +15,7 @@ interface PageGrantRow {
   principal_id: string;
   role: PageGrantRole;
   created_at: number;
+  additive?: number | null;
 }
 
 function json(data: unknown): Response {
@@ -34,6 +35,7 @@ function pageGrantFromRow(row: PageGrantRow): PageGrantSummary {
     principalType: row.principal_type,
     principalId: row.principal_id,
     role: row.role,
+    invite: Boolean(row.additive),
     createdAt: Number(row.created_at),
   };
 }
@@ -44,7 +46,8 @@ export async function pageAccessSnapshot(env: Env, pageId: string): Promise<Resp
       .bind(pageId)
       .first<{ access_mode: PageAccessMode }>(),
     env.DB.prepare(
-      `SELECT id, organization_id, page_id, principal_type, principal_id, role, created_at
+      `SELECT id, organization_id, page_id, principal_type, principal_id, role, created_at,
+              additive
          FROM page_grants WHERE page_id = ? ORDER BY created_at ASC, id ASC`,
     )
       .bind(pageId)

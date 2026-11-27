@@ -168,6 +168,7 @@ import {
 } from './database-grid';
 import { cachedRequest } from './request-cache';
 import { startVisibleInterval } from './visible-poll';
+import { useDatabaseLive, type DatabaseViewer } from './database-live';
 
 const PROPERTY_LABELS: Record<DatabasePropertyType, string> = {
   title: '标题',
@@ -5761,15 +5762,120 @@ function DatabaseTrashDialog({
   );
 }
 
+export interface DatabaseEmbedding {
+  /** Open the database as its own page. */
+  onOpenFullPage: () => void;
+}
+
+function snapshotSignature(snapshot: DatabaseSnapshot): string {
+  return JSON.stringify([
+    snapshot.database.updatedAt,
+    snapshot.database.title,
+    snapshot.database.isLocked,
+    snapshot.properties.map((property) => [
+      property.id,
+      property.name,
+      property.type,
+      property.config,
+    ]),
+    snapshot.views.map((view) => [view.id, view.name, view.type, view.config]),
+    snapshot.rows.map((row) => [row.id, row.updatedAt]),
+    snapshot.templates.map((template) => template.id),
+  ]);
+}
+
+const VIEWER_COLORS = ['#2383e2', '#0f7b6c', '#d9730d', '#9065b0', '#c14c8a', '#64473a'];
+
+function viewerColor(id: string): string {
+  let hash = 0;
+  for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) | 0;
+  return VIEWER_COLORS[Math.abs(hash) % VIEWER_COLORS.length]!;
+}
+
+function DatabaseViewers({ viewers }: { viewers: DatabaseViewer[] }) {
+  if (!viewers.length) return null;
+  const shown = viewers.slice(0, 4);
+  return (
+    <span
+      className="database-viewers"
+      title={`正在查看：${viewers.map((viewer) => viewer.name).join('、')}`}
+      aria-label={`${viewers.length} 位协作者正在查看`}
+    >
+      {shown.map((viewer) => (
+        <i key={viewer.id} style={{ background: viewerColor(viewer.id) }}>
+          {Array.from(viewer.name.trim())[0] ?? '协'}
+        </i>
+      ))}
+      {viewers.length > shown.length ? <small>+{viewers.length - shown.length}</small> : null}
+    </span>
+  );
+}
+
+function EmbeddedDatabaseTitle({
+  title,
+  editable,
+  onOpen,
+  onRename,
+}: {
+  title: string;
+  editable: boolean;
+  onOpen: () => void;
+  onRename: (title: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(title);
+  useEffect(() => setDraft(title), [title]);
+  const save = async () => {
+    const next = draft.trim();
+    if (!next || next === title) {
+      setDraft(title);
+      return;
+    }
+    try {
+      await onRename(next);
+    } catch (reason) {
+      setDraft(title);
+      showToast(reason instanceof Error ? reason.message : '无法重命名数据库');
+    }
+  };
+  return (
+    <div className="database-embed-title">
+      {editable ? (
+        <input
+          value={draft}
+          aria-label="数据库标题"
+          placeholder="未命名数据库"
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => void save()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+            if (event.key === 'Escape') {
+              setDraft(title);
+              event.currentTarget.blur();
+            }
+          }}
+        />
+      ) : (
+        <h3>{title || '未命名数据库'}</h3>
+      )}
+      <button type="button" aria-label="以整页打开" title="以整页打开" onClick={onOpen}>
+        <Maximize2 size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function DatabaseCanvas({
   initialSnapshot,
   canEdit,
   actorId,
+  embedded,
 }: {
   initialSnapshot: DatabaseSnapshot;
   canEdit: boolean;
   actorId: string;
+  embedded?: DatabaseEmbedding;
 }) {
+  const root = useRef<HTMLElement>(null);
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [activeViewId, setActiveViewId] = useState(() =>
     readStoredDatabaseViewId(
@@ -5819,44 +5925,71 @@ export function DatabaseCanvas({
 
   const refresh = useCallback(async () => {
     const next = await getDatabase(snapshot.database.id);
-    setSnapshot((current) => {
-      if (
-        current.database.updatedAt === next.database.updatedAt &&
-        current.rows.length === next.rows.length &&
-        current.rows.every(
-          (row, index) =>
-            row.id === next.rows[index]?.id && row.updatedAt === next.rows[index]?.updatedAt,
-        )
-      ) {
-        return current;
-      }
-      return next;
-    });
+    setSnapshot((current) =>
+      snapshotSignature(current) === snapshotSignature(next) ? current : next,
+    );
   }, [snapshot.database.id]);
 
   useEffect(() => {
     setSnapshot(initialSnapshot);
   }, [initialSnapshot]);
 
+  // While someone types in this database, refreshing would replace what they
+  // are editing; remember the change and refresh once focus leaves.
+  const refreshPending = useRef(false);
+  const refreshTimer = useRef(0);
+  const editingHere = useCallback(() => {
+    const active = document.activeElement;
+    return Boolean(
+      active &&
+      root.current?.contains(active) &&
+      (active.matches('input, textarea, select') || (active as HTMLElement).isContentEditable),
+    );
+  }, []);
+  const requestRefresh = useCallback(() => {
+    if (document.visibilityState === 'hidden' || editingHere()) {
+      refreshPending.current = true;
+      return;
+    }
+    refreshPending.current = false;
+    window.clearTimeout(refreshTimer.current);
+    refreshTimer.current = window.setTimeout(() => void refresh().catch(() => undefined), 120);
+  }, [editingHere, refresh]);
+  useEffect(() => () => window.clearTimeout(refreshTimer.current), []);
   useEffect(() => {
-    const tick = () => {
-      if (
-        document.visibilityState === 'hidden' ||
-        document.querySelector(
-          '.database-canvas input:focus, .database-canvas textarea:focus, .database-canvas select:focus',
-        )
-      ) {
-        return;
-      }
-      void refresh();
+    const element = root.current;
+    if (!element) return;
+    const onFocusOut = () => {
+      window.setTimeout(() => {
+        if (refreshPending.current && !editingHere()) requestRefresh();
+      }, 0);
     };
-    const stop = startVisibleInterval(tick, 15_000);
-    window.addEventListener('focus', tick);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && refreshPending.current) requestRefresh();
+    };
+    element.addEventListener('focusout', onFocusOut);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      element.removeEventListener('focusout', onFocusOut);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [editingHere, requestRefresh]);
+
+  const liveViewers = useDatabaseLive(snapshot.database.id, requestRefresh);
+  const otherViewers = useMemo(
+    () => liveViewers.filter((viewer) => viewer.id !== actorId),
+    [actorId, liveViewers],
+  );
+
+  useEffect(() => {
+    // A slow safety net in case a live message was missed.
+    const stop = startVisibleInterval(requestRefresh, 60_000);
+    window.addEventListener('focus', requestRefresh);
     return () => {
       stop();
-      window.removeEventListener('focus', tick);
+      window.removeEventListener('focus', requestRefresh);
     };
-  }, [refresh]);
+  }, [requestRefresh]);
 
   const filteredRows = useMemo(() => {
     const viewed = applyDatabaseView(snapshot.rows, snapshot.properties, activeView?.config ?? {}, {
@@ -6248,7 +6381,25 @@ export function DatabaseCanvas({
     setViewPanel((current) => (current === next ? null : next));
 
   return (
-    <section className="database-canvas">
+    <section
+      ref={root}
+      className={`database-canvas${embedded ? ' is-embedded' : ''}`}
+      data-database-id={snapshot.database.id}
+    >
+      {embedded ? (
+        <EmbeddedDatabaseTitle
+          title={snapshot.database.title}
+          editable={editable}
+          onOpen={embedded.onOpenFullPage}
+          onRename={async (title) => {
+            const { database } = await updateDatabase(snapshot.database.id, { title });
+            setSnapshot((current) => ({
+              ...current,
+              database: { ...current.database, ...database },
+            }));
+          }}
+        />
+      ) : null}
       <div className="database-tabs-row">
         <div className="database-tabs" role="tablist" aria-label="数据库视图">
           {snapshot.views.map((view) => {
@@ -6279,6 +6430,7 @@ export function DatabaseCanvas({
           ) : null}
         </div>
         <div className="database-toolbar">
+          <DatabaseViewers viewers={otherViewers} />
           {snapshot.database.isLocked ? (
             <span className="database-locked">
               <Lock size={13} /> 已锁定

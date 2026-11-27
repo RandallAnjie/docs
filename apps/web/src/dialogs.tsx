@@ -1,9 +1,9 @@
-import { FileText, Search } from 'lucide-react';
+import { FileText, Search, Table2 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 
 import type { PageSearchResult, RecentPageResult } from '@rdocs/shared';
 
-import { listRecentPages, searchPages } from './api';
+import { listOrganizationDatabases, listRecentPages, searchPages } from './api';
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -55,6 +55,8 @@ export interface PagePickOptions {
   organizationId: string;
   title?: string;
   message?: string;
+  /** Pick a database (its id) instead of a page. */
+  kind?: 'page' | 'database';
 }
 
 export interface EmojiDialogOptions {
@@ -662,20 +664,30 @@ function PagePickView({
       () => {
         setBusy(true);
         setError(null);
-        const request = query.trim()
-          ? searchPages(options.organizationId, query.trim(), { titleOnly: true }).then((result) =>
-              result.results.map((item: PageSearchResult) => ({
-                id: item.page.id,
-                title: item.page.title,
-                snippet: item.snippet,
-              })),
-            )
-          : listRecentPages(options.organizationId).then((result) =>
-              result.pages.slice(0, 12).map((item: RecentPageResult) => ({
-                id: item.page.id,
-                title: item.page.title,
-              })),
-            );
+        const request =
+          options.kind === 'database'
+            ? listOrganizationDatabases(options.organizationId).then((result) => {
+                const needle = query.trim().toLocaleLowerCase();
+                return result.databases
+                  .filter((item) => !needle || item.title.toLocaleLowerCase().includes(needle))
+                  .slice(0, 50)
+                  .map((item) => ({ id: item.id, title: item.title }));
+              })
+            : query.trim()
+              ? searchPages(options.organizationId, query.trim(), { titleOnly: true }).then(
+                  (result) =>
+                    result.results.map((item: PageSearchResult) => ({
+                      id: item.page.id,
+                      title: item.page.title,
+                      snippet: item.snippet,
+                    })),
+                )
+              : listRecentPages(options.organizationId).then((result) =>
+                  result.pages.slice(0, 12).map((item: RecentPageResult) => ({
+                    id: item.page.id,
+                    title: item.page.title,
+                  })),
+                );
         void request
           .then((next) => {
             if (cancelled) return;
@@ -697,9 +709,10 @@ function PagePickView({
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [options.organizationId, query]);
+  }, [options.kind, options.organizationId, query]);
 
   const choose = (item: { id: string; title: string }) => onResolve(item);
+  const databases = options.kind === 'database';
 
   return (
     <AppDialogShell
@@ -709,12 +722,12 @@ function PagePickView({
       onCancel={() => onResolve(null)}
     >
       <label className="app-page-pick-search">
-        搜索页面
+        {databases ? '搜索数据库' : '搜索页面'}
         <span>
           <Search size={14} />
           <input
             value={query}
-            placeholder="输入页面标题"
+            placeholder={databases ? '输入数据库名称' : '输入页面标题'}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'ArrowDown') {
@@ -734,11 +747,21 @@ function PagePickView({
           />
         </span>
       </label>
-      <div className="app-page-pick-list" role="listbox" aria-label="页面结果">
+      <div
+        className="app-page-pick-list"
+        role="listbox"
+        aria-label={databases ? '数据库结果' : '页面结果'}
+      >
         {busy && !results.length ? <p className="app-page-pick-empty">正在查找…</p> : null}
         {!busy && !results.length ? (
           <p className="app-page-pick-empty">
-            {query.trim() ? '没有找到可访问的页面' : '暂无最近页面'}
+            {databases
+              ? query.trim()
+                ? '没有找到可访问的数据库'
+                : '当前工作区还没有数据库'
+              : query.trim()
+                ? '没有找到可访问的页面'
+                : '暂无最近页面'}
           </p>
         ) : null}
         {results.map((item, index) => (
@@ -751,7 +774,7 @@ function PagePickView({
             onMouseEnter={() => setActiveIndex(index)}
             onClick={() => choose(item)}
           >
-            <FileText size={15} />
+            {databases ? <Table2 size={15} /> : <FileText size={15} />}
             <span>
               <strong>{item.title || '无标题'}</strong>
               {item.snippet ? <small>{item.snippet}</small> : null}

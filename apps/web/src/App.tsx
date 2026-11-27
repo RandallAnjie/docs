@@ -36,6 +36,7 @@ import {
   Copy,
   Download,
   FilePlus2,
+  ArrowUpRight,
   FileText,
   FolderInput,
   ImagePlus,
@@ -187,6 +188,7 @@ import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell, PageNotificationControl, PageReminderControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
+import { PageInvites } from './PageInvites';
 import { ShareLinkSettings } from './ShareLinkSettings';
 import { PageBacklinks } from './PageBacklinks';
 import { PublicDatabaseForm } from './PublicDatabaseForm';
@@ -288,6 +290,9 @@ type SlashCommandId =
   | 'table-of-contents'
   | 'task-list'
   | 'synced-block'
+  | 'database-inline'
+  | 'database-full'
+  | 'database-linked'
   | 'video'
   | 'block-math';
 
@@ -402,6 +407,24 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     keywords: 'remind reminder date time 提醒 日期 时间 @remind',
   },
   {
+    id: 'database-inline',
+    label: '数据库 - 内联',
+    description: '在当前页面里直接查看和编辑的数据库',
+    keywords: 'database inline table board 数据库 内联 表格 看板',
+  },
+  {
+    id: 'database-full',
+    label: '数据库 - 整页',
+    description: '新建一个数据库子页面',
+    keywords: 'database full page 数据库 整页 子页面',
+  },
+  {
+    id: 'database-linked',
+    label: '数据库关联视图',
+    description: '在这里显示并编辑已有的数据库',
+    keywords: 'linked database view 关联 视图 已有数据库',
+  },
+  {
     id: 'synced-block',
     label: '同步块',
     description: '跨页面实时同步同一段内容',
@@ -462,6 +485,26 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     keywords: 'divider rule 分割线',
   },
 ];
+
+/** Commands matching `query`: label starts first, then label contains, then other text. */
+export function rankSlashCommands<
+  T extends { label: string; description: string; keywords: string },
+>(commands: readonly T[], query: string): T[] {
+  const needle = query.trim().toLocaleLowerCase();
+  const score = (command: T) => {
+    const label = command.label.toLocaleLowerCase();
+    if (label.startsWith(needle)) return 0;
+    if (label.includes(needle)) return 1;
+    return `${command.description} ${command.keywords}`.toLocaleLowerCase().includes(needle)
+      ? 2
+      : -1;
+  };
+  return commands
+    .map((command, index) => ({ command, index, score: score(command) }))
+    .filter((entry) => entry.score >= 0)
+    .sort((left, right) => left.score - right.score || left.index - right.index)
+    .map((entry) => entry.command);
+}
 
 function mentionContext(editor: Editor): SlashContext | null {
   const { selection } = editor.state;
@@ -532,6 +575,10 @@ const SLASH_GROUPS: { label: string; ids: SlashCommandId[] }[] = [
     ],
   },
   {
+    label: '数据库',
+    ids: ['database-inline', 'database-full', 'database-linked'],
+  },
+  {
     label: '高级',
     ids: [
       'ai',
@@ -599,6 +646,12 @@ function slashCommandIcon(id: SlashCommandId): ReactNode {
       return <CalendarClock size={17} />;
     case 'synced-block':
       return <RefreshCw size={17} />;
+    case 'database-inline':
+      return <Table2 size={17} />;
+    case 'database-full':
+      return <FileText size={17} />;
+    case 'database-linked':
+      return <ArrowUpRight size={17} />;
     case 'file':
       return <Paperclip size={17} />;
     case 'audio':
@@ -2167,6 +2220,12 @@ function DocumentWorkspace({
     },
     [page.id],
   );
+  const createDatabaseResource = useCallback(async () => {
+    const { page: created } = await createPage('未命名数据库', page.id, page.spaceId);
+    const snapshot = await createPageDatabase(created.id);
+    setPages((current) => mergePageIntoList(current, created));
+    return { databaseId: snapshot.database.id, pageId: created.id, title: created.title };
+  }, [page.id, page.spaceId]);
   const handleEditorReady = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
   }, []);
@@ -2449,6 +2508,29 @@ function DocumentWorkspace({
     provider.awareness.on('change', updateCollaborators);
     provider.ws?.addEventListener('error', () => {
       if (!disposed && !httpSynced && !terminalError) setConnection('disconnected');
+    });
+    // A permission change (for example an invite) closes every live socket
+    // and makes the old ticket stale; fetch a fresh one before reconnecting
+    // instead of retrying with the stale ticket until the HTTP fallback renews.
+    let failedSockets = 0;
+    let lastRenewal = 0;
+    provider.on('status', ({ status }: { status: string }) => {
+      if (status === 'connected') failedSockets = 0;
+    });
+    provider.on('connection-close', (event: CloseEvent | null) => {
+      if (disposed || terminalError) return;
+      failedSockets += 1;
+      const permissionChanged = event?.code === 4403;
+      if (!permissionChanged && failedSockets < 2) return;
+      if (Date.now() - lastRenewal < 3_000) return;
+      lastRenewal = Date.now();
+      void (renewTicket ? renewTicket() : getCollabTicket(page.id, identity).then((r) => r.ticket))
+        .then((fresh) => {
+          if (disposed) return;
+          (provider as WebsocketProvider & { params: Record<string, string> }).params.ticket =
+            fresh;
+        })
+        .catch(() => undefined);
     });
 
     const httpTransport = new HttpCollaborationTransport({
@@ -3482,6 +3564,7 @@ function DocumentWorkspace({
                   onReady={handleEditorReady}
                   onUploadFiles={uploadFilesToPage}
                   onCreateSyncedBlock={createSyncedBlockResource}
+                  onCreateDatabase={createDatabaseResource}
                   organizationId={page.organizationId}
                   breadcrumbItems={breadcrumbItems}
                   pageId={page.id}
@@ -3653,8 +3736,11 @@ function DocumentWorkspace({
           >
             <h2>分享此页面</h2>
             <p>
-              工作区内的协作者用页面链接即可打开。发给组织外的人时，再创建一条可随时撤销的公开链接。
+              邀请成员一起查看或编辑；邀请对子页面和页面里的数据库同样有效。发给组织外的人时，再创建一条可随时撤销的公开链接。
             </p>
+            {!renewTicket ? (
+              <PageInvites page={page} canManage={page.role === 'space_admin'} />
+            ) : null}
             <div className="dialog-actions">
               <button type="button" onClick={() => setShareOpen(false)}>
                 关闭
@@ -3932,6 +4018,7 @@ function CollaborativeEditor({
   onReady,
   onUploadFiles,
   onCreateSyncedBlock,
+  onCreateDatabase,
   organizationId,
   breadcrumbItems,
   pageId,
@@ -3947,6 +4034,7 @@ function CollaborativeEditor({
   onReady: (editor: Editor | null) => void;
   onUploadFiles: (files: File[], target?: Editor | null) => Promise<void>;
   onCreateSyncedBlock: (snapshot?: Uint8Array) => Promise<string>;
+  onCreateDatabase?: () => Promise<{ databaseId: string; pageId: string; title: string }>;
   organizationId: string;
   breadcrumbItems: readonly { id: string; title: string }[];
   pageId: string;
@@ -4011,6 +4099,10 @@ function CollaborativeEditor({
           publicShareToken: publicReadOnlyToken,
         }),
         () => inlineReminderContextRef.current,
+        () => ({
+          actorId: identity.id,
+          publicView: Boolean(publicShareToken || publicSiteSlug),
+        }),
       ),
     [],
   );
@@ -4549,11 +4641,7 @@ function CollaborativeEditor({
   const filteredSlashCommands = useMemo(() => {
     const query = slashMenu?.query.trim().toLocaleLowerCase() ?? '';
     if (!query) return SLASH_COMMANDS;
-    return SLASH_COMMANDS.filter((command) =>
-      `${command.label} ${command.description} ${command.keywords}`
-        .toLocaleLowerCase()
-        .includes(query),
-    );
+    return rankSlashCommands(SLASH_COMMANDS, query);
   }, [slashMenu?.query]);
 
   const runSlashCommand = useCallback(
@@ -4704,6 +4792,59 @@ function CollaborativeEditor({
         return;
       }
 
+      if (id === 'database-inline' || id === 'database-full') {
+        editor.chain().focus().deleteRange(context).run();
+        setSlashMenu(null);
+        if (!onCreateDatabase) return;
+        void onCreateDatabase()
+          .then((created) => {
+            if (!editor.isEditable) return;
+            editor
+              .chain()
+              .focus()
+              .insertContent(
+                id === 'database-inline'
+                  ? {
+                      type: 'databaseBlock',
+                      attrs: { databaseId: created.databaseId, title: created.title },
+                    }
+                  : { type: 'pageLink', attrs: { pageId: created.pageId, title: created.title } },
+              )
+              .run();
+            if (id === 'database-full') navigateToPage(created.pageId);
+          })
+          .catch((reason) =>
+            showToast(reason instanceof Error ? reason.message : '无法创建数据库'),
+          );
+        return;
+      }
+
+      if (id === 'database-linked') {
+        setSlashMenu(null);
+        void pickPageDialog({
+          organizationId,
+          title: '选择数据库',
+          message: '选择一个已有数据库，在这里显示并编辑它。',
+          kind: 'database',
+        })
+          .then((picked) => {
+            if (!picked || !editor.isEditable) return;
+            editor
+              .chain()
+              .focus()
+              .deleteRange(context)
+              .insertContent({
+                type: 'databaseBlock',
+                attrs: { databaseId: picked.id, title: picked.title },
+              })
+              .run();
+          })
+          .catch((reason) =>
+            showToast(reason instanceof Error ? reason.message : '无法插入数据库'),
+          );
+        return;
+      }
+
       if (id === 'page-link') {
         setSlashMenu(null);
         void pickPageDialog({ organizationId })
@@ -4802,7 +4943,7 @@ function CollaborativeEditor({
       }
       setSlashMenu(null);
     },
-    [editor, identity.id, onAskAi, onCreateSyncedBlock, organizationId],
+    [editor, identity.id, onAskAi, onCreateDatabase, onCreateSyncedBlock, organizationId],
   );
 
   slashKeyRef.current = {

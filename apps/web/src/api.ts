@@ -474,6 +474,14 @@ export function getDatabase(databaseId: string): Promise<DatabaseSnapshot> {
   return request(`/api/databases/${encodeURIComponent(databaseId)}`);
 }
 
+export function getDatabaseLiveTicket(
+  databaseId: string,
+): Promise<{ ticket: string; expiresAt: number }> {
+  return request(`/api/databases/${encodeURIComponent(databaseId)}/live-ticket`, {
+    method: 'POST',
+  });
+}
+
 export function getArchivedDatabaseRows(databaseId: string): Promise<DatabaseSnapshot> {
   return request(`/api/databases/${encodeURIComponent(databaseId)}?archived=true`);
 }
@@ -1141,10 +1149,11 @@ export function putPageGrant(
   principalType: SpaceGrantPrincipalType,
   principalId: string,
   role: PageGrantRole,
+  options: { invite?: boolean } = {},
 ): Promise<{ mode: PageAccessMode; grants: PageGrantSummary[] }> {
   return request(
     `/api/pages/${encodeURIComponent(pageId)}/grants/${principalType}/${encodeURIComponent(principalId)}`,
-    { method: 'PUT', body: JSON.stringify({ role }) },
+    { method: 'PUT', body: JSON.stringify({ role, invite: options.invite === true }) },
   );
 }
 

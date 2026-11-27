@@ -80,3 +80,58 @@ export async function verifyCollabTicket(
     return null;
   }
 }
+
+/**
+ * Short-lived permission to watch one database for live changes. Its
+ * `version` differs from collaboration tickets, so neither verifies as the
+ * other.
+ */
+export interface DatabaseLiveTicketPayload {
+  version: 'database-live-1';
+  databaseId: string;
+  actorId: string;
+  displayName: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+export async function signDatabaseLiveTicket(
+  payload: DatabaseLiveTicketPayload,
+  secret: string,
+): Promise<string> {
+  const body = bytesToBase64Url(encoder.encode(JSON.stringify(payload)));
+  const signature = await crypto.subtle.sign('HMAC', await keyFor(secret), encoder.encode(body));
+  return `${body}.${bytesToBase64Url(new Uint8Array(signature))}`;
+}
+
+export async function verifyDatabaseLiveTicket(
+  ticket: string,
+  secret: string,
+  now = Date.now(),
+): Promise<DatabaseLiveTicketPayload | null> {
+  const [body, signature, ...rest] = ticket.split('.');
+  if (!body || !signature || rest.length > 0) return null;
+  try {
+    const valid = await crypto.subtle.verify(
+      'HMAC',
+      await keyFor(secret),
+      toArrayBuffer(base64UrlToBytes(signature)),
+      encoder.encode(body),
+    );
+    if (!valid) return null;
+    const payload = JSON.parse(
+      new TextDecoder().decode(base64UrlToBytes(body)),
+    ) as DatabaseLiveTicketPayload;
+    if (
+      payload.version !== 'database-live-1' ||
+      typeof payload.databaseId !== 'string' ||
+      payload.expiresAt <= now ||
+      payload.issuedAt > now + 30_000
+    ) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}

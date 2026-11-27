@@ -1,3 +1,4 @@
+import { issueDatabaseLiveTicket, notifyDatabaseChanged } from './database-live';
 import {
   AUTOMATION_ACTION_TYPES,
   AUTOMATION_TRIGGER_TYPES,
@@ -2398,6 +2399,13 @@ async function executeAutomation(
       code = (await runAutomationStep(execution, step, index)) ?? code;
     }
     await finish('succeeded', code, null);
+    const touched = new Set([automation.database_id]);
+    for (const step of definition.actions) {
+      if (typeof step.config.databaseId === 'string' && step.config.databaseId) {
+        touched.add(step.config.databaseId);
+      }
+    }
+    await Promise.all([...touched].map((id) => notifyDatabaseChanged(environment, id, actor.id)));
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '自动化执行失败';
     await finish('failed', null, `${stepLabel ? `${stepLabel}：` : ''}${message}`.slice(0, 500));
@@ -4188,6 +4196,7 @@ export async function handlePublicDatabaseFormsApi(
   )
     .bind(crypto.randomUUID(), form.organization_id, form.id, payload.row.id, Date.now())
     .run();
+  await notifyDatabaseChanged(env, form.database_id, null);
   return json(
     { ok: true, submissionId: payload.row.id, message: definition.successMessage },
     { status: 201 },
@@ -4751,6 +4760,16 @@ export async function handleDatabasesApi(
       : error('数据库不存在或无权编辑', 404);
   }
 
+  const liveTicketMatch = url.pathname.match(/^\/api\/databases\/([^/]+)\/live-ticket$/);
+  if (liveTicketMatch?.[1] && request.method === 'POST') {
+    const databaseId = decodeURIComponent(liveTicketMatch[1]);
+    if (!isPageId(databaseId)) return error('数据库 ID 无效', 400);
+    const authorization = await authorizeDatabase(env, databaseId, actor.id, 'view');
+    if (!authorization) return error('数据库不存在或无权访问', 404);
+    const issued = await issueDatabaseLiveTicket(env, databaseId, actor);
+    return issued ? json(issued) : error('实时服务尚未配置', 503);
+  }
+
   const databaseMatch = url.pathname.match(/^\/api\/databases\/([^/]+)$/);
   if (databaseMatch?.[1]) {
     const databaseId = decodeURIComponent(databaseMatch[1]);
@@ -4763,9 +4782,14 @@ export async function handleDatabasesApi(
         actor.id,
         rowState === 'archived' ? 'edit_content' : 'view',
       );
-      return authorization
-        ? json(await snapshot(env, authorization, actor.id, rowState))
-        : error('数据库不存在或无权访问', 404);
+      if (!authorization) return error('数据库不存在或无权访问', 404);
+      const canEdit = Boolean(
+        await requirePageAction(env, authorization.database.page_id, actor.id, 'edit_content'),
+      );
+      return json({
+        ...(await snapshot(env, authorization, actor.id, rowState)),
+        access: { canEdit: canEdit && !authorization.database.is_locked },
+      });
     }
     if (request.method === 'PATCH') {
       const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');

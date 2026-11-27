@@ -1,3 +1,4 @@
+import { databaseBlockExtension, type DatabaseBlockContext } from './DatabaseBlock';
 import { mergeAttributes, Node } from '@tiptap/core';
 import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
@@ -590,8 +591,10 @@ export function createRdocsEditorBlocks(
   getSyncedBlockContext: () => SyncedBlockContext | null = () => null,
   getPageLinkContext: () => PageLinkContext | null = () => null,
   getInlineReminderContext: () => InlineReminderContext | null = () => null,
+  getDatabaseBlockContext: () => DatabaseBlockContext | null = () => null,
 ) {
   return [
+    databaseBlockExtension(getDatabaseBlockContext),
     MentionInline,
     HtmlSandboxBlock,
     CalloutBlock,
