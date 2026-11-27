@@ -277,3 +277,43 @@ describe('database clipboard', () => {
     expect(parseCellText({ type: 'date', config: {} } as never, text)).toEqual(value);
   });
 });
+
+describe('view layout helpers', () => {
+  it('covers each local day of a date range', async () => {
+    const { cellDayRange, daysBetween } = await import('./database-view');
+    expect(cellDayRange('2026-11-20')).toEqual({ start: '2026-11-20', end: '2026-11-20' });
+    expect(cellDayRange({ start: '2026-11-20', end: '2026-11-22' })).toEqual({
+      start: '2026-11-20',
+      end: '2026-11-22',
+    });
+    expect(cellDayRange({ start: '2026-11-22', end: '2026-11-20' })).toEqual({
+      start: '2026-11-22',
+      end: '2026-11-22',
+    });
+    expect(cellDayRange(null)).toBeNull();
+    expect(daysBetween('2026-11-29', '2026-12-02')).toEqual([
+      '2026-11-29',
+      '2026-11-30',
+      '2026-12-01',
+      '2026-12-02',
+    ]);
+    expect(daysBetween('2026-01-01', '2026-12-31', 5)).toHaveLength(5);
+  });
+
+  it('groups timeline days by month', async () => {
+    const { monthSegments } = await import('./database-view');
+    expect(monthSegments(['2026-11-29', '2026-11-30', '2026-12-01'])).toEqual([
+      { month: '2026-11', span: 2 },
+      { month: '2026-12', span: 1 },
+    ]);
+  });
+
+  it('picks round chart ticks that cover the maximum', async () => {
+    const { niceTicks } = await import('./database-view');
+    expect(niceTicks(5)).toEqual([0, 2, 4, 6]);
+    expect(niceTicks(4)).toEqual([0, 1, 2, 3, 4]);
+    expect(niceTicks(87)).toEqual([0, 50, 100]);
+    expect(niceTicks(0)).toEqual([0, 1]);
+    expect(niceTicks(2.5)).toEqual([0, 1, 2, 3]);
+  });
+});

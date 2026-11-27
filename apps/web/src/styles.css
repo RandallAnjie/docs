@@ -13960,3 +13960,1141 @@ button.page-icon-display:hover {
 .database-table-wrap:not(.is-virtual) {
   max-height: none;
 }
+
+/* ══ Database views, Notion layout pass ═══════════════════════════════════ */
+/* Quiet per-view settings: a text button and an anchored menu. */
+.database-canvas .database-layout-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  min-height: 40px;
+  padding: 4px 0 6px;
+}
+.database-canvas .database-layout-bar-title {
+  color: var(--n-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.database-canvas .database-layout-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.database-canvas .database-layout-bar-actions.is-start {
+  margin-left: 0;
+}
+.database-canvas .database-layout-bar-note {
+  margin-right: 6px;
+  color: var(--n-text-3);
+  font-size: 12px;
+}
+.database-setting-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  max-width: 260px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgb(55 53 47 / 65%);
+  font: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.database-setting-chip > span {
+  color: rgb(55 53 47 / 45%);
+}
+.database-setting-chip > strong {
+  overflow: hidden;
+  color: rgb(55 53 47 / 85%);
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+.database-setting-chip > svg {
+  flex: 0 0 auto;
+  color: rgb(55 53 47 / 45%);
+}
+.database-setting-chip:hover,
+.database-setting-chip.is-open {
+  background: rgb(55 53 47 / 8%);
+}
+.floating-layer.database-setting-menu {
+  min-width: 200px;
+  max-width: 320px;
+}
+.floating-layer.database-setting-menu .database-setting-menu-title {
+  margin: 2px 10px 4px;
+  color: rgb(55 53 47 / 65%);
+  font-size: 12px;
+  font-weight: 500;
+}
+.floating-layer.database-setting-menu > button > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.floating-layer.database-setting-menu .database-setting-check {
+  color: rgb(55 53 47 / 85%);
+}
+.database-canvas .database-period-nav {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}
+.database-canvas .database-period-nav > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgb(55 53 47 / 65%);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.database-canvas .database-period-nav > button:hover {
+  background: rgb(55 53 47 / 8%);
+}
+.database-canvas .database-period-nav > .database-period-today {
+  color: var(--n-text);
+}
+
+/* Card titles shared by board, gallery, list, calendar and timeline. */
+.database-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.database-card-title > svg {
+  flex: 0 0 auto;
+  color: rgb(55 53 47 / 45%);
+}
+.database-card-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-card-title.is-empty > span {
+  color: rgb(55 53 47 / 45%);
+}
+
+/* ── Board ─────────────────────────────────────────────────────────────── */
+.database-canvas .database-board-shell > .database-layout-bar {
+  min-height: 36px;
+  padding-bottom: 0;
+}
+.database-canvas .database-board {
+  padding-top: 8px;
+}
+.database-canvas .database-board > section > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.database-canvas .database-board-empty-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-text-2);
+  font-size: 14px;
+}
+.database-canvas .database-board article > button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--n-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.database-canvas .database-board article > button .database-card-title > svg {
+  display: none;
+}
+.database-canvas .database-card-values {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  color: var(--n-text);
+  font-size: 12px;
+}
+.database-canvas .database-card-values > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 20px;
+  max-width: 100%;
+  overflow: hidden;
+}
+.database-canvas .database-board-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--n-text-3);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* ── Calendar ──────────────────────────────────────────────────────────── */
+.database-canvas .database-calendar-shell {
+  padding-bottom: 24px;
+}
+.database-canvas .database-calendar-weekdays {
+  border: 0;
+  border-bottom: 1px solid var(--n-border);
+}
+.database-canvas .database-calendar-weekdays span {
+  padding: 0 8px;
+  border: 0;
+  color: var(--n-text-3);
+  font-size: 12px;
+  line-height: 24px;
+  text-align: center;
+}
+.database-canvas .database-calendar-grid {
+  border-top: 0;
+  border-left: 1px solid var(--n-border);
+}
+.database-canvas .database-calendar-grid > section {
+  min-height: 124px;
+  padding: 4px 4px 6px;
+  border-right: 1px solid var(--n-border);
+  border-bottom: 1px solid var(--n-border);
+  background: #fff;
+}
+.database-canvas .database-calendar-grid > section.weekend {
+  background: rgb(251 251 250);
+}
+.database-canvas .database-calendar-grid > section.outside {
+  background: rgb(251 251 250);
+  color: inherit;
+}
+.database-canvas .database-calendar-grid section > header {
+  justify-content: space-between;
+  min-height: 26px;
+  padding: 0 2px 2px;
+}
+.database-canvas .database-calendar-grid section > header time {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 4px;
+  border-radius: 12px;
+  color: var(--n-text-2);
+  font-size: 14px;
+}
+.database-canvas .database-calendar-grid > section.outside header time {
+  color: var(--n-text-3);
+}
+.database-canvas .database-calendar-grid > section.today time {
+  width: auto;
+  background: rgb(235 87 87);
+  color: #fff;
+  font-weight: 500;
+}
+.database-canvas .database-calendar-grid section > header button {
+  width: 24px;
+  height: 24px;
+  justify-content: center;
+  align-items: center;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--n-text-3);
+}
+.database-canvas .database-calendar-grid section > header button:hover {
+  background: var(--n-hover);
+}
+.database-canvas .database-calendar-card {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 26px;
+  margin: 0 0 4px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: var(--n-card-shadow);
+  color: var(--n-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.database-canvas .database-calendar-card:hover {
+  background: rgb(250 250 249);
+}
+.database-canvas .database-calendar-card.is-continued {
+  color: var(--n-text-2);
+  font-weight: 400;
+}
+.database-canvas .database-calendar-card .database-card-title > svg {
+  display: none;
+}
+
+/* ── List ──────────────────────────────────────────────────────────────── */
+.database-canvas .database-list-view {
+  padding: 4px 0 16px;
+}
+.database-canvas .database-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--n-text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.database-canvas .database-list-row:hover {
+  background: var(--n-hover-soft);
+}
+.database-canvas .database-list-row:focus-visible {
+  outline: 2px solid rgb(35 131 226 / 50%);
+  outline-offset: -2px;
+}
+.database-canvas .database-list-row > .database-card-title {
+  flex: 1 1 auto;
+  font-weight: 500;
+}
+.database-canvas .database-list-row > .database-card-title > span {
+  border-bottom: 1px solid rgb(55 53 47 / 16%);
+}
+.database-canvas .database-list-values {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--n-text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.database-canvas .database-list-values > span {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  overflow: hidden;
+}
+.database-canvas .database-list-add,
+.database-canvas .database-gallery-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--n-text-3);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.database-canvas .database-list-add:hover,
+.database-canvas .database-gallery-add:hover,
+.database-canvas .database-board-add:hover {
+  background: var(--n-hover);
+}
+
+/* ── Gallery ───────────────────────────────────────────────────────────── */
+.database-canvas .database-gallery-view {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+  padding: 12px 0 24px;
+}
+.database-canvas .database-gallery-view article {
+  display: flex;
+  flex-direction: column;
+  min-height: 72px;
+  padding: 10px 10px 8px;
+  border-radius: 4px;
+}
+.database-canvas .database-gallery-view article > button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  color: var(--n-text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.database-canvas .database-gallery-view article > button:hover {
+  text-decoration: none;
+}
+.database-canvas .database-gallery-add {
+  min-height: 72px;
+  height: auto;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+/* ── Timeline ──────────────────────────────────────────────────────────── */
+.database-canvas .database-timeline-view {
+  position: relative;
+  overflow-x: auto;
+  padding: 0 0 24px;
+}
+.database-canvas .database-timeline-view > .database-layout-bar {
+  position: sticky;
+  left: 0;
+}
+.database-canvas .database-timeline-axis,
+.database-canvas .database-timeline-view article {
+  grid-template-columns: 220px minmax(calc(var(--timeline-days) * 36px), 1fr);
+  min-width: max(640px, calc(220px + var(--timeline-days) * 36px));
+}
+.database-canvas .database-timeline-axis {
+  align-items: stretch;
+  min-height: 48px;
+  border: 0;
+  border-top: 1px solid var(--n-border);
+  border-bottom: 1px solid var(--n-border);
+}
+.database-canvas .database-timeline-axis > span {
+  display: flex;
+  align-items: flex-end;
+  padding: 0 8px 6px;
+  border-right: 1px solid var(--n-border);
+  color: var(--n-text-2);
+  font-size: 14px;
+  font-weight: 400;
+}
+.database-canvas .database-timeline-axis > div {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 22px 26px;
+}
+.database-canvas .database-timeline-months,
+.database-canvas .database-timeline-days {
+  display: grid;
+  grid-template-columns: repeat(var(--timeline-days), minmax(0, 1fr));
+}
+.database-canvas .database-timeline-months > span {
+  overflow: hidden;
+  padding: 4px 6px 0;
+  color: var(--n-text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.database-canvas .database-timeline-days > time {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--n-text-3);
+  font-size: 12px;
+}
+.database-canvas .database-timeline-days > time > span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+}
+.database-canvas .database-timeline-days > time.today > span {
+  background: rgb(235 87 87);
+  color: #fff;
+  font-weight: 500;
+}
+.database-canvas .database-timeline-view article {
+  height: 40px;
+  min-height: 40px;
+  border-bottom: 1px solid var(--n-border);
+}
+.database-canvas .database-timeline-name {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--n-border);
+  background: transparent;
+  color: var(--n-text);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.database-canvas .database-timeline-name:hover {
+  background: var(--n-hover-soft);
+}
+.database-canvas .database-timeline-track {
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(100% / var(--timeline-days) - 1px),
+    rgb(55 53 47 / 5%) calc(100% / var(--timeline-days) - 1px),
+    rgb(55 53 47 / 5%) calc(100% / var(--timeline-days))
+  );
+}
+.database-canvas
+  .database-timeline-view[style*='--timeline-today']
+  .database-timeline-track::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: -1px;
+  left: var(--timeline-today);
+  width: 1px;
+  background: rgb(235 87 87 / 70%);
+  pointer-events: none;
+}
+.database-canvas .database-timeline-bar {
+  top: 6px;
+  z-index: 1;
+  width: max(28px, var(--timeline-width));
+  height: 28px;
+  display: flex;
+  overflow: visible;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: var(--n-card-shadow);
+  color: var(--n-text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.database-canvas .database-timeline-bar:hover {
+  background: rgb(250 250 249);
+}
+.database-canvas .database-timeline-bar > span {
+  flex: 0 0 auto;
+  padding: 0 10px;
+  overflow: visible;
+  line-height: 28px;
+}
+.database-canvas .database-timeline-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+.database-canvas .database-timeline-handle.is-start {
+  left: 0;
+  border-radius: 4px 0 0 4px;
+}
+.database-canvas .database-timeline-handle.is-end {
+  right: 0;
+  border-radius: 0 4px 4px 0;
+}
+.database-canvas .database-timeline-handle:hover,
+.database-canvas .database-timeline-handle:focus-visible {
+  background: rgb(35 131 226 / 25%);
+  outline: none;
+}
+.database-canvas .database-timeline-unscheduled {
+  position: sticky;
+  left: 0;
+  margin-top: 10px;
+  color: var(--n-text-2);
+  font-size: 14px;
+}
+.database-canvas .database-timeline-unscheduled summary {
+  cursor: pointer;
+}
+.database-canvas .database-timeline-unscheduled > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.database-canvas .database-timeline-unscheduled button {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: var(--n-card-shadow);
+  color: var(--n-text);
+  font: inherit;
+  font-size: 14px;
+  cursor: grab;
+}
+
+/* ── Chart ─────────────────────────────────────────────────────────────── */
+.database-canvas .database-chart-view {
+  padding-bottom: 24px;
+}
+.database-canvas .database-chart-figure {
+  margin: 4px 0 0;
+  padding: 16px 20px 14px;
+  border-radius: 6px;
+  box-shadow: rgb(15 15 15 / 8%) 0 0 0 1px;
+}
+.database-canvas .database-chart-figure > figcaption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.database-canvas .database-chart-figure > figcaption strong {
+  color: var(--n-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.database-canvas .database-chart-figure > figcaption span,
+.database-canvas .database-chart-empty {
+  color: var(--n-text-3);
+  font-size: 12px;
+}
+.database-canvas .database-column-chart {
+  padding-left: 36px;
+}
+.database-canvas .database-chart-plot {
+  position: relative;
+  height: 260px;
+  margin-top: 14px;
+}
+.database-canvas .database-chart-gridline {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px solid rgb(55 53 47 / 9%);
+  pointer-events: none;
+}
+.database-canvas .database-chart-gridline > small {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: -8px;
+  color: var(--n-text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+.database-canvas .database-chart-columns,
+.database-canvas .database-chart-labels {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+}
+.database-canvas .database-chart-columns {
+  position: absolute;
+  inset: 0;
+}
+.database-canvas .database-chart-columns > button {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.database-canvas .database-chart-columns > button:hover {
+  background: rgb(55 53 47 / 4%);
+}
+.database-canvas .database-chart-mark {
+  position: relative;
+  width: min(24px, 60%);
+  min-height: 2px;
+  border-radius: 4px 4px 0 0;
+  background: rgb(35 131 226);
+}
+.database-canvas .database-chart-mark > strong {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--n-text-2);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.database-canvas .database-column-chart.is-line .database-chart-mark {
+  width: 10px;
+  height: 10px;
+  min-height: 0;
+  margin-bottom: -5px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #fff;
+}
+.database-canvas .database-column-chart.is-line .database-chart-columns > button {
+  align-items: flex-end;
+}
+.database-canvas
+  .database-column-chart.is-line
+  .database-chart-columns
+  > button
+  > .database-chart-mark {
+  position: absolute;
+  bottom: var(--point, 0);
+}
+.database-canvas .database-line-path {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.database-canvas .database-line-path polyline {
+  fill: none;
+  stroke: rgb(35 131 226);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.database-canvas .database-chart-tip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgb(15 15 15 / 90%);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.database-canvas .database-chart-columns > button:hover > .database-chart-tip,
+.database-canvas .database-chart-columns > button:focus-visible > .database-chart-tip {
+  opacity: 1;
+}
+.database-canvas .database-chart-labels {
+  margin-top: 6px;
+  border-top: 1px solid rgb(55 53 47 / 16%);
+  padding-top: 6px;
+}
+.database-canvas .database-chart-labels > span {
+  overflow: hidden;
+  padding: 0 4px;
+  color: var(--n-text-2);
+  font-size: 12px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-canvas .database-hbar-chart {
+  display: grid;
+  gap: 6px;
+}
+.database-canvas .database-hbar-chart > button {
+  display: grid;
+  grid-template-columns: minmax(80px, 160px) 1fr;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--n-text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: right;
+  cursor: pointer;
+}
+.database-canvas .database-hbar-chart > button:hover {
+  background: rgb(55 53 47 / 4%);
+}
+.database-canvas .database-hbar-chart > button > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.database-canvas .database-hbar-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.database-canvas .database-hbar-track > i {
+  height: 18px;
+  min-width: 2px;
+  max-width: calc(100% - 48px);
+  border-radius: 0 4px 4px 0;
+}
+.database-canvas .database-hbar-track > strong {
+  color: var(--n-text-2);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.database-canvas .database-donut-chart {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 32px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+}
+.database-canvas .database-donut {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+}
+.database-canvas .database-donut > span {
+  position: absolute;
+  inset: 30px;
+  display: grid;
+  place-content: center;
+  border-radius: 50%;
+  background: #fff;
+  text-align: center;
+}
+.database-canvas .database-donut strong {
+  color: var(--n-text);
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.database-canvas .database-donut small {
+  color: var(--n-text-3);
+  font-size: 12px;
+}
+.database-canvas .database-chart-legend {
+  display: grid;
+  flex: 1 1 220px;
+  gap: 2px;
+}
+.database-canvas .database-chart-legend button {
+  display: grid;
+  grid-template-columns: 10px 1fr auto 44px;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--n-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.database-canvas .database-chart-legend button:hover {
+  background: var(--n-hover-soft);
+}
+.database-canvas .database-chart-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.database-canvas .database-chart-legend strong {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.database-canvas .database-chart-legend small {
+  color: var(--n-text-3);
+  text-align: right;
+}
+.database-canvas .database-chart-table {
+  margin-top: 10px;
+  color: var(--n-text-2);
+  font-size: 12px;
+}
+.database-canvas .database-chart-table summary {
+  width: max-content;
+  cursor: pointer;
+}
+.database-canvas .database-chart-table table {
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.database-canvas .database-chart-table th,
+.database-canvas .database-chart-table td {
+  padding: 4px 16px 4px 0;
+  border-bottom: 1px solid var(--n-border);
+  color: var(--n-text);
+  text-align: left;
+}
+.database-canvas .database-chart-table th {
+  color: var(--n-text-2);
+  font-weight: 500;
+}
+
+/* ── Form ──────────────────────────────────────────────────────────────── */
+.database-canvas .database-form-publishing {
+  max-width: 640px;
+  margin: 12px auto 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(247 247 245);
+}
+.database-canvas .database-form-publishing strong {
+  color: var(--n-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.database-canvas .database-form-publishing header p {
+  color: var(--n-text-2);
+  font-size: 12px;
+}
+.database-canvas .database-form-publishing header > div:last-child {
+  align-items: center;
+  gap: 6px;
+}
+.database-canvas .database-form-publishing .database-setting-chip {
+  padding: 0 6px;
+  background: transparent;
+  color: var(--n-text-2);
+  font-size: 13px;
+}
+.database-canvas .database-form-publishing .database-setting-chip:hover {
+  background: var(--n-hover);
+}
+.database-canvas .database-form-publish {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 4px;
+  background: rgb(35 131 226);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+}
+.database-canvas .database-form-publish:hover {
+  background: rgb(0 117 211);
+}
+.database-canvas .database-form-view {
+  max-width: 640px;
+  margin: 28px auto 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+.database-canvas .database-form-view header {
+  display: block;
+  margin-bottom: 28px;
+}
+.database-canvas .database-form-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: rgb(247 247 245);
+  color: var(--n-text-2);
+}
+.database-canvas .database-form-view h3 {
+  color: var(--n-text);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.database-canvas .database-form-view header p {
+  margin-top: 8px;
+  color: var(--n-text-2);
+  font-size: 14px;
+}
+.database-canvas .database-form-view > label {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 22px;
+  color: var(--n-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+.database-canvas .database-form-view > label > span b {
+  color: rgb(235 87 87);
+  font-weight: 500;
+}
+.database-canvas .database-form-view > label input:not([type='checkbox']),
+.database-canvas .database-form-view > label select,
+.database-canvas .database-form-view > label textarea {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid rgb(55 53 47 / 16%);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+  color: var(--n-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+}
+.database-canvas .database-form-view > label textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.database-canvas .database-form-view > label select {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2337352f' stroke-opacity='.5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 10px center;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+.database-canvas .database-form-view > label input:focus,
+.database-canvas .database-form-view > label select:focus,
+.database-canvas .database-form-view > label textarea:focus {
+  border-color: rgb(35 131 226 / 60%);
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(35 131 226 / 15%);
+}
+.database-canvas .database-form-view .public-form-options {
+  display: grid;
+  gap: 4px;
+}
+.database-canvas .database-form-view .public-form-options > label,
+.database-canvas .database-form-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  min-height: 28px;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.database-canvas .database-form-view input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: rgb(35 131 226);
+}
+.database-canvas .database-form-view > button[type='submit'] {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 6px;
+  background: rgb(35 131 226);
+  font-size: 14px;
+  font-weight: 500;
+}
+.database-canvas .database-form-view > button[type='submit']:hover {
+  background: rgb(0 117 211);
+}
+
+@media (max-width: 640px) {
+  .database-canvas .database-layout-bar-actions {
+    margin-left: 0;
+  }
+  .database-canvas .database-list-values {
+    display: none;
+  }
+  .database-canvas .database-timeline-axis,
+  .database-canvas .database-timeline-view article {
+    grid-template-columns: 140px minmax(calc(var(--timeline-days) * 36px), 1fr);
+    min-width: calc(140px + var(--timeline-days) * 36px);
+  }
+  .database-canvas .database-calendar-shell > .database-layout-bar {
+    position: sticky;
+    left: 0;
+  }
+}
+/* A bar too short for its title shows the title just after it. */
+.database-canvas .database-timeline-bar > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.database-canvas .database-timeline-bar.is-short > span {
+  position: absolute;
+  left: calc(100% + 8px);
+  overflow: visible;
+  padding: 0;
+  color: var(--n-text);
+  pointer-events: none;
+}
+.database-canvas .database-board > section > header > .database-board-empty-group {
+  padding: 0;
+  background: transparent;
+}
+.database-canvas .database-chart-legend {
+  flex: 0 1 360px;
+}
+.database-canvas .database-column-chart.is-line .database-chart-mark > strong {
+  display: none;
+}
+@media (max-width: 640px) {
+  .database-canvas .database-calendar-shell {
+    overflow-x: visible;
+  }
+  .database-canvas .database-calendar-weekdays,
+  .database-canvas .database-calendar-grid {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    min-width: 0;
+  }
+  .database-canvas .database-calendar-weekdays span {
+    padding: 0;
+    font-size: 11px;
+  }
+  .database-canvas .database-calendar-grid > section {
+    min-width: 0;
+    min-height: 88px;
+    padding: 2px 2px 4px;
+  }
+  .database-canvas .database-calendar-grid section > header {
+    justify-content: center;
+    min-height: 24px;
+  }
+  .database-canvas .database-calendar-grid section > header button {
+    display: none;
+  }
+  .database-canvas .database-calendar-grid section > header time {
+    min-width: 22px;
+    height: 22px;
+    margin: 0;
+    font-size: 12px;
+  }
+  .database-canvas .database-calendar-card {
+    min-height: 18px;
+    margin-bottom: 2px;
+    padding: 1px 3px;
+    font-size: 10px;
+    line-height: 16px;
+  }
+}
+@media (max-width: 640px) {
+  .database-canvas .database-calendar-month {
+    display: none;
+  }
+}
