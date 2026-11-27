@@ -15378,3 +15378,95 @@ button.page-icon-display:hover {
 .editor-frame > div:has(> .rdocs-drag-handle-portal) {
   z-index: var(--z-editor-float) !important;
 }
+
+/* ══ Table chrome (Notion-style) ══════════════════════════════════════════ */
+.rdocs-table-handle {
+  position: fixed;
+  z-index: var(--z-editor-float);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgb(55 53 47 / 16%);
+  border-radius: 4px;
+  background: #fff;
+  color: rgb(55 53 47 / 50%);
+  box-shadow: rgb(15 15 15 / 6%) 0 1px 2px;
+  cursor: pointer;
+}
+.rdocs-table-handle.is-row {
+  width: 18px;
+  height: 24px;
+}
+.rdocs-table-handle.is-column {
+  width: 24px;
+  height: 18px;
+}
+.rdocs-table-handle:hover,
+.rdocs-table-handle.is-open {
+  border-color: rgb(35 131 226 / 55%);
+  background: rgb(35 131 226 / 8%);
+  color: rgb(35 131 226);
+}
+.rdocs-table-add-row,
+.rdocs-table-add-col {
+  position: fixed;
+  z-index: var(--z-editor-float);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: rgb(55 53 47 / 4%);
+  color: rgb(55 53 47 / 45%);
+  cursor: pointer;
+}
+.rdocs-table-add-row {
+  height: 16px;
+}
+.rdocs-table-add-col {
+  width: 16px;
+}
+.rdocs-table-add-row:hover,
+.rdocs-table-add-col:hover {
+  background: rgb(55 53 47 / 10%);
+  color: rgb(55 53 47 / 80%);
+}
+
+/* Collaborators' carets: a small pin on the caret instead of a bubble that
+   covers the line above; hovering the pin shows the initial (name in the
+   tooltip). */
+.rdocs-editor .collaboration-carets__label,
+.rdocs-editor .tableWrapper .collaboration-carets__label,
+.rdocs-editor pre .collaboration-carets__label,
+.rdocs-synced-block-editor .collaboration-carets__label {
+  top: -4px;
+  bottom: auto;
+  left: -4px;
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+  font-size: 0;
+  box-shadow: none;
+  transform: none;
+  pointer-events: auto;
+  cursor: default;
+  transition:
+    width 120ms ease,
+    height 120ms ease,
+    top 120ms ease,
+    left 120ms ease,
+    font-size 120ms ease;
+}
+.rdocs-editor .collaboration-carets__label::after {
+  display: none;
+}
+.rdocs-editor .collaboration-carets__label:hover {
+  top: -22px;
+  left: -9px;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #fff;
+  font-size: 9px;
+  box-shadow: 0 2px 8px rgb(15 15 15 / 18%);
+}

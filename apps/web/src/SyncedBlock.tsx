@@ -9,6 +9,8 @@ import { EditorContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from
 import StarterKit from '@tiptap/starter-kit';
 import { Copy, RefreshCw, RotateCcw, Trash2, Unlink } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+
+import { ScopedSelectAll } from './scoped-select-all';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
@@ -85,6 +87,7 @@ function SyncedBlockEditor({
     {
       editable,
       extensions: [
+        ScopedSelectAll,
         StarterKit.configure({
           undoRedo: false,
           link: { openOnClick: false, autolink: true, defaultProtocol: 'https' },
