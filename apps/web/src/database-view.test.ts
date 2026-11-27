@@ -73,7 +73,7 @@ describe('applyDatabaseView', () => {
 
   it('assigns a stable color swatch to the same option name', () => {
     expect(optionSwatch('进行中')).toEqual(optionSwatch('进行中'));
-    expect(optionSwatch('进行中').background).toMatch(/^#/);
+    expect(optionSwatch('进行中').background).toMatch(/^(#|rgb)/);
     expect(optionSwatch('阻塞').background).not.toBe(optionSwatch('完成').background);
   });
 

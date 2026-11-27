@@ -64,19 +64,21 @@ export const AGGREGATION_LABELS: Record<DatabaseAggregation, string> = {
 export interface OptionSwatch {
   background: string;
   color: string;
+  /** Dot color for status pills. */
+  dot: string;
 }
 
-/** Distinct, readable tag colors: blue, green, yellow, orange, purple, pink, red, brown, gray. */
+/** Tag colors in the order options are colored: blue, green, yellow, orange, purple, pink, red, brown, gray. */
 const OPTION_PALETTE: readonly OptionSwatch[] = [
-  { background: '#e1ecf8', color: '#1d5a91' },
-  { background: '#dff0e5', color: '#2b6a40' },
-  { background: '#f9eec9', color: '#775807' },
-  { background: '#fce4d3', color: '#974a14' },
-  { background: '#ebe3f7', color: '#5d3e98' },
-  { background: '#f8e0eb', color: '#913a63' },
-  { background: '#fbe1dd', color: '#a1362a' },
-  { background: '#f0e5dc', color: '#714a2c' },
-  { background: '#ebeae7', color: '#55534e' },
+  { background: 'rgb(211 229 239)', color: 'rgb(24 51 71)', dot: 'rgb(91 151 189)' },
+  { background: 'rgb(219 237 219)', color: 'rgb(28 56 41)', dot: 'rgb(108 155 125)' },
+  { background: 'rgb(253 236 200)', color: 'rgb(64 44 27)', dot: 'rgb(203 148 52)' },
+  { background: 'rgb(250 222 201)', color: 'rgb(73 41 14)', dot: 'rgb(217 115 13)' },
+  { background: 'rgb(232 222 238)', color: 'rgb(65 36 84)', dot: 'rgb(154 109 215)' },
+  { background: 'rgb(245 224 233)', color: 'rgb(76 35 55)', dot: 'rgb(193 76 138)' },
+  { background: 'rgb(255 226 221)', color: 'rgb(93 23 21)', dot: 'rgb(205 60 58)' },
+  { background: 'rgb(238 224 218)', color: 'rgb(68 42 30)', dot: 'rgb(140 46 0)' },
+  { background: 'rgb(227 226 224)', color: 'rgb(50 48 44)', dot: 'rgb(145 145 142)' },
 ];
 
 const BLUE = 0;
