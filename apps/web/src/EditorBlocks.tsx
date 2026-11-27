@@ -26,7 +26,11 @@ function urlWithDefaultProtocol(value: string): URL | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   try {
-    const url = new URL(/^[a-z][a-z\d+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    const hasScheme = /^[a-z][a-z\d+.-]*:/i.test(trimmed);
+    const url = new URL(hasScheme ? trimmed : `https://${trimmed}`);
+    // Without a scheme, only something that looks like a domain counts
+    // ("example.com/page"), not arbitrary words.
+    if (!hasScheme && !url.hostname.includes('.')) return null;
     return url.protocol === 'https:' || url.protocol === 'http:' ? url : null;
   } catch {
     return null;
@@ -50,7 +54,9 @@ function youtubeVideoId(url: URL): string | null {
 
 export function normalizeEmbedUrl(value: string): EmbedTarget | null {
   const url = urlWithDefaultProtocol(value);
-  if (!url || url.protocol !== 'https:') return null;
+  if (!url) return null;
+  // Supported players are always loaded over HTTPS.
+  if (url.protocol === 'http:') url.protocol = 'https:';
   const originalUrl = url.toString();
   const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
 
@@ -107,6 +113,22 @@ export function normalizeEmbedUrl(value: string): EmbedTarget | null {
   return null;
 }
 
+export type EmbedInput =
+  { kind: 'embed'; target: EmbedTarget } | { kind: 'bookmark'; url: string; title: string };
+
+/**
+ * What an address typed into the embed dialog becomes: an embedded player
+ * for supported sites, otherwise a bookmark card (most sites refuse to be
+ * shown inside another page). Null when it is not a web address.
+ */
+export function classifyEmbedInput(value: string): EmbedInput | null {
+  const target = normalizeEmbedUrl(value);
+  if (target) return { kind: 'embed', target };
+  const url = normalizeBookmarkUrl(value);
+  if (!url) return null;
+  return { kind: 'bookmark', url, title: new URL(url).hostname.replace(/^www\./, '') };
+}
+
 function promptForBookmark(props: NodeViewProps): void {
   void bookmarkDialog({
     defaultUrl: String(props.node.attrs.url ?? ''),
@@ -160,8 +182,22 @@ function EmbedNodeView(props: NodeViewProps) {
   const normalized = normalizeEmbedUrl(source);
 
   const edit = () => {
-    void embedDialog({ defaultUrl: source, normalize: normalizeEmbedUrl }).then((target) => {
-      if (target) props.updateAttributes(target);
+    void embedDialog({ defaultUrl: source, classify: classifyEmbedInput }).then((input) => {
+      if (!input) return;
+      if (input.kind === 'embed') {
+        props.updateAttributes(input.target);
+        return;
+      }
+      const position = props.getPos();
+      if (typeof position !== 'number') return;
+      props.editor
+        .chain()
+        .focus()
+        .insertContentAt(
+          { from: position, to: position + props.node.nodeSize },
+          { type: 'bookmark', attrs: { url: input.url, title: input.title } },
+        )
+        .run();
     });
   };
 

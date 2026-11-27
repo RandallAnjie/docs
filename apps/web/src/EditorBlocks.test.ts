@@ -5,7 +5,12 @@ import { EditorState } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { describe, expect, it } from 'vitest';
 
-import { normalizeBookmarkUrl, normalizeEmbedUrl, rdocsEditorBlocks } from './EditorBlocks';
+import {
+  classifyEmbedInput,
+  normalizeBookmarkUrl,
+  normalizeEmbedUrl,
+  rdocsEditorBlocks,
+} from './EditorBlocks';
 import {
   moveTopLevelBlock,
   removeAttachmentNodes,
@@ -28,13 +33,29 @@ describe('editor block URL normalization', () => {
     });
   });
 
-  it('allows supported HTTPS providers and rejects arbitrary or insecure frames', () => {
+  it('allows supported providers (always over HTTPS) and rejects arbitrary frames', () => {
     expect(normalizeEmbedUrl('https://www.figma.com/design/abc/Rdocs')?.provider).toBe('Figma');
     expect(normalizeEmbedUrl('https://www.loom.com/share/abc123')?.src).toBe(
       'https://www.loom.com/embed/abc123',
     );
     expect(normalizeEmbedUrl('https://example.com/embed')).toBeNull();
-    expect(normalizeEmbedUrl('http://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull();
+    expect(normalizeEmbedUrl('http://www.youtube.com/watch?v=dQw4w9WgXcQ')).toMatchObject({
+      originalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      src: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+    });
+  });
+
+  it('turns pages that cannot be embedded into bookmarks', () => {
+    expect(classifyEmbedInput('https://youtu.be/dQw4w9WgXcQ')?.kind).toBe('embed');
+    expect(classifyEmbedInput('https://www.google.com/search?q=%E7%99%BE%E5%BA%A6&o')).toEqual({
+      kind: 'bookmark',
+      url: 'https://www.google.com/search?q=%E7%99%BE%E5%BA%A6&o',
+      title: 'google.com',
+    });
+    expect(classifyEmbedInput('example.com/page')).toMatchObject({ kind: 'bookmark' });
+    expect(classifyEmbedInput('not a url')).toBeNull();
+    expect(classifyEmbedInput('这不是网址')).toBeNull();
+    expect(classifyEmbedInput('javascript:alert(1)')).toBeNull();
   });
 
   it('builds a valid collaborative schema for every new persisted block', () => {
