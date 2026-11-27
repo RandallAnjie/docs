@@ -91,6 +91,7 @@ import {
   type CSSProperties,
   type FormEvent,
   Fragment,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react';
 
@@ -189,6 +190,7 @@ import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell, PageNotificationControl, PageReminderControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
 import { PageInvites } from './PageInvites';
+import { ScopedSelectAll } from './scoped-select-all';
 import { useDismissable } from './dismissable';
 import { ShareLinkSettings } from './ShareLinkSettings';
 import { PageBacklinks } from './PageBacklinks';
@@ -505,6 +507,19 @@ export function rankSlashCommands<
     .filter((entry) => entry.score >= 0)
     .sort((left, right) => left.score - right.score || left.index - right.index)
     .map((entry) => entry.command);
+}
+
+/**
+ * Menus that float over the editor keep its focus on mouse down — except on
+ * a scroll area itself (its scrollbar), which must stay draggable.
+ */
+function keepEditorFocus(event: ReactMouseEvent<HTMLElement>) {
+  const target = event.target;
+  if (target instanceof HTMLElement && target.scrollHeight > target.clientHeight + 1) {
+    const overflow = getComputedStyle(target).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') return;
+  }
+  event.preventDefault();
 }
 
 function mentionContext(editor: Editor): SlashContext | null {
@@ -4214,6 +4229,17 @@ function CollaborativeEditor({
       return;
     }
     if (dismissedSlashFrom.current === context.from) return;
+    // Like Notion: once nothing matches (a space, or a few more letters), the
+    // "/" was just text — close and stay closed.
+    if (
+      context.query &&
+      !rankSlashCommands(SLASH_COMMANDS, context.query).length &&
+      (/\s/.test(context.query) || context.query.length >= 3)
+    ) {
+      dismissedSlashFrom.current = context.from;
+      setSlashMenu(null);
+      return;
+    }
     try {
       const coordinates = currentEditor.view.coordsAtPos(context.to);
       setSlashMenu({
@@ -4309,6 +4335,7 @@ function CollaborativeEditor({
       TableKit.configure({ table: { resizable: true } }),
       Image.configure({ allowBase64: false }),
       Details.configure({ persist: true }),
+      ScopedSelectAll,
       DetailsSummary,
       DetailsContent,
       Mathematics.configure({
@@ -4967,6 +4994,12 @@ function CollaborativeEditor({
     [editor, identity.id, onAskAi, onCreateDatabase, onCreateSyncedBlock, organizationId],
   );
 
+  useEffect(() => {
+    slashMenuRef.current
+      ?.querySelector('[role="option"].active')
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [slashIndex]);
+
   slashKeyRef.current = {
     commands: filteredSlashCommands,
     index: slashIndex,
@@ -5273,7 +5306,7 @@ function CollaborativeEditor({
           role="listbox"
           aria-label="提及"
           style={{ left: mentionMenu.left, top: mentionMenu.top }}
-          onMouseDown={(event) => event.preventDefault()}
+          onMouseDown={keepEditorFocus}
         >
           <header>
             <strong>提及</strong>
@@ -5288,7 +5321,9 @@ function CollaborativeEditor({
                   role="option"
                   aria-selected={index === mentionIndex}
                   className={index === mentionIndex ? 'active' : undefined}
-                  onMouseEnter={() => setMentionIndex(index)}
+                  onMouseMove={(event) => {
+                    if (event.movementX || event.movementY) setMentionIndex(index);
+                  }}
                   onClick={() => insertMention(item)}
                 >
                   <span className="slash-command-icon">
@@ -5313,7 +5348,7 @@ function CollaborativeEditor({
           role="listbox"
           aria-label="插入内容块"
           style={{ left: slashMenu.left, top: slashMenu.top }}
-          onMouseDown={(event) => event.preventDefault()}
+          onMouseDown={keepEditorFocus}
         >
           <header>
             <strong>插入</strong>
@@ -5338,7 +5373,9 @@ function CollaborativeEditor({
                           role="option"
                           aria-selected={index === slashIndex}
                           className={index === slashIndex ? 'active' : ''}
-                          onMouseEnter={() => setSlashIndex(index)}
+                          onMouseMove={(event) => {
+                            if (event.movementX || event.movementY) setSlashIndex(index);
+                          }}
                           onClick={() => runSlashCommand(command.id)}
                         >
                           <span className="slash-command-icon">{slashCommandIcon(command.id)}</span>

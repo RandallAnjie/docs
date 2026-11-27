@@ -30,6 +30,28 @@ import { lastTableCellPos } from './EditorTableControls';
 import { moveTopLevelBlock, topLevelBlocks, type BlockDirection } from './editor-block-operations';
 
 const DRAG_POSITION = { placement: 'left-start', strategy: 'fixed' } as const;
+
+/** Blocks inside a table are its cells' content, not draggable blocks (as in Notion). */
+const NESTED_OPTIONS = {
+  edgeDetection: 'left' as const,
+  rules: [
+    {
+      id: 'notInsideTables',
+      evaluate: ({
+        $pos,
+        depth,
+      }: {
+        $pos: { node: (depth: number) => ProseMirrorNode };
+        depth: number;
+      }) => {
+        for (let ancestor = depth - 1; ancestor > 0; ancestor -= 1) {
+          if ($pos.node(ancestor).type.name === 'table') return 1000;
+        }
+        return 0;
+      },
+    },
+  ],
+};
 type BlockTransform =
   | 'blockquote'
   | 'bulletList'
@@ -197,6 +219,24 @@ export function EditorBlockHandle({
     return () => wrapper.removeEventListener('pointerleave', onLeave);
   }, [editor, targetPosition]);
 
+  // Typing hides the handle until the mouse moves again, as in Notion.
+  useEffect(() => {
+    const dom = editor.view.dom;
+    const onKey = (event: KeyboardEvent) => {
+      if (menuOpenRef.current || event.metaKey || event.ctrlKey || editor.isDestroyed) return;
+      if (event.key.length !== 1 && !['Enter', 'Backspace', 'Delete', 'Tab'].includes(event.key)) {
+        return;
+      }
+      const handle = controls.current?.closest('.rdocs-drag-handle-portal');
+      if (!(handle instanceof HTMLElement) || getComputedStyle(handle).visibility === 'hidden') {
+        return;
+      }
+      editor.view.dispatch(editor.state.tr.setMeta('hideDragHandle', true));
+    };
+    dom.addEventListener('keydown', onKey);
+    return () => dom.removeEventListener('keydown', onKey);
+  }, [editor]);
+
   useEffect(() => {
     return () => {
       if (!editor.isDestroyed) {
@@ -297,7 +337,7 @@ export function EditorBlockHandle({
       editor={editor}
       className="rdocs-drag-handle-portal"
       computePositionConfig={DRAG_POSITION}
-      nested
+      nested={NESTED_OPTIONS}
       onNodeChange={handleNodeChange}
       onElementDragStart={() => setMenuOpen(false)}
     >
