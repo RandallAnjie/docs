@@ -210,26 +210,26 @@ export async function bookmarkDialog(options: {
 
 export async function embedDialog<T>(options: {
   defaultUrl?: string;
-  normalize: (value: string) => T | null;
+  classify: (value: string) => T | null;
 }): Promise<T | null> {
   const values = await formDialog({
     title: options.defaultUrl ? '编辑嵌入' : '嵌入内容',
-    message: '支持 YouTube、Figma、Loom、CodePen、CodeSandbox 的 HTTPS 地址。',
-    submitLabel: '嵌入',
+    message:
+      '可直接嵌入 YouTube、Figma、Loom、CodePen 和 CodeSandbox；其他网页无法在页面内显示，会插入为网页书签。',
+    submitLabel: '插入',
     fields: [
       {
         name: 'url',
-        label: '嵌入地址',
+        label: '网址',
         type: 'url',
         defaultValue: options.defaultUrl ?? '',
         placeholder: 'https://',
         required: true,
       },
     ],
-    validate: (next) =>
-      options.normalize(next.url ?? '') ? null : '暂不支持这个嵌入地址，或地址不是 HTTPS',
+    validate: (next) => (options.classify(next.url ?? '') ? null : '请输入有效的网址'),
   });
-  return values ? options.normalize(values.url ?? '') : null;
+  return values ? options.classify(values.url ?? '') : null;
 }
 
 export async function pageButtonDialog(options: {

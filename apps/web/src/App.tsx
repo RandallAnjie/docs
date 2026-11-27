@@ -185,7 +185,7 @@ const DiscoveryDialog = lazy(() =>
   import('./DiscoveryDialog').then((module) => ({ default: module.DiscoveryDialog })),
 );
 import { EditorBlockHandle } from './EditorBlockHandle';
-import { createRdocsEditorBlocks, normalizeBookmarkUrl, normalizeEmbedUrl } from './EditorBlocks';
+import { classifyEmbedInput, createRdocsEditorBlocks, normalizeBookmarkUrl } from './EditorBlocks';
 import { OrganizationSettings } from './OrganizationSettings';
 import { NotificationBell, PageNotificationControl, PageReminderControl } from './NotificationBell';
 import { PageAccessDialog } from './PageAccessDialog';
@@ -4725,13 +4725,17 @@ function CollaborativeEditor({
 
       if (id === 'embed') {
         setSlashMenu(null);
-        void embedDialog({ normalize: normalizeEmbedUrl }).then((target) => {
-          if (!target || !editor.isEditable) return;
+        void embedDialog({ classify: classifyEmbedInput }).then((input) => {
+          if (!input || !editor.isEditable) return;
           editor
             .chain()
             .focus()
             .deleteRange(context)
-            .insertContent({ type: 'embed', attrs: target })
+            .insertContent(
+              input.kind === 'embed'
+                ? { type: 'embed', attrs: input.target }
+                : { type: 'bookmark', attrs: { url: input.url, title: input.title } },
+            )
             .run();
         });
         return;
