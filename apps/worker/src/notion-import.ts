@@ -1,11 +1,13 @@
 import type { AuthUserSummary, JsonValue } from '@rdocs/shared';
 
 import type { Env } from './env';
+import { activeUser } from './databases';
 import {
   blockChildren,
   isTransientNotionError,
   NotionError,
   notionRequest,
+  notionToken,
   type NotionDependencies,
 } from './notion';
 import {
@@ -892,4 +894,35 @@ export async function runImportStep(
       .bind(now, now, job.id)
       .run();
   }
+}
+
+/**
+ * Keep running imports moving from the scheduled worker, as the person who
+ * started them, so an import finishes even with the settings page closed.
+ * Jobs a browser stepped in the last 30 s are left to it.
+ */
+export async function continueNotionImports(env: Env, deps: NotionDependencies): Promise<number> {
+  const jobs = (
+    await env.DB.prepare(
+      `SELECT * FROM notion_import_jobs
+        WHERE status = 'running' AND updated_at < ?
+        ORDER BY updated_at LIMIT 2`,
+    )
+      .bind(Date.now() - 30_000)
+      .all<ImportJobRow>()
+  ).results;
+  let continued = 0;
+  for (const job of jobs) {
+    const [token, actor] = await Promise.all([
+      notionToken(env, job.organization_id),
+      activeUser(env, job.created_by),
+    ]);
+    if (!token || !actor) continue;
+    await env.DB.prepare('UPDATE notion_import_jobs SET updated_at = ? WHERE id = ?')
+      .bind(Date.now(), job.id)
+      .run();
+    await runImportStep(env, token, job, actor, deps);
+    continued += 1;
+  }
+  return continued;
 }

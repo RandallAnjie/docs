@@ -2007,7 +2007,7 @@ async function findAutomation(
     .first<AutomationRecord>();
 }
 
-async function activeUser(env: Env, userId: string): Promise<AuthUserSummary | null> {
+export async function activeUser(env: Env, userId: string): Promise<AuthUserSummary | null> {
   const row = await env.DB.prepare(
     `SELECT id, email, display_name, avatar_url FROM users WHERE id = ? AND status = 'active'`,
   )
