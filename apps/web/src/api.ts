@@ -1946,6 +1946,9 @@ export interface NotionImportJob {
   createdAt: number;
   finishedAt: number | null;
   current: string | null;
+  /** Items waiting out a Notion rate limit, and how long until the next one is due. */
+  delayed: number;
+  retryInMs: number;
   failures: Array<{ kind: string; title: string; error: string }>;
   imported: Array<{ kind: string; title: string; pageId: string }>;
 }
@@ -1973,7 +1976,7 @@ export function latestNotionImport(
 export function stepNotionImport(
   organizationId: string,
   jobId: string,
-  action: 'step' | 'cancel' = 'step',
+  action: 'step' | 'cancel' | 'retry' = 'step',
 ): Promise<{ job: NotionImportJob | null }> {
   return request(
     notionPath(organizationId, `/import-jobs/${encodeURIComponent(jobId)}/${action}`),

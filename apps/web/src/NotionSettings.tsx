@@ -210,6 +210,10 @@ function NotionTreeImport({
       let next: NotionImportJob | null = current;
       try {
         while (next && next.status === 'running') {
+          // Everything left is waiting out a Notion rate limit: wait, then go on.
+          if (next.retryInMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(next!.retryInMs, 30_000)));
+          }
           const result = await stepNotionImport(organizationId, next.id);
           next = result.job;
           setJob(next);
@@ -245,6 +249,18 @@ function NotionTreeImport({
       if (result.job) void drive(result.job);
     } catch (reason) {
       setError(fail(reason, '无法开始导入'));
+    }
+  };
+
+  const retryFailed = async () => {
+    if (!job) return;
+    setError(null);
+    try {
+      const result = await stepNotionImport(organizationId, job.id, 'retry');
+      setJob(result.job);
+      if (result.job?.status === 'running') void drive(result.job);
+    } catch (reason) {
+      setError(fail(reason, '无法重试'));
     }
   };
 
@@ -289,7 +305,16 @@ function NotionTreeImport({
           <div className="notion-import-bar" role="progressbar" aria-valuenow={percent}>
             <i style={{ width: `${percent}%` }} />
           </div>
-          {active && job.current ? <small>正在处理：{job.current}</small> : null}
+          {active && job.retryInMs > 0 ? (
+            <small>
+              Notion 限流，{Math.ceil(job.retryInMs / 1000)} 秒后自动继续（{job.delayed}{' '}
+              项等待重试）
+            </small>
+          ) : active && job.current ? (
+            <small>正在处理：{job.current}</small>
+          ) : active && job.delayed ? (
+            <small>{job.delayed} 项遇到限流，稍后自动重试</small>
+          ) : null}
           {job.imported.length ? (
             <div className="notion-import-links">
               {job.imported.map((item) => (
@@ -314,6 +339,11 @@ function NotionTreeImport({
             </details>
           ) : null}
           <div className="notion-import-actions">
+            {!active && job.failed > 0 && job.status !== 'cancelled' ? (
+              <button type="button" onClick={() => void retryFailed()}>
+                重试失败的 {job.failed} 项
+              </button>
+            ) : null}
             {active ? (
               <>
                 {!running.current ? (

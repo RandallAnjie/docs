@@ -26,6 +26,7 @@ import {
   importJobSnapshot,
   latestImportJob,
   listNotionTree,
+  retryFailedImportItems,
   runImportStep,
 } from './notion-import';
 
@@ -58,6 +59,14 @@ export interface NotionDependencies {
     markdown: string;
     actorId: string;
   }) => Promise<Response | null>;
+  /** Replace an existing page's content (an import retrying over its placeholder). */
+  replacePageContent: (input: {
+    pageId: string;
+    markdown: string;
+    title: string;
+    icon?: string | null;
+    actorId: string;
+  }) => Promise<Response | null>;
   databasesApi: (request: Request, env: Env, actor: AuthUserSummary) => Promise<Response | null>;
   /** Create rows; returns each new row's page id, in order. */
   bulkCreateRows: (
@@ -72,9 +81,29 @@ export class NotionError extends Error {
   constructor(
     message: string,
     readonly status = 502,
+    /** For rate limits and outages: how long Notion asked us to wait. */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message);
   }
+}
+
+/** Rate limits, outages and timeouts are worth retrying later; other errors are not. */
+export function isTransientNotionError(reason: unknown): boolean {
+  if (reason instanceof NotionError) return reason.status === 429 || reason.status >= 500;
+  return (
+    reason instanceof Error && (reason.name === 'TimeoutError' || reason.name === 'AbortError')
+  );
+}
+
+/** Notion allows about three requests a second per integration. */
+const MIN_REQUEST_INTERVAL_MS = 340;
+let lastRequestAt = 0;
+
+async function paceNotionRequests(): Promise<void> {
+  const wait = lastRequestAt + MIN_REQUEST_INTERVAL_MS - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  lastRequestAt = Date.now();
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -156,7 +185,9 @@ export async function notionRequest<T = NotionObject>(
   path: string,
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
+  let retryAfterMs: number | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    await paceNotionRequests();
     const response = await fetch(`${NOTION_API}${path}`, {
       method: init.method ?? 'GET',
       headers: {
@@ -168,14 +199,23 @@ export async function notionRequest<T = NotionObject>(
       signal: AbortSignal.timeout(15_000),
     });
     if (response.ok) return (await response.json()) as T;
-    if ((response.status === 429 || response.status >= 500) && attempt < 2) {
-      const wait = Math.min(
-        3_000,
-        Number(response.headers.get('retry-after') ?? 1) * 1_000 || 1_000,
-      );
+    if (response.status === 429 || response.status >= 500) {
+      const asked = Number(response.headers.get('retry-after') ?? 0) * 1_000;
+      retryAfterMs = asked > 0 ? asked : 1_000 * 2 ** attempt;
       if (response.body) await response.body.cancel().catch(() => undefined);
-      await new Promise((resolve) => setTimeout(resolve, wait));
-      continue;
+      // Short waits are taken here; longer ones are left to the caller
+      // (an import puts the item back in the queue).
+      if (attempt < 2 && retryAfterMs <= 5_000) {
+        await new Promise((resolve) => setTimeout(resolve, retryAfterMs!));
+        continue;
+      }
+      throw new NotionError(
+        response.status === 429
+          ? 'Notion 限流，稍后自动重试'
+          : `Notion 暂时不可用（${response.status}），稍后自动重试`,
+        response.status === 429 ? 429 : 503,
+        retryAfterMs,
+      );
     }
     const payload = (await response.json().catch(() => null)) as { message?: string } | null;
     if (response.status === 401) throw new NotionError('Notion 令牌无效或已被撤销', 400);
@@ -187,7 +227,7 @@ export async function notionRequest<T = NotionObject>(
     }
     throw new NotionError(`Notion 暂时不可用（${response.status}）`, 502);
   }
-  throw new NotionError('Notion 暂时不可用', 502);
+  throw new NotionError('Notion 暂时不可用，稍后自动重试', 503, retryAfterMs);
 }
 
 /** Notion ids may arrive with or without dashes, or as a URL. */
@@ -517,12 +557,13 @@ export async function handleNotionApi(
       return json({ job: job ? await importJobSnapshot(env, job) : null });
     }
 
-    const jobMatch = rest.match(/^import-jobs\/([^/]+)\/(step|cancel)$/);
+    const jobMatch = rest.match(/^import-jobs\/([^/]+)\/(step|cancel|retry)$/);
     if (jobMatch?.[1] && request.method === 'POST') {
       const job = await findImportJob(env, decodeURIComponent(jobMatch[1]));
       if (!job || job.organization_id !== organizationId) return error('导入任务不存在', 404);
       if (job.created_by !== actor.id && !isAdmin) return error('只有发起导入的人可以继续', 403);
       if (jobMatch[2] === 'cancel') await cancelImportJob(env, job);
+      else if (jobMatch[2] === 'retry') await retryFailedImportItems(env, job);
       else await runImportStep(env, token, job, actor, deps);
       const fresh = await findImportJob(env, job.id);
       return json({ job: fresh ? await importJobSnapshot(env, fresh) : null });
