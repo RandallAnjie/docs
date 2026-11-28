@@ -63,7 +63,8 @@ import {
   handleDatabasesApi,
   handlePublicDatabaseFormsApi,
 } from './databases';
-import { handleNotionApi } from './notion';
+import { handleNotionApi, type NotionDependencies } from './notion';
+import { continueNotionImports } from './notion-import';
 import {
   cacheCollaborationPage,
   getCachedCollaborationPage,
@@ -2047,6 +2048,29 @@ async function replaceImportedPageContent(
     })
     .catch(() => undefined);
   return null;
+}
+
+/** What the Notion connector needs from the rest of the worker. */
+function notionDependencies(env: Env): NotionDependencies {
+  return {
+    createMarkdownPage: async ({ actorId, spaceId, title, markdown, ...placement }) => {
+      const page = await createImportedMarkdownPage(env, {
+        actorId,
+        filename: title,
+        markdown,
+        spaceId,
+        ...placement,
+      });
+      if (!(page instanceof Response)) {
+        await pageAudit(env, page, actorId, 'page.markdown.imported', { source: 'notion' });
+      }
+      return page;
+    },
+    writePageContent: (input) => writeImportedPageContent(env, input),
+    replacePageContent: (input) => replaceImportedPageContent(env, input),
+    databasesApi: handleDatabasesApi,
+    bulkCreateRows: bulkCreateDatabaseRows,
+  };
 }
 
 async function createImportedMarkdownPage(
@@ -4488,25 +4512,15 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   }
   const sitesResponse = await handleSitesApi(request, env, actor);
   if (sitesResponse) return sitesResponse;
-  const notionResponse = await handleNotionApi(request, env, actor, {
-    createMarkdownPage: async ({ actorId, spaceId, title, markdown, ...placement }) => {
-      const page = await createImportedMarkdownPage(env, {
-        actorId,
-        filename: title,
-        markdown,
-        spaceId,
-        ...placement,
-      });
-      if (!(page instanceof Response)) {
-        await pageAudit(env, page, actorId, 'page.markdown.imported', { source: 'notion' });
-      }
-      return page;
-    },
-    writePageContent: (input) => writeImportedPageContent(env, input),
-    replacePageContent: (input) => replaceImportedPageContent(env, input),
-    databasesApi: handleDatabasesApi,
-    bulkCreateRows: bulkCreateDatabaseRows,
-  });
+  // Local development only: run the scheduled import continuation on demand.
+  if (
+    env.ENVIRONMENT === 'local' &&
+    url.pathname === '/api/__local/continue-notion-imports' &&
+    request.method === 'POST'
+  ) {
+    return json({ continued: await continueNotionImports(env, notionDependencies(env)) });
+  }
+  const notionResponse = await handleNotionApi(request, env, actor, notionDependencies(env));
   if (notionResponse) return notionResponse;
 
   if (url.pathname === '/api/search' && request.method === 'GET') {
@@ -5130,11 +5144,14 @@ export default {
       (async () => {
         const delivered = await deliverDueReminders(env, null, 500);
         const jobs = await processDueScheduledJobs(env);
+        // Notion imports keep going even when nobody has the settings open.
+        const imports = await continueNotionImports(env, notionDependencies(env));
         console.log(
           JSON.stringify({
             delivered,
             event: 'scheduled_work_completed',
             jobs,
+            imports,
             level: 'info',
           }),
         );
