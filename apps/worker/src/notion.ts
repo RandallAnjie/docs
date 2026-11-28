@@ -19,13 +19,22 @@ import {
   type NotionBlock,
   type NotionObject,
 } from './notion-convert';
+import {
+  cancelImportJob,
+  createImportJob,
+  findImportJob,
+  importJobSnapshot,
+  latestImportJob,
+  listNotionTree,
+  runImportStep,
+} from './notion-import';
 
 /**
  * Notion connector: an organization stores one internal-integration token
  * (encrypted), imports databases and pages that were shared with that
  * integration, and automations can create pages in Notion databases.
  */
-const NOTION_API = 'https://api.notion.com/v1';
+let NOTION_API = 'https://api.notion.com/v1';
 const NOTION_VERSION = '2022-06-28';
 const MAX_IMPORT_ROWS = 500;
 const MAX_IMPORT_BLOCKS = 1_000;
@@ -37,14 +46,26 @@ export interface NotionDependencies {
     spaceId: string;
     title: string;
     markdown: string;
+    id?: string;
+    parentId?: string | null;
+    sortKey?: string;
+    icon?: string | null;
+    exactTitle?: boolean;
   }) => Promise<PageSummary | Response>;
+  /** Fill a never-opened page (an imported row) with Markdown; null on success. */
+  writePageContent: (input: {
+    pageId: string;
+    markdown: string;
+    actorId: string;
+  }) => Promise<Response | null>;
   databasesApi: (request: Request, env: Env, actor: AuthUserSummary) => Promise<Response | null>;
+  /** Create rows; returns each new row's page id, in order. */
   bulkCreateRows: (
     env: Env,
     databaseId: string,
     actor: AuthUserSummary,
     rows: ReadonlyArray<Record<string, JsonValue>>,
-  ) => Promise<number>;
+  ) => Promise<string[]>;
 }
 
 export class NotionError extends Error {
@@ -187,7 +208,7 @@ export function normalizeNotionId(value: unknown): string | null {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function blockChildren(
+export async function blockChildren(
   token: string,
   blockId: string,
   depth: number,
@@ -330,7 +351,7 @@ async function importNotionDatabase(
     cursor = !truncated && result.has_more && result.next_cursor ? result.next_cursor : undefined;
     if (result.has_more && rows.length >= MAX_IMPORT_ROWS) truncated = true;
   } while (cursor);
-  const imported = await deps.bulkCreateRows(env, databaseId, actor, rows);
+  const imported = (await deps.bulkCreateRows(env, databaseId, actor, rows)).length;
   return json(
     { page, kind: 'database', databaseId, imported, truncated, skippedProperties: skipped },
     { status: 201 },
@@ -348,6 +369,8 @@ export async function handleNotionApi(
   const url = new URL(request.url);
   const match = url.pathname.match(/^\/api\/organizations\/([^/]+)\/notion(?:\/(.*))?$/);
   if (!match?.[1]) return null;
+  // Local testing only: point the connector at a stand-in Notion API.
+  if (env.NOTION_API_BASE && env.ENVIRONMENT !== 'production') NOTION_API = env.NOTION_API_BASE;
   const organizationId = decodeURIComponent(match[1]);
   const rest = match[2] ?? '';
   const membership = await findActiveMembership(env, organizationId, actor.id);
@@ -449,6 +472,60 @@ export async function handleNotionApi(
               : null,
         })),
       });
+    }
+
+    if (rest === 'tree' && request.method === 'GET') {
+      return json({ roots: await listNotionTree(token) });
+    }
+
+    if (rest === 'import-jobs' && request.method === 'POST') {
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      const spaceId = typeof body?.spaceId === 'string' ? body.spaceId : '';
+      if (!spaceId || spaceId.length > 100) return error('请选择导入到哪个空间', 400);
+      const space = await requireSpaceAction(env, spaceId, actor.id, 'create_child');
+      if (!space || space.organizationId !== organizationId)
+        return error('空间不存在或无权导入', 404);
+      const roots = (Array.isArray(body?.roots) ? body.roots : [])
+        .slice(0, 500)
+        .flatMap((value) => {
+          const entry =
+            value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+          const id = normalizeNotionId(entry.id);
+          const kind =
+            entry.kind === 'database' ? 'database' : entry.kind === 'page' ? 'page' : null;
+          if (!id || !kind) return [];
+          const title = typeof entry.title === 'string' ? entry.title : '';
+          return [{ id, kind, title } as const];
+        });
+      if (!roots.length) return error('请至少选择一个要导入的页面或数据库', 400);
+      const running = await latestImportJob(env, organizationId);
+      if (running?.status === 'running') {
+        return error('已有导入正在进行，请等它完成或先取消', 409);
+      }
+      const jobId = await createImportJob(env, {
+        organizationId,
+        spaceId,
+        actorId: actor.id,
+        roots,
+      });
+      const job = await findImportJob(env, jobId);
+      return json({ job: job ? await importJobSnapshot(env, job) : null }, { status: 201 });
+    }
+
+    if (rest === 'import-jobs/latest' && request.method === 'GET') {
+      const job = await latestImportJob(env, organizationId);
+      return json({ job: job ? await importJobSnapshot(env, job) : null });
+    }
+
+    const jobMatch = rest.match(/^import-jobs\/([^/]+)\/(step|cancel)$/);
+    if (jobMatch?.[1] && request.method === 'POST') {
+      const job = await findImportJob(env, decodeURIComponent(jobMatch[1]));
+      if (!job || job.organization_id !== organizationId) return error('导入任务不存在', 404);
+      if (job.created_by !== actor.id && !isAdmin) return error('只有发起导入的人可以继续', 403);
+      if (jobMatch[2] === 'cancel') await cancelImportJob(env, job);
+      else await runImportStep(env, token, job, actor, deps);
+      const fresh = await findImportJob(env, job.id);
+      return json({ job: fresh ? await importJobSnapshot(env, fresh) : null });
     }
 
     const schemaMatch = rest.match(/^databases\/([^/]+)$/);

@@ -10,6 +10,8 @@ export interface Env {
   RF_ACCESS_POLICY?: string;
   ENVIRONMENT?: string;
   RELEASE_SHA?: string;
+  /** Local testing only: a stand-in Notion API (ignored in production). */
+  NOTION_API_BASE?: string;
   XAI_API_KEY?: string;
   AI_API_KEY?: string;
   AI_API_BASE?: string;

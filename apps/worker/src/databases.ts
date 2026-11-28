@@ -4803,18 +4803,18 @@ export async function handleDatabasesApi(
 }
 
 /**
- * Create many rows without running automations, for imports. Returns how many
- * were created; stops at the first row the database refuses.
+ * Create many rows without running automations, for imports. Returns the new
+ * rows' page ids in order; stops at the first row the database refuses.
  */
 export async function bulkCreateDatabaseRows(
   env: Env,
   databaseId: string,
   actor: AuthUserSummary,
   rows: ReadonlyArray<Record<string, JsonValue>>,
-): Promise<number> {
+): Promise<string[]> {
   const authorization = await authorizeDatabase(env, databaseId, actor.id, 'edit_content');
   if (!authorization) throw new Error('无权写入目标数据库');
-  let created = 0;
+  const pageIds: string[] = [];
   for (const values of rows) {
     const response = await createRow(
       new Request('https://rdocs.internal/api/import-row', {
@@ -4827,11 +4827,14 @@ export async function bulkCreateDatabaseRows(
       actor,
       { skipAutomations: true, minimal: true },
     );
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-      throw new Error(payload?.error ?? `第 ${created + 1} 条记录导入失败`);
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+      row?: { pageId?: string };
+    } | null;
+    if (!response.ok || !payload?.row?.pageId) {
+      throw new Error(payload?.error ?? `第 ${pageIds.length + 1} 条记录导入失败`);
     }
-    created += 1;
+    pageIds.push(payload.row.pageId);
   }
-  return created;
+  return pageIds;
 }

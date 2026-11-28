@@ -119,6 +119,7 @@ const MIGRATIONS = [
   '0035_automation_definitions.sql',
   '0036_notion_connections.sql',
   '0037_page_invites.sql',
+  '0038_notion_import_jobs.sql',
 ] as const;
 
 function migratedDatabase(migrations: ReadonlyArray<string> = MIGRATIONS): DatabaseSync {

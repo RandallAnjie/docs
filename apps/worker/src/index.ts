@@ -1932,30 +1932,101 @@ async function importMarkdownZip(
   return json({ imported: pages.length, pages }, { status: 201 });
 }
 
+/**
+ * Give a page that has never been opened (an imported database row) its
+ * first content from Markdown. Fails with 409 if it already has content.
+ */
+async function writeImportedPageContent(
+  env: Env,
+  input: { pageId: string; markdown: string; actorId: string },
+): Promise<Response | null> {
+  const page = await findPage(env, input.pageId);
+  if (!page) return error('页面不存在', 404);
+  const imported = markdownToYjsSnapshot(input.markdown);
+  const contentHash = await sha256Hex(imported.snapshot);
+  const initialized = await documentRoom(env, page.id, page.currentGeneration).fetch(
+    'https://rdocs.internal/internal/initialize-generation',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-rdocs-page-id': page.id,
+        'x-rdocs-generation': String(page.currentGeneration),
+        'x-rdocs-revision-id': `import_${page.id}`,
+        'x-rdocs-content-hash': contentHash,
+        'x-rdocs-actor-id': input.actorId,
+      },
+      body: toArrayBuffer(imported.snapshot),
+    },
+  );
+  if (!initialized.ok) {
+    return error(
+      initialized.status === 409 ? '页面已经有内容，没有覆盖' : '正文写入失败',
+      initialized.status === 409 ? 409 : 500,
+    );
+  }
+  const normalizedBody = normalizeSearchText(imported.plainText).slice(0, 500_000);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE page_search_projection SET normalized_body = ?, updated_at = ? WHERE page_id = ?`,
+    ).bind(normalizedBody, Date.now(), page.id),
+    env.DB.prepare('DELETE FROM page_search_fts WHERE page_id = ?').bind(page.id),
+    env.DB.prepare(
+      'INSERT INTO page_search_fts(page_id, title, normalized_body) VALUES (?, ?, ?)',
+    ).bind(
+      page.id,
+      searchIndexText(page.title),
+      searchIndexText(`${page.title}\n${normalizedBody}`),
+    ),
+  ]);
+  return null;
+}
+
 async function createImportedMarkdownPage(
   env: Env,
-  input: { actorId: string; filename: string; markdown: string; spaceId: string },
+  input: {
+    actorId: string;
+    filename: string;
+    markdown: string;
+    spaceId: string;
+    /** Fixed id (lets other imported pages link to it before it exists). */
+    id?: string;
+    parentId?: string | null;
+    sortKey?: string;
+    icon?: string | null;
+    /** Use `filename` as the title even when the body starts with a heading. */
+    exactTitle?: boolean;
+  },
 ): Promise<PageSummary | Response> {
   const imported = markdownToYjsSnapshot(input.markdown);
-  const title = (imported.title || input.filename || 'Markdown 导入').slice(0, MAX_TITLE_LENGTH);
+  const title = (
+    (input.exactTitle ? input.filename : imported.title || input.filename) || 'Markdown 导入'
+  ).slice(0, MAX_TITLE_LENGTH);
   const access = await requireSpaceAction(env, input.spaceId, input.actorId, 'create_child');
   if (!access) return error('空间不存在或无权导入', 404);
-  const id = crypto.randomUUID();
+  if (input.parentId) {
+    const parent = await requirePageAction(env, input.parentId, input.actorId, 'create_child');
+    if (!parent || parent.page.spaceId !== input.spaceId)
+      return error('上级页面不存在或无权导入', 404);
+  }
+  const id = input.id ?? crypto.randomUUID();
   const now = Date.now();
   const normalizedBody = normalizeSearchText(imported.plainText).slice(0, 500_000);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO pages(
-         id, organization_id, space_id, parent_id, title, sort_key,
+         id, organization_id, space_id, parent_id, title, icon, sort_key,
          current_generation, editor_schema_version, created_by, updated_by,
          created_at, updated_at
-       ) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       access.organizationId,
       input.spaceId,
+      input.parentId ?? null,
       title,
-      now.toString().padStart(20, '0'),
+      input.icon ?? null,
+      input.sortKey ?? now.toString().padStart(20, '0'),
       EDITOR_SCHEMA_VERSION,
       input.actorId,
       input.actorId,
@@ -4351,18 +4422,20 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
   const sitesResponse = await handleSitesApi(request, env, actor);
   if (sitesResponse) return sitesResponse;
   const notionResponse = await handleNotionApi(request, env, actor, {
-    createMarkdownPage: async ({ actorId, spaceId, title, markdown }) => {
+    createMarkdownPage: async ({ actorId, spaceId, title, markdown, ...placement }) => {
       const page = await createImportedMarkdownPage(env, {
         actorId,
         filename: title,
         markdown,
         spaceId,
+        ...placement,
       });
       if (!(page instanceof Response)) {
         await pageAudit(env, page, actorId, 'page.markdown.imported', { source: 'notion' });
       }
       return page;
     },
+    writePageContent: (input) => writeImportedPageContent(env, input),
     databasesApi: handleDatabasesApi,
     bulkCreateRows: bulkCreateDatabaseRows,
   });
