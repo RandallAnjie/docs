@@ -1929,6 +1929,58 @@ export function getNotionDatabaseSchema(
   return request(notionPath(organizationId, `/databases/${encodeURIComponent(notionDatabaseId)}`));
 }
 
+export interface NotionTreeEntry {
+  id: string;
+  kind: 'database' | 'page';
+  title: string;
+  icon: string | null;
+}
+
+export interface NotionImportJob {
+  id: string;
+  status: 'running' | 'completed' | 'cancelled';
+  spaceId: string;
+  total: number;
+  done: number;
+  failed: number;
+  createdAt: number;
+  finishedAt: number | null;
+  current: string | null;
+  failures: Array<{ kind: string; title: string; error: string }>;
+  imported: Array<{ kind: string; title: string; pageId: string }>;
+}
+
+export function getNotionTree(organizationId: string): Promise<{ roots: NotionTreeEntry[] }> {
+  return request(notionPath(organizationId, '/tree'));
+}
+
+export function startNotionImport(
+  organizationId: string,
+  input: { spaceId: string; roots: NotionTreeEntry[] },
+): Promise<{ job: NotionImportJob | null }> {
+  return request(notionPath(organizationId, '/import-jobs'), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function latestNotionImport(
+  organizationId: string,
+): Promise<{ job: NotionImportJob | null }> {
+  return request(notionPath(organizationId, '/import-jobs/latest'));
+}
+
+export function stepNotionImport(
+  organizationId: string,
+  jobId: string,
+  action: 'step' | 'cancel' = 'step',
+): Promise<{ job: NotionImportJob | null }> {
+  return request(
+    notionPath(organizationId, `/import-jobs/${encodeURIComponent(jobId)}/${action}`),
+    { method: 'POST' },
+  );
+}
+
 export function importFromNotion(
   organizationId: string,
   input: { notionId: string; kind: 'database' | 'page'; spaceId: string },

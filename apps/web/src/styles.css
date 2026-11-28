@@ -15470,3 +15470,226 @@ button.page-icon-display:hover {
   font-size: 9px;
   box-shadow: 0 2px 8px rgb(15 15 15 / 18%);
 }
+
+/* ══ Notion: import by tree ═══════════════════════════════════════════════ */
+.notion-tree-import {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+.notion-tree-import > h3 {
+  margin: 0;
+  color: rgb(55 53 47);
+  font-size: 15px;
+  font-weight: 600;
+}
+.notion-tree-import > .tenant-panel-note {
+  margin: 0;
+}
+.notion-tree-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+.notion-tree-toolbar > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid rgb(55 53 47 / 16%);
+  border-radius: 6px;
+  background: #fff;
+  color: rgb(55 53 47 / 80%);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.notion-tree-toolbar > button:hover {
+  background: rgb(55 53 47 / 6%);
+}
+.notion-tree-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(55 53 47);
+  font-size: 14px;
+  cursor: pointer;
+}
+.notion-tree-import .notion-space {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(55 53 47 / 65%);
+  font-size: 13px;
+}
+.notion-tree-import .notion-space select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid rgb(55 53 47 / 16%);
+  border-radius: 6px;
+  background: #fff;
+  color: rgb(55 53 47);
+  font: inherit;
+  font-size: 13px;
+}
+.notion-tree-list {
+  display: grid;
+  max-height: 340px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid rgb(55 53 47 / 12%);
+  border-radius: 8px;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+.notion-tree-list label {
+  display: grid;
+  grid-template-columns: 16px 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.notion-tree-list label:hover {
+  background: rgb(55 53 47 / 5%);
+}
+.notion-tree-list input,
+.notion-tree-all input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: rgb(35 131 226);
+}
+.notion-tree-icon {
+  display: inline-grid;
+  place-items: center;
+  color: rgb(55 53 47 / 55%);
+  font-size: 15px;
+}
+.notion-tree-title {
+  overflow: hidden;
+  color: rgb(55 53 47);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notion-tree-list small {
+  color: rgb(55 53 47 / 45%);
+  font-size: 12px;
+}
+.notion-tree-import > .primary-button {
+  justify-self: start;
+}
+.notion-import-progress {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: rgb(247 247 245);
+}
+.notion-import-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.notion-import-progress-head strong {
+  color: rgb(55 53 47);
+  font-size: 14px;
+  font-weight: 600;
+}
+.notion-import-progress-head span,
+.notion-import-progress small {
+  color: rgb(55 53 47 / 60%);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.notion-import-progress .notion-import-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgb(55 53 47 / 10%);
+}
+.notion-import-progress .notion-import-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: rgb(35 131 226);
+  transition: width 240ms ease;
+}
+.notion-import-progress.is-completed .notion-import-bar > i {
+  background: rgb(15 123 108);
+}
+.notion-import-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.notion-import-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: rgb(15 15 15 / 8%) 0 0 0 1px;
+  color: rgb(55 53 47);
+  font-size: 13px;
+  text-decoration: none;
+}
+.notion-import-links a:hover {
+  background: rgb(55 53 47 / 4%);
+}
+.notion-import-failures summary {
+  width: max-content;
+  color: rgb(212 76 71);
+  font-size: 13px;
+  cursor: pointer;
+}
+.notion-import-failures ul {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.notion-import-failures li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+}
+.notion-import-failures li strong {
+  color: rgb(55 53 47);
+  font-weight: 500;
+}
+.notion-import-failures li span {
+  color: rgb(55 53 47 / 65%);
+}
+.notion-import-actions {
+  display: flex;
+  gap: 8px;
+}
+.notion-import-actions:empty {
+  display: none;
+}
+.notion-import-actions button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgb(55 53 47 / 16%);
+  border-radius: 6px;
+  background: #fff;
+  color: rgb(55 53 47);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}

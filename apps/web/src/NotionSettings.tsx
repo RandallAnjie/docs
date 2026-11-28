@@ -1,5 +1,5 @@
-import { Database, ExternalLink, FileText, Link2, Search, Unplug } from 'lucide-react';
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Database, ExternalLink, FileText, Link2, RefreshCw, Unplug } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
 import type { SpaceSummary } from '@rdocs/shared';
 
@@ -7,11 +7,14 @@ import {
   connectNotion,
   disconnectNotion,
   getNotionConnection,
-  importFromNotion,
+  getNotionTree,
+  latestNotionImport,
   listSpaces,
-  searchNotion,
+  startNotionImport,
+  stepNotionImport,
   type NotionConnection,
-  type NotionSearchResult,
+  type NotionImportJob,
+  type NotionTreeEntry,
 } from './api';
 import { confirmDialog } from './dialogs';
 
@@ -22,14 +25,9 @@ function fail(reason: unknown, fallback: string): string {
 export function NotionSettings({ organizationId }: { organizationId: string }) {
   const [connection, setConnection] = useState<NotionConnection | null>(null);
   const [token, setToken] = useState('');
-  const [kind, setKind] = useState<'database' | 'page'>('database');
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<NotionSearchResult[] | null>(null);
   const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
-  const [spaceId, setSpaceId] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ text: string; pageId?: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -43,33 +41,12 @@ export function NotionSettings({ organizationId }: { organizationId: string }) {
           (space) => !space.archivedAt && (space.role === 'space_admin' || space.role === 'editor'),
         );
         setSpaces(writable);
-        setSpaceId((current) => current || writable[0]?.id || '');
       })
       .catch(() => undefined);
     return () => {
       active = false;
     };
   }, [organizationId]);
-
-  const search = useCallback(
-    async (nextKind = kind) => {
-      setBusy('search');
-      setError(null);
-      try {
-        setResults((await searchNotion(organizationId, query, nextKind)).results);
-      } catch (reason) {
-        setError(fail(reason, '无法搜索 Notion'));
-      } finally {
-        setBusy(null);
-      }
-    },
-    [kind, organizationId, query],
-  );
-
-  useEffect(() => {
-    if (connection?.connected) void search();
-    // Search once when the connection becomes available.
-  }, [connection?.connected]);
 
   const connect = async (event: FormEvent) => {
     event.preventDefault();
@@ -99,36 +76,8 @@ export function NotionSettings({ organizationId }: { organizationId: string }) {
     setBusy('connect');
     try {
       setConnection(await disconnectNotion(organizationId));
-      setResults(null);
     } catch (reason) {
       setError(fail(reason, '无法断开 Notion'));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const runImport = async (item: NotionSearchResult) => {
-    if (!spaceId) {
-      setError('请先选择导入到哪个空间');
-      return;
-    }
-    setBusy(item.id);
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await importFromNotion(organizationId, {
-        notionId: item.id,
-        kind: item.kind,
-        spaceId,
-      });
-      const parts = [`已导入「${result.page.title}」`];
-      if (result.kind === 'database') parts.push(`${result.imported ?? 0} 条记录`);
-      if (result.truncated) parts.push('内容较多，只导入了前一部分');
-      if (result.skippedProperties?.length)
-        parts.push(`跳过字段：${result.skippedProperties.join('、')}`);
-      setNotice({ text: parts.join('，'), pageId: result.page.id });
-    } catch (reason) {
-      setError(fail(reason, '导入失败'));
     } finally {
       setBusy(null);
     }
@@ -203,44 +152,200 @@ export function NotionSettings({ organizationId }: { organizationId: string }) {
       )}
 
       {connection?.connected ? (
-        <>
-          <h3>从 Notion 导入</h3>
-          <div className="notion-import-bar">
-            <span className="notion-kind" role="tablist">
-              {(['database', 'page'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  role="tab"
-                  aria-selected={kind === value}
-                  className={kind === value ? 'active' : ''}
-                  onClick={() => {
-                    setKind(value);
-                    void search(value);
-                  }}
-                >
-                  {value === 'database' ? <Database size={14} /> : <FileText size={14} />}
-                  {value === 'database' ? '数据库' : '页面'}
-                </button>
-              ))}
+        <NotionTreeImport organizationId={organizationId} spaces={spaces} />
+      ) : null}
+
+      {error ? (
+        <p className="tenant-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * Import Notion the way it is organized: pick top-level pages and databases;
+ * each comes with all its sub-pages, databases, rows and row bodies, in
+ * Notion's order. Runs as a resumable job, a batch at a time.
+ */
+function NotionTreeImport({
+  organizationId,
+  spaces,
+}: {
+  organizationId: string;
+  spaces: SpaceSummary[];
+}) {
+  const [roots, setRoots] = useState<NotionTreeEntry[] | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [spaceId, setSpaceId] = useState('');
+  const [job, setJob] = useState<NotionImportJob | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const running = useRef(false);
+
+  useEffect(() => {
+    setSpaceId((current) => current || spaces[0]?.id || '');
+  }, [spaces]);
+
+  const loadTree = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await getNotionTree(organizationId);
+      setRoots(result.roots);
+      setSelected(new Set(result.roots.map((root) => root.id)));
+    } catch (reason) {
+      setError(fail(reason, '无法读取 Notion 目录'));
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId]);
+
+  // Keep stepping a running job until it finishes (also after a reload).
+  const drive = useCallback(
+    async (current: NotionImportJob) => {
+      if (running.current) return;
+      running.current = true;
+      let next: NotionImportJob | null = current;
+      try {
+        while (next && next.status === 'running') {
+          const result = await stepNotionImport(organizationId, next.id);
+          next = result.job;
+          setJob(next);
+        }
+      } catch (reason) {
+        setError(fail(reason, '导入中断，可以点「继续导入」接着进行'));
+      } finally {
+        running.current = false;
+      }
+    },
+    [organizationId],
+  );
+
+  useEffect(() => {
+    void loadTree();
+    void latestNotionImport(organizationId)
+      .then((result) => {
+        setJob(result.job);
+        if (result.job?.status === 'running') void drive(result.job);
+      })
+      .catch(() => undefined);
+  }, [drive, loadTree, organizationId]);
+
+  const start = async () => {
+    if (!roots || !spaceId) return;
+    setError(null);
+    try {
+      const result = await startNotionImport(organizationId, {
+        spaceId,
+        roots: roots.filter((root) => selected.has(root.id)),
+      });
+      setJob(result.job);
+      if (result.job) void drive(result.job);
+    } catch (reason) {
+      setError(fail(reason, '无法开始导入'));
+    }
+  };
+
+  const cancel = async () => {
+    if (!job) return;
+    try {
+      setJob((await stepNotionImport(organizationId, job.id, 'cancel')).job);
+    } catch (reason) {
+      setError(fail(reason, '无法取消导入'));
+    }
+  };
+
+  const active = job?.status === 'running';
+  const processed = job ? job.done + job.failed : 0;
+  const percent = job && job.total ? Math.min(100, Math.round((processed / job.total) * 100)) : 0;
+  const allSelected = Boolean(roots?.length) && roots!.every((root) => selected.has(root.id));
+
+  return (
+    <div className="notion-tree-import">
+      <h3>按目录导入</h3>
+      <p className="tenant-panel-note">
+        勾选的页面和数据库会连同所有子页面、子数据库、每条记录的正文一起导入，保持 Notion
+        里的层级和顺序；Notion 托管的图片和文件会复制到 Rdocs。
+      </p>
+
+      {job ? (
+        <div className={`notion-import-progress is-${job.status}`} aria-live="polite">
+          <div className="notion-import-progress-head">
+            <strong>
+              {job.status === 'running'
+                ? '正在导入…'
+                : job.status === 'completed'
+                  ? job.failed
+                    ? `导入完成，${job.failed} 项失败`
+                    : '导入完成'
+                  : '导入已取消'}
+            </strong>
+            <span>
+              {processed} / {job.total}
             </span>
-            <form
-              className="notion-search"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void search();
-              }}
-            >
-              <Search size={14} />
+          </div>
+          <div className="notion-import-bar" role="progressbar" aria-valuenow={percent}>
+            <i style={{ width: `${percent}%` }} />
+          </div>
+          {active && job.current ? <small>正在处理：{job.current}</small> : null}
+          {job.imported.length ? (
+            <div className="notion-import-links">
+              {job.imported.map((item) => (
+                <a key={item.pageId} href={`/p/${encodeURIComponent(item.pageId)}`}>
+                  {item.kind === 'database' ? <Database size={13} /> : <FileText size={13} />}
+                  {item.title}
+                </a>
+              ))}
+            </div>
+          ) : null}
+          {job.failures.length ? (
+            <details className="notion-import-failures">
+              <summary>查看失败的 {job.failed} 项</summary>
+              <ul>
+                {job.failures.map((failure, index) => (
+                  <li key={`${failure.title}-${index}`}>
+                    <strong>{failure.title}</strong>
+                    <span>{failure.error}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+          <div className="notion-import-actions">
+            {active ? (
+              <>
+                {!running.current ? (
+                  <button type="button" onClick={() => void drive(job)}>
+                    继续导入
+                  </button>
+                ) : null}
+                <button type="button" onClick={() => void cancel()}>
+                  取消
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {!active ? (
+        <>
+          <div className="notion-tree-toolbar">
+            <label className="notion-tree-all">
               <input
-                className="settings-search"
-                type="search"
-                value={query}
-                aria-label="搜索 Notion"
-                placeholder="搜索已分享给集成的内容"
-                onChange={(event) => setQuery(event.target.value)}
+                type="checkbox"
+                checked={allSelected}
+                disabled={!roots?.length}
+                onChange={() =>
+                  setSelected(
+                    allSelected ? new Set() : new Set((roots ?? []).map((root) => root.id)),
+                  )
+                }
               />
-            </form>
+              全选{roots ? `（${roots.length} 项）` : ''}
+            </label>
             <label className="notion-space">
               导入到
               <select value={spaceId} onChange={(event) => setSpaceId(event.target.value)}>
@@ -251,46 +356,57 @@ export function NotionSettings({ organizationId }: { organizationId: string }) {
                 ))}
               </select>
             </label>
+            <button type="button" disabled={loading} onClick={() => void loadTree()}>
+              <RefreshCw size={14} /> 刷新
+            </button>
           </div>
-          {busy === 'search' ? <p className="tenant-panel-note">正在搜索…</p> : null}
-          {results && !results.length && busy !== 'search' ? (
+          {loading && !roots ? <p className="tenant-panel-note">正在读取 Notion 目录…</p> : null}
+          {roots && !roots.length ? (
             <p className="tenant-panel-note">
-              没有找到内容。请确认已在 Notion 中把页面或数据库「连接」到这个集成。
+              没有可导入的内容。请在 Notion 中把页面或数据库「连接」到这个集成。
             </p>
           ) : null}
-          {results?.map((item) => (
-            <div key={item.id} className="member-row">
-              <div>
-                <strong>
-                  {item.icon ? `${item.icon} ` : ''}
-                  {item.title}
-                </strong>
-                <small>{item.kind === 'database' ? 'Notion 数据库' : 'Notion 页面'}</small>
-              </div>
-              <button type="button" disabled={busy !== null} onClick={() => void runImport(item)}>
-                {busy === item.id ? '导入中…' : '导入'}
-              </button>
-            </div>
-          ))}
+          <ul className="notion-tree-list">
+            {roots?.map((root) => (
+              <li key={root.id}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(root.id)}
+                    onChange={() =>
+                      setSelected((current) => {
+                        const next = new Set(current);
+                        if (next.has(root.id)) next.delete(root.id);
+                        else next.add(root.id);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="notion-tree-icon">
+                    {root.icon ??
+                      (root.kind === 'database' ? <Database size={14} /> : <FileText size={14} />)}
+                  </span>
+                  <span className="notion-tree-title">{root.title}</span>
+                  <small>{root.kind === 'database' ? '数据库' : '页面'}</small>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!selected.size || !spaceId}
+            onClick={() => void start()}
+          >
+            导入所选（{selected.size} 项及其全部内容）
+          </button>
         </>
-      ) : null}
-
-      {notice ? (
-        <p className="notion-notice">
-          {notice.text}
-          {notice.pageId ? (
-            <>
-              {' '}
-              <a href={`/p/${encodeURIComponent(notice.pageId)}`}>打开</a>
-            </>
-          ) : null}
-        </p>
       ) : null}
       {error ? (
         <p className="tenant-error" role="alert">
           {error}
         </p>
       ) : null}
-    </section>
+    </div>
   );
 }

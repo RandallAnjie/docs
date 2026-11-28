@@ -256,7 +256,83 @@ function fileUrl(value: unknown): { url: string; hosted: boolean } {
  * Notion have expiring links, so they become a note with the link instead of
  * an embedded image.
  */
-export function notionBlocksToMarkdown(blocks: readonly NotionBlock[], depth = 0): string {
+export interface NotionMarkdownLinks {
+  /** Notion child page / database block id → the Rdocs page made for it. */
+  childPages?: ReadonlyMap<string, { pageId: string; title: string }>;
+  /** Notion-hosted file URL → the Rdocs attachment holding a copy. */
+  files?: ReadonlyMap<string, { attachmentId: string; name: string }>;
+}
+
+function pageLinkMarker(pageId: string, title: string): string {
+  return `<!-- rdocs:page-link:${pageId}:${encodeURIComponent(title).replace(/-/g, '%2D')} -->`;
+}
+
+function attachmentLabel(name: string): string {
+  return name.replace(/\\/g, '\\\\').replace(/]/g, '\\]');
+}
+
+/** Every Notion-hosted file URL in these blocks (images, files, PDFs, media). */
+export function notionHostedFiles(
+  blocks: readonly NotionBlock[],
+): Array<{ url: string; name: string; type: string }> {
+  const found: Array<{ url: string; name: string; type: string }> = [];
+  const visit = (list: readonly NotionBlock[]) => {
+    for (const block of list) {
+      const type = block.type ?? '';
+      if (['image', 'file', 'pdf', 'video', 'audio'].includes(type)) {
+        const data = record(block[type]);
+        const { url, hosted } = fileUrl(data);
+        if (url && hosted) {
+          const fromPath = (() => {
+            try {
+              return decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
+            } catch {
+              return '';
+            }
+          })();
+          const name =
+            (typeof data.name === 'string' && data.name) ||
+            fromPath ||
+            plainText(data.caption) ||
+            type;
+          found.push({ url, name, type });
+        }
+      }
+      if (block.children?.length) visit(block.children);
+    }
+  };
+  visit(blocks);
+  return found;
+}
+
+/** Child pages and databases anywhere in these blocks, in document order. */
+export function notionChildEntries(
+  blocks: readonly NotionBlock[],
+): Array<{ id: string; kind: 'page' | 'database'; title: string }> {
+  const found: Array<{ id: string; kind: 'page' | 'database'; title: string }> = [];
+  const visit = (list: readonly NotionBlock[]) => {
+    for (const block of list) {
+      if (block.type === 'child_page' || block.type === 'child_database') {
+        const data = record(block[block.type]);
+        found.push({
+          id: String(block.id),
+          kind: block.type === 'child_page' ? 'page' : 'database',
+          title: typeof data.title === 'string' && data.title ? data.title : '未命名',
+        });
+      } else if (block.children?.length) {
+        visit(block.children);
+      }
+    }
+  };
+  visit(blocks);
+  return found;
+}
+
+export function notionBlocksToMarkdown(
+  blocks: readonly NotionBlock[],
+  depth = 0,
+  links: NotionMarkdownLinks = {},
+): string {
   const lines: string[] = [];
   const indent = '  '.repeat(Math.min(depth, 4));
   let numbered = 0;
@@ -325,7 +401,9 @@ export function notionBlocksToMarkdown(blocks: readonly NotionBlock[], depth = 0
       case 'image': {
         const { url, hosted } = fileUrl(data);
         const caption = plainText(data.caption) || '图片';
-        if (url && !hosted) push(`![${caption}](${url})`);
+        const copy = url ? links.files?.get(url) : undefined;
+        if (copy) push(`![${caption.replace(/]/g, '\\]')}](/api/attachments/${copy.attachmentId})`);
+        else if (url && !hosted) push(`![${caption}](${url})`);
         else if (url) push(`[🖼 ${caption}（Notion 托管文件，请重新上传）](${url})`);
         push('');
         break;
@@ -343,18 +421,23 @@ export function notionBlocksToMarkdown(blocks: readonly NotionBlock[], depth = 0
       case 'pdf':
       case 'audio': {
         const { url } = fileUrl(data);
-        if (url) push(`[📎 ${plainText(data.caption) || data.name || type}](${url})`);
+        const copy = url ? links.files?.get(url) : undefined;
+        if (copy) {
+          const icon = type === 'audio' ? '🎵' : type === 'video' ? '🎬' : '📎';
+          push(`[${icon} ${attachmentLabel(copy.name)}](/api/attachments/${copy.attachmentId})`);
+        } else if (url) push(`[📎 ${plainText(data.caption) || data.name || type}](${url})`);
         push('');
         break;
       }
       case 'child_page':
-        push(`📄 ${typeof data.title === 'string' ? data.title : '子页面'}`);
+      case 'child_database': {
+        const child = links.childPages?.get(String(block.id));
+        const fallback = typeof data.title === 'string' && data.title ? data.title : '未命名';
+        if (child) push(pageLinkMarker(child.pageId, child.title || fallback));
+        else push(`${type === 'child_page' ? '📄' : '🗂'} ${fallback}`);
         push('');
         break;
-      case 'child_database':
-        push(`🗂 ${typeof data.title === 'string' ? data.title : '子数据库'}（请单独导入）`);
-        push('');
-        break;
+      }
       case 'table': {
         const rows = (block.children ?? []).filter((row) => row.type === 'table_row');
         rows.forEach((row, index) => {
@@ -379,6 +462,7 @@ export function notionBlocksToMarkdown(blocks: readonly NotionBlock[], depth = 0
         ['bulleted_list_item', 'numbered_list_item', 'to_do', 'toggle'].includes(type)
           ? depth + 1
           : depth,
+        links,
       );
       if (nested.trim()) push(nested);
     }
