@@ -100,3 +100,24 @@ describe('notion tree import', () => {
     expect(imported.plainText).toContain('介绍');
   });
 });
+
+describe('import retries', () => {
+  it('backs off exponentially, honouring what Notion asks for, up to two minutes', async () => {
+    const { retryDelayMs } = await import('./notion-import');
+    expect(retryDelayMs(0, null)).toBe(2_000);
+    expect(retryDelayMs(3, null)).toBe(16_000);
+    expect(retryDelayMs(10, null)).toBe(120_000);
+    expect(retryDelayMs(0, 9_000)).toBe(9_000);
+  });
+
+  it('retries rate limits, outages and timeouts only', async () => {
+    const { NotionError, isTransientNotionError } = await import('./notion');
+    expect(isTransientNotionError(new NotionError('限流', 429, 1000))).toBe(true);
+    expect(isTransientNotionError(new NotionError('坏了', 503))).toBe(true);
+    expect(isTransientNotionError(new NotionError('找不到', 404))).toBe(false);
+    const timeout = new Error('timed out');
+    timeout.name = 'TimeoutError';
+    expect(isTransientNotionError(timeout)).toBe(true);
+    expect(isTransientNotionError(new Error('其他'))).toBe(false);
+  });
+});

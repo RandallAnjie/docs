@@ -1,7 +1,13 @@
 import type { AuthUserSummary, JsonValue } from '@rdocs/shared';
 
 import type { Env } from './env';
-import { blockChildren, NotionError, notionRequest, type NotionDependencies } from './notion';
+import {
+  blockChildren,
+  isTransientNotionError,
+  NotionError,
+  notionRequest,
+  type NotionDependencies,
+} from './notion';
 import {
   notionBlocksToMarkdown,
   notionChildEntries,
@@ -34,6 +40,14 @@ const MAX_BLOCKS_PER_PAGE = 1_000;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_FILES_PER_PAGE = 60;
 const MAX_TREE_ITEMS = 3_000;
+/** Rate limits and outages: try again later, up to this many times. */
+const MAX_ATTEMPTS = 8;
+
+/** Wait before retrying an item: what Notion asked for, at least 2 s × 2^attempts (≤ 2 min). */
+export function retryDelayMs(attempts: number, retryAfterMs: number | null): number {
+  const backoff = Math.min(120_000, 2_000 * 2 ** Math.max(0, attempts));
+  return Math.max(backoff, retryAfterMs ?? 0);
+}
 
 export interface ImportJobRow {
   id: string;
@@ -61,6 +75,8 @@ interface ImportItemRow {
   seq: number;
   state_json: string | null;
   status: string;
+  attempts: number;
+  retry_at: number | null;
 }
 
 export interface NotionTreeEntry {
@@ -250,7 +266,7 @@ export async function latestImportJob(
 }
 
 export async function importJobSnapshot(env: Env, job: ImportJobRow) {
-  const [failures, roots, working] = await Promise.all([
+  const [failures, roots, working, waiting] = await Promise.all([
     env.DB.prepare(
       `SELECT kind, title, error_message FROM notion_import_items
         WHERE job_id = ? AND status = 'failed' ORDER BY seq DESC LIMIT 30`,
@@ -270,7 +286,20 @@ export async function importJobSnapshot(env: Env, job: ImportJobRow) {
     )
       .bind(job.id)
       .first<{ title: string | null }>(),
+    env.DB.prepare(
+      `SELECT MIN(retry_at) AS next_retry,
+              SUM(CASE WHEN retry_at IS NULL OR retry_at <= ? THEN 1 ELSE 0 END) AS ready,
+              SUM(CASE WHEN retry_at > ? THEN 1 ELSE 0 END) AS delayed
+         FROM notion_import_items WHERE job_id = ? AND status = 'pending'`,
+    )
+      .bind(Date.now(), Date.now(), job.id)
+      .first<{ next_retry: number | null; ready: number | null; delayed: number | null }>(),
   ]);
+  const delayed = Number(waiting?.delayed ?? 0);
+  const retryInMs =
+    job.status === 'running' && !Number(waiting?.ready ?? 0) && delayed && waiting?.next_retry
+      ? Math.max(0, Number(waiting.next_retry) - Date.now())
+      : 0;
   return {
     id: job.id,
     status: job.status,
@@ -281,6 +310,9 @@ export async function importJobSnapshot(env: Env, job: ImportJobRow) {
     createdAt: Number(job.created_at),
     finishedAt: job.finished_at === null ? null : Number(job.finished_at),
     current: working?.title ?? null,
+    /** Items waiting out a Notion rate limit, and how long until the next one. */
+    delayed,
+    retryInMs,
     failures: failures.results.map((item) => ({
       kind: item.kind,
       title: item.title ?? '未命名',
@@ -292,6 +324,27 @@ export async function importJobSnapshot(env: Env, job: ImportJobRow) {
       pageId: item.page_id,
     })),
   };
+}
+
+/** Put failed items back in the queue (for example after a long Notion outage). */
+export async function retryFailedImportItems(env: Env, job: ImportJobRow): Promise<void> {
+  const now = Date.now();
+  const reset = await env.DB.prepare(
+    `UPDATE notion_import_items
+        SET status = 'pending', attempts = 0, retry_at = NULL, error_message = NULL, updated_at = ?
+      WHERE job_id = ? AND status = 'failed'`,
+  )
+    .bind(now, job.id)
+    .run();
+  const count = Number(reset.meta.changes ?? 0);
+  if (!count) return;
+  await env.DB.prepare(
+    `UPDATE notion_import_jobs
+        SET failed = MAX(0, failed - ?), status = 'running', finished_at = NULL, updated_at = ?
+      WHERE id = ?`,
+  )
+    .bind(count, now, job.id)
+    .run();
 }
 
 export async function cancelImportJob(env: Env, job: ImportJobRow): Promise<void> {
@@ -323,11 +376,12 @@ async function claimNext(env: Env, jobId: string): Promise<ImportItemRow | null>
     `UPDATE notion_import_items SET status = 'working', updated_at = ?
       WHERE id = (
         SELECT id FROM notion_import_items
-         WHERE job_id = ? AND status = 'pending' ORDER BY seq LIMIT 1
+         WHERE job_id = ? AND status = 'pending' AND (retry_at IS NULL OR retry_at <= ?)
+         ORDER BY seq LIMIT 1
       ) AND status = 'pending'
       RETURNING *`,
   )
-    .bind(Date.now(), jobId)
+    .bind(Date.now(), jobId, Date.now())
     .first<ImportItemRow>();
 }
 
@@ -534,19 +588,39 @@ async function processPage(context: StepContext, item: ImportItemRow): Promise<v
   if (page.archived === true || page.in_trash === true) return;
   const title = notionTitle(page) || item.title || '未命名页面';
   const { markdown, files } = await bodyMarkdown(context, item.notion_id, item.page_id);
-  const created = await context.deps.createMarkdownPage({
-    actorId: context.actor.id,
-    spaceId: context.job.space_id,
-    title,
-    markdown,
-    id: item.page_id,
-    parentId: item.parent_page_id,
-    sortKey: importSortKey(Number(context.job.created_at), Number(item.seq)),
-    icon: emojiIcon(page),
-    exactTitle: true,
-  });
-  if (created instanceof Response) throw new NotionError(await responseError(created), 400);
+  if (await pageExists(context, item.page_id)) {
+    // A retry over the placeholder an earlier attempt left: put the content in.
+    const failed = await context.deps.replacePageContent({
+      pageId: item.page_id,
+      markdown,
+      title,
+      icon: emojiIcon(page),
+      actorId: context.actor.id,
+    });
+    if (failed) throw new NotionError(await responseError(failed), 400);
+  } else {
+    const created = await context.deps.createMarkdownPage({
+      actorId: context.actor.id,
+      spaceId: context.job.space_id,
+      title,
+      markdown,
+      id: item.page_id,
+      parentId: item.parent_page_id,
+      sortKey: importSortKey(Number(context.job.created_at), Number(item.seq)),
+      icon: emojiIcon(page),
+      exactTitle: true,
+    });
+    if (created instanceof Response) throw new NotionError(await responseError(created), 400);
+  }
   await recordAttachments(context, item.page_id, files);
+}
+
+async function pageExists(context: StepContext, pageId: string): Promise<boolean> {
+  return Boolean(
+    await context.env.DB.prepare('SELECT 1 AS found FROM pages WHERE id = ?')
+      .bind(pageId)
+      .first<{ found: number }>(),
+  );
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -595,18 +669,20 @@ async function processDatabase(context: StepContext, item: ImportItemRow): Promi
   const title = notionTitle(database) || item.title || '未命名数据库';
   const plan = planRdocsProperties(notionDatabaseSchema(database));
   const titlePlan = plan.find((entry) => entry.type === 'title');
-  const created = await context.deps.createMarkdownPage({
-    actorId: context.actor.id,
-    spaceId: context.job.space_id,
-    title,
-    markdown: '',
-    id: item.page_id,
-    parentId: item.parent_page_id,
-    sortKey: importSortKey(Number(context.job.created_at), Number(item.seq)),
-    icon: emojiIcon(database),
-    exactTitle: true,
-  });
-  if (created instanceof Response) throw new NotionError(await responseError(created), 400);
+  if (!(await pageExists(context, item.page_id))) {
+    const created = await context.deps.createMarkdownPage({
+      actorId: context.actor.id,
+      spaceId: context.job.space_id,
+      title,
+      markdown: '',
+      id: item.page_id,
+      parentId: item.parent_page_id,
+      sortKey: importSortKey(Number(context.job.created_at), Number(item.seq)),
+      icon: emojiIcon(database),
+      exactTitle: true,
+    });
+    if (created instanceof Response) throw new NotionError(await responseError(created), 400);
+  }
   const snapshot = await databaseCall(context, `/api/pages/${item.page_id}/database`, {
     titlePropertyName: titlePlan?.name ?? '名称',
   });
@@ -766,8 +842,27 @@ export async function runImportStep(
     try {
       await processItem(context, item);
     } catch (reason) {
-      status = 'failed';
       message = (reason instanceof Error ? reason.message : '导入失败').slice(0, 500);
+      const attempts = Number(item.attempts ?? 0);
+      if (isTransientNotionError(reason) && attempts + 1 < MAX_ATTEMPTS) {
+        // Back off and try again later; don't count it as failed.
+        const delay = retryDelayMs(
+          attempts,
+          reason instanceof NotionError ? reason.retryAfterMs : null,
+        );
+        await env.DB.prepare(
+          `UPDATE notion_import_items
+              SET status = 'pending', attempts = attempts + 1, retry_at = ?,
+                  error_message = ?, updated_at = ?
+            WHERE id = ?`,
+        )
+          .bind(Date.now() + delay, message, Date.now(), item.id)
+          .run();
+        // A rate limit applies to every request: let it cool down.
+        if (reason instanceof NotionError && reason.status === 429) break;
+        continue;
+      }
+      status = 'failed';
       if (item.kind === 'page' || item.kind === 'database') {
         await placeholderPage(context, item, message).catch(() => undefined);
       }

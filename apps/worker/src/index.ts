@@ -1982,6 +1982,73 @@ async function writeImportedPageContent(
   return null;
 }
 
+/**
+ * Replace a page's content with Markdown by starting a new generation (as a
+ * revision restore does); used when an import retries over the placeholder
+ * page it left behind.
+ */
+async function replaceImportedPageContent(
+  env: Env,
+  input: { pageId: string; markdown: string; title: string; icon?: string | null; actorId: string },
+): Promise<Response | null> {
+  const page = await findPage(env, input.pageId);
+  if (!page) return error('页面不存在', 404);
+  const imported = markdownToYjsSnapshot(input.markdown);
+  const title = (input.title || page.title).slice(0, MAX_TITLE_LENGTH);
+  const nextGeneration = page.currentGeneration + 1;
+  const contentHash = await sha256Hex(imported.snapshot);
+  const initialized = await documentRoom(env, page.id, nextGeneration).fetch(
+    'https://rdocs.internal/internal/initialize-generation',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-rdocs-page-id': page.id,
+        'x-rdocs-generation': String(nextGeneration),
+        'x-rdocs-revision-id': `import_${page.id}_${nextGeneration}`,
+        'x-rdocs-content-hash': contentHash,
+        'x-rdocs-actor-id': input.actorId,
+      },
+      body: toArrayBuffer(imported.snapshot),
+    },
+  );
+  if (!initialized.ok) return error('正文写入失败', 500);
+  const now = Date.now();
+  const normalizedBody = normalizeSearchText(imported.plainText).slice(0, 500_000);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE pages SET current_generation = ?, title = ?, icon = COALESCE(?, icon),
+              updated_by = ?, updated_at = ?
+        WHERE id = ? AND current_generation = ?`,
+    ).bind(
+      nextGeneration,
+      title,
+      input.icon ?? null,
+      input.actorId,
+      now,
+      page.id,
+      page.currentGeneration,
+    ),
+    env.DB.prepare(
+      `UPDATE page_search_projection
+          SET generation = ?, title = ?, normalized_body = ?, updated_at = ?
+        WHERE page_id = ?`,
+    ).bind(nextGeneration, title, normalizedBody, now, page.id),
+    env.DB.prepare('DELETE FROM page_search_fts WHERE page_id = ?').bind(page.id),
+    env.DB.prepare(
+      'INSERT INTO page_search_fts(page_id, title, normalized_body) VALUES (?, ?, ?)',
+    ).bind(page.id, searchIndexText(title), searchIndexText(`${title}\n${normalizedBody}`)),
+  ]);
+  invalidateCollaborationPage(page.id);
+  await documentRoom(env, page.id, page.currentGeneration)
+    .fetch('https://rdocs.internal/internal/rebase', {
+      method: 'POST',
+      headers: { 'x-rdocs-next-generation': String(nextGeneration) },
+    })
+    .catch(() => undefined);
+  return null;
+}
+
 async function createImportedMarkdownPage(
   env: Env,
   input: {
@@ -4436,6 +4503,7 @@ async function handleApi(request: Request, env: Env, context: ExecutionContext):
       return page;
     },
     writePageContent: (input) => writeImportedPageContent(env, input),
+    replacePageContent: (input) => replaceImportedPageContent(env, input),
     databasesApi: handleDatabasesApi,
     bulkCreateRows: bulkCreateDatabaseRows,
   });
